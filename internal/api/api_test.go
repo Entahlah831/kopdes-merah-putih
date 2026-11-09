@@ -605,6 +605,91 @@ func TestAPI_MakerChecker_HTTP_Violation(t *testing.T) {
 	t.Logf("Sukses: Verifikasi diri sendiri ditolak dengan HTTP 403: %s", recVerif.Body.String())
 }
 
+func TestK3_ApprovalSuccessFlow_EndToEnd(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	tokenAdminA, _ := env.createAndLoginUser(t, "admin")
+	tokenAdminB, _ := env.createAndLoginUser(t, "admin")
+
+	// 1. Admin A membuat pembayaran
+	bodyQRIS, _ := json.Marshal(handlers.BuatQRISRequest{
+		NominalDasarRp: 50000,
+		JenisTransaksi: "iuran_bulanan",
+		AnggotaID:      env.AnggotaID,
+		RekeningQRISID: env.RekeningID,
+	})
+	reqQRIS := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyQRIS))
+	reqQRIS.Header.Set("Authorization", "Bearer "+tokenAdminA)
+	reqQRIS.Header.Set("Content-Type", "application/json")
+	recQRIS := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recQRIS, reqQRIS)
+
+	if recQRIS.Code != http.StatusCreated {
+		t.Fatalf("Gagal buat QRIS: %d", recQRIS.Code)
+	}
+
+	var qrisRes struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recQRIS.Body.Bytes(), &qrisRes)
+	pembayaranID := qrisRes.Data.PembayaranID
+
+	// 2. Pembayar mengajukan bukti pembayaran (transisi ke menunggu_verifikasi)
+	bodyBukti, _ := json.Marshal(handlers.KlaimBuktiRequest{
+		ReferensiRRN: "123456789012",
+		Catatan:      "Sudah transfer via BCA mobile",
+	})
+	reqBukti := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/bukti", pembayaranID), bytes.NewReader(bodyBukti))
+	reqBukti.Header.Set("Authorization", "Bearer "+tokenAdminA)
+	reqBukti.Header.Set("Content-Type", "application/json")
+	recBukti := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recBukti, reqBukti)
+
+	if recBukti.Code != http.StatusOK {
+		t.Fatalf("Gagal klaim bukti pembayaran: %d (body: %s)", recBukti.Code, recBukti.Body.String())
+	}
+
+	// 3. Admin B memverifikasi pembayaran (Sukses)
+	bodyVerif, _ := json.Marshal(handlers.VerifikasiRequest{
+		Disetujui:    true,
+		ReferensiRRN: "123456789012",
+	})
+	reqVerif := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", pembayaranID), bytes.NewReader(bodyVerif))
+	reqVerif.Header.Set("Authorization", "Bearer "+tokenAdminB)
+	reqVerif.Header.Set("Content-Type", "application/json")
+	recVerif := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerif, reqVerif)
+
+	if recVerif.Code != http.StatusOK {
+		t.Fatalf("Gagal verifikasi pembayaran: %d (body: %s)", recVerif.Code, recVerif.Body.String())
+	}
+
+	// 4. Verifikasi mutasi kas dan log tercatat di basis data
+	ctx := context.Background()
+	var mutasiCount int
+	_ = env.Pool.QueryRow(ctx, "SELECT count(*) FROM kas_mutasi WHERE pembayaran_id = $1;", pembayaranID).Scan(&mutasiCount)
+	if mutasiCount < 1 {
+		t.Errorf("Kas mutasi tidak tercatat di database untuk pembayaran %s", pembayaranID)
+	}
+
+	var logCount int
+	_ = env.Pool.QueryRow(ctx, "SELECT count(*) FROM pembayaran_verifikasi_log WHERE pembayaran_id = $1;", pembayaranID).Scan(&logCount)
+	if logCount < 2 {
+		t.Errorf("Log verifikasi tidak lengkap (harus ada unggah_bukti dan setujui), dapat: %d", logCount)
+	}
+
+	// 5. Coba verifikasi ulang (harus ditolak karena status sudah disetujui)
+	recDouble := httptest.NewRecorder()
+	reqDouble := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", pembayaranID), bytes.NewReader(bodyVerif))
+	reqDouble.Header.Set("Authorization", "Bearer "+tokenAdminB)
+	env.Server.Router().ServeHTTP(recDouble, reqDouble)
+
+	if recDouble.Code != http.StatusBadRequest {
+		t.Errorf("Verifikasi ganda harusnya 400 Bad Request, dapat: %d", recDouble.Code)
+	}
+}
+
 func TestAPI_Admin_RekeningQRIS_Management(t *testing.T) {
 	env := setupAPITestEnv(t)
 	defer env.Pool.Close()

@@ -64,6 +64,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("GET /api/v1/auth/me", authMw.RequireAuth(http.HandlerFunc(authH.HandleGetProfile)))
 	mux.Handle("POST /api/v1/pembayaran/qris", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleBuatQRIS)))
 	mux.Handle("GET /api/v1/pembayaran/{id}", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleGetPembayaranStatus)))
+	mux.Handle("POST /api/v1/pembayaran/{id}/bukti", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleKlaimBuktiPembayaran)))
 	mux.Handle("GET /api/v1/katalog/stok", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleListStokGudang)))
 	mux.Handle("GET /api/v1/katalog/harga", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleGetHargaAnggota)))
 

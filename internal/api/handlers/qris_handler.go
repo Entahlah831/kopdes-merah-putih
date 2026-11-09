@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -277,12 +278,64 @@ func (h *QRISHandler) HandleListAntreanVerifikasi(w http.ResponseWriter, r *http
 
 type VerifikasiRequest struct {
 	Disetujui     bool   `json:"disetujui"`
+	NominalAktual int64  `json:"nominal_aktual,omitempty"`
 	AlasanTolak   string `json:"alasan_tolak,omitempty"`
 	ReferensiRRN  string `json:"referensi_rrn,omitempty"`
 	Catatan       string `json:"catatan,omitempty"`
 }
 
-// HandleVerifikasiPembayaran memvalidasi maker-checker (Aturan 4) dan memperbarui status pembayaran
+type KlaimBuktiRequest struct {
+	ReferensiRRN string `json:"referensi_rrn,omitempty"`
+	Catatan      string `json:"catatan,omitempty"`
+}
+
+// HandleKlaimBuktiPembayaran memindahkan status pembayaran dari menunggu_pembayaran ke menunggu_verifikasi
+func (h *QRISHandler) HandleKlaimBuktiPembayaran(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	pembayaranID, err := uuid.Parse(idStr)
+	if err != nil {
+		response.BadRequest(w, "ID pembayaran tidak valid")
+		return
+	}
+
+	var req KlaimBuktiRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			SELECT fn_klaim_bukti_pembayaran($1, $2, $3, $4);
+		`, pembayaranID, claims.UserID, req.ReferensiRRN, req.Catatan)
+		return err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "tidak ditemukan") {
+			response.NotFound(w, "Pembayaran tidak ditemukan")
+			return
+		}
+		if strings.Contains(err.Error(), "tidak dalam status menunggu pembayaran") {
+			response.BadRequest(w, "Pembayaran sudah diklaim atau telah diverifikasi sebelumnya")
+			return
+		}
+		response.BadRequest(w, "Gagal memproses klaim pembayaran")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"pembayaran_id": pembayaranID,
+		"status":        "menunggu_verifikasi",
+		"pesan":         "Bukti pembayaran berhasil diajukan dan masuk antrean verifikasi pengurus.",
+	})
+}
+
+// HandleVerifikasiPembayaran memvalidasi maker-checker (Aturan 4) dan mengeksekusi persetujuan atomik
 func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	pembayaranID, err := uuid.Parse(idStr)
@@ -297,7 +350,7 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if !req.Disetujui && req.AlasanTolak == "" {
+	if !req.Disetujui && strings.TrimSpace(req.AlasanTolak) == "" {
 		response.BadRequest(w, "Alasan penolakan wajib disertakan jika pembayaran ditolak")
 		return
 	}
@@ -311,56 +364,84 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
-		// 1. Ambil data pembayar untuk cek Maker-Checker
+		// 1. Kunci baris pembayaran untuk verifikasi konsistensi
 		var pembayarUserID uuid.UUID
 		var currentStatus string
+		var nominalTotal string
 		err := tx.QueryRow(ctx, `
-			SELECT pembayar_user_id, status
+			SELECT pembayar_user_id, status, nominal_total::text
 			FROM pembayaran
-			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL;
-		`, pembayaranID, claims.KoperasiID).Scan(&pembayarUserID, &currentStatus)
+			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+			FOR UPDATE;
+		`, pembayaranID, claims.KoperasiID).Scan(&pembayarUserID, &currentStatus, &nominalTotal)
 		if err != nil {
 			return err
 		}
 
-		// Aturan 4: Maker-Checker — Verifikator tidak boleh sama dengan pembuat pembayaran
+		// Aturan Maker-Checker: Verifikator dilarang sama dengan pembuat transaksi
 		if claims.UserID == pembayarUserID {
 			return errors.New("MAKER_CHECKER_VIOLATION: Pembuat transaksi dilarang memverifikasi pembayarannya sendiri")
 		}
 
-		if currentStatus != "menunggu_pembayaran" && currentStatus != "menunggu_verifikasi" {
-			return fmt.Errorf("transaksi tidak dalam status antrean verifikasi (status saat ini: %s)", currentStatus)
+		if currentStatus != "menunggu_verifikasi" {
+			return fmt.Errorf("transaksi tidak dalam status menunggu verifikasi (status saat ini: %s)", currentStatus)
 		}
 
-		statusBaru := "disetujui"
-		if !req.Disetujui {
-			statusBaru = "ditolak"
+		if req.Disetujui {
+			// Cari atau buka periode kas aktif untuk koperasi ini
+			var periodeKasID uuid.UUID
+			err := tx.QueryRow(ctx, `
+				SELECT id FROM periode_kas
+				WHERE koperasi_id = $1 AND status = 'buka'
+				ORDER BY created_at DESC LIMIT 1;
+			`, claims.KoperasiID).Scan(&periodeKasID)
+
+			if err != nil {
+				// Otomatis buka periode buku kas jika belum tersedia
+				err = tx.QueryRow(ctx, `
+					INSERT INTO periode_kas (koperasi_id, periode, saldo_awal, status, dibuka_oleh)
+					VALUES ($1, to_char(NOW(), 'YYYY-MM'), 0, 'buka', $2)
+					ON CONFLICT (koperasi_id, periode) DO UPDATE SET updated_at = NOW()
+					RETURNING id;
+				`, claims.KoperasiID, claims.UserID).Scan(&periodeKasID)
+				if err != nil {
+					return fmt.Errorf("gagal inisialisasi buku kas: %w", err)
+				}
+			}
+
+			nominalBayar := nominalTotal
+			if req.NominalAktual > 0 {
+				nominalBayar = fmt.Sprintf("%d", req.NominalAktual)
+			}
+
+			// Panggil prosedur atomik persetujuan (memperbarui pembayaran, tagihan, kas_mutasi, dan outbox)
+			_, err = tx.Exec(ctx, `
+				SELECT fn_setujui_pembayaran_qris($1, $2, $3::numeric, $4, $5);
+			`, pembayaranID, claims.UserID, nominalBayar, periodeKasID, req.Catatan)
+			return err
 		}
 
-		// 2. Update status pembayaran
+		// Alur Penolakan Pembayaran
 		_, err = tx.Exec(ctx, `
 			UPDATE pembayaran
-			SET status = $1,
+			SET status = 'ditolak',
+			    alasan_ditolak = $1,
 			    diverifikasi_oleh = $2,
 			    waktu_verifikasi = NOW(),
-			    alasan_ditolak = $3,
-			    referensi_rrn = COALESCE($4, referensi_rrn),
 			    updated_at = NOW()
-			WHERE id = $5 AND koperasi_id = $6;
-		`, statusBaru, claims.UserID, req.AlasanTolak, req.ReferensiRRN, pembayaranID, claims.KoperasiID)
+			WHERE id = $3 AND koperasi_id = $4;
+		`, req.AlasanTolak, claims.UserID, pembayaranID, claims.KoperasiID)
 		if err != nil {
 			return err
 		}
 
-		// 3. Catat ke tabel append-only pembayaran_verifikasi_log (Aturan 3)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO pembayaran_verifikasi_log (
-				koperasi_id, pembayaran_id, verifikator_id,
-				keputusan, alasan, catatan
+				koperasi_id, pembayaran_id, status_lama, status_baru, aksi, catatan, created_by
 			) VALUES (
-				$1, $2, $3, $4, $5, $6
+				$1, $2, 'menunggu_verifikasi', 'ditolak', 'tolak', $3, $4
 			);
-		`, claims.KoperasiID, pembayaranID, claims.UserID, statusBaru, req.AlasanTolak, req.Catatan)
+		`, claims.KoperasiID, pembayaranID, req.AlasanTolak, claims.UserID)
 		return err
 	})
 
@@ -369,18 +450,31 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			response.NotFound(w, "Pembayaran tidak ditemukan")
 			return
 		}
-		if err.Error() == "MAKER_CHECKER_VIOLATION: Pembuat transaksi dilarang memverifikasi pembayarannya sendiri" {
+		if strings.Contains(err.Error(), "MAKER_CHECKER_VIOLATION") {
 			response.Forbidden(w, "Pelanggaran Maker-Checker: Pembuat pembayaran dilarang memverifikasi pembayarannya sendiri.")
 			return
 		}
-		response.BadRequest(w, err.Error())
+		if strings.Contains(err.Error(), "tidak dalam status menunggu verifikasi") {
+			response.BadRequest(w, "Pembayaran belum mengajukan bukti klaim atau statusnya tidak valid untuk diverifikasi.")
+			return
+		}
+		if strings.Contains(err.Error(), "kurang dari total pembayaran") {
+			response.BadRequest(w, "Nominal pembayaran aktual kurang dari total tagihan.")
+			return
+		}
+		response.BadRequest(w, "Gagal memproses verifikasi pembayaran")
 		return
+	}
+
+	statusPesan := "Pembayaran berhasil disetujui dan dicatat ke mutasi kas."
+	if !req.Disetujui {
+		statusPesan = "Pembayaran telah ditolak."
 	}
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"pembayaran_id": pembayaranID,
-		"status":        "berhasil_diverifikasi",
-		"pesan":         "Verifikasi pembayaran berhasil dicatat ke jurnal append-only.",
+		"disetujui":     req.Disetujui,
+		"pesan":         statusPesan,
 	})
 }
 

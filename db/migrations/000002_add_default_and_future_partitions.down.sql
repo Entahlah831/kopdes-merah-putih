@@ -1,0 +1,59 @@
+-- ==============================================================================
+-- ROLLBACK MIGRASI 000002: Drop Partisi 2027 & DEFAULT (K2)
+-- ==============================================================================
+
+DROP TABLE IF EXISTS audit_log_default;
+DROP TABLE IF EXISTS audit_log_y2027m12;
+DROP TABLE IF EXISTS audit_log_y2027m11;
+DROP TABLE IF EXISTS audit_log_y2027m10;
+DROP TABLE IF EXISTS audit_log_y2027m09;
+DROP TABLE IF EXISTS audit_log_y2027m08;
+DROP TABLE IF EXISTS audit_log_y2027m07;
+DROP TABLE IF EXISTS audit_log_y2027m06;
+DROP TABLE IF EXISTS audit_log_y2027m05;
+DROP TABLE IF EXISTS audit_log_y2027m04;
+DROP TABLE IF EXISTS audit_log_y2027m03;
+DROP TABLE IF EXISTS audit_log_y2027m02;
+DROP TABLE IF EXISTS audit_log_y2027m01;
+
+DROP TABLE IF EXISTS stok_mutasi_default;
+DROP TABLE IF EXISTS stok_mutasi_y2027m12;
+DROP TABLE IF EXISTS stok_mutasi_y2027m11;
+DROP TABLE IF EXISTS stok_mutasi_y2027m10;
+DROP TABLE IF EXISTS stok_mutasi_y2027m09;
+DROP TABLE IF EXISTS stok_mutasi_y2027m08;
+DROP TABLE IF EXISTS stok_mutasi_y2027m07;
+DROP TABLE IF EXISTS stok_mutasi_y2027m06;
+DROP TABLE IF EXISTS stok_mutasi_y2027m05;
+DROP TABLE IF EXISTS stok_mutasi_y2027m04;
+DROP TABLE IF EXISTS stok_mutasi_y2027m03;
+DROP TABLE IF EXISTS stok_mutasi_y2027m02;
+DROP TABLE IF EXISTS stok_mutasi_y2027m01;
+
+DROP TABLE IF EXISTS kas_mutasi_default;
+DROP TABLE IF EXISTS kas_mutasi_y2027m12;
+DROP TABLE IF EXISTS kas_mutasi_y2027m11;
+DROP TABLE IF EXISTS kas_mutasi_y2027m10;
+DROP TABLE IF EXISTS kas_mutasi_y2027m09;
+DROP TABLE IF EXISTS kas_mutasi_y2027m08;
+DROP TABLE IF EXISTS kas_mutasi_y2027m07;
+DROP TABLE IF EXISTS kas_mutasi_y2027m06;
+DROP TABLE IF EXISTS kas_mutasi_y2027m05;
+DROP TABLE IF EXISTS kas_mutasi_y2027m04;
+DROP TABLE IF EXISTS kas_mutasi_y2027m03;
+DROP TABLE IF EXISTS kas_mutasi_y2027m02;
+DROP TABLE IF EXISTS kas_mutasi_y2027m01;
+
+DROP TABLE IF EXISTS notifikasi_default;
+DROP TABLE IF EXISTS notifikasi_y2027m12;
+DROP TABLE IF EXISTS notifikasi_y2027m11;
+DROP TABLE IF EXISTS notifikasi_y2027m10;
+DROP TABLE IF EXISTS notifikasi_y2027m09;
+DROP TABLE IF EXISTS notifikasi_y2027m08;
+DROP TABLE IF EXISTS notifikasi_y2027m07;
+DROP TABLE IF EXISTS notifikasi_y2027m06;
+DROP TABLE IF EXISTS notifikasi_y2027m05;
+DROP TABLE IF EXISTS notifikasi_y2027m04;
+DROP TABLE IF EXISTS notifikasi_y2027m03;
+DROP TABLE IF EXISTS notifikasi_y2027m02;
+DROP TABLE IF EXISTS notifikasi_y2027m01;

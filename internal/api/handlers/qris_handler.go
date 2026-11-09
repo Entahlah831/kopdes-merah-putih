@@ -362,12 +362,15 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 			"nominal_dasar":          totalNominalDasar,
 			"alokasi_count":          len(alokasiList),
 		})
-		_, _ = h.pool.Exec(ctx, `
-			INSERT INTO audit_log (
-				koperasi_id, user_id, nama_tabel, record_id, aksi,
-				data_baru, created_by
-			) VALUES ($1, $2, 'pembayaran', $3, 'INSERT', $4::jsonb, $2);
-		`, claims.KoperasiID, claims.UserID, res.PembayaranID, auditData)
+		_ = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `
+				INSERT INTO audit_log (
+					koperasi_id, user_id, nama_tabel, record_id, aksi,
+					data_baru, created_by
+				) VALUES ($1, $2, 'pembayaran', $3, 'INSERT', $4::jsonb, $2);
+			`, claims.KoperasiID, claims.UserID, res.PembayaranID, auditData)
+			return err
+		})
 	}
 
 	sisaDetik := int64(time.Until(res.BerlakuSampai).Seconds())

@@ -43,10 +43,10 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   - [x] Implementasi `KeyProvider` / `MasterKeyProvider` dengan AAD (`table:column:record_id`) dan prefix versi kunci pada AES-256-GCM.
   - [x] Blind index per tenant dengan HKDF-SHA256 (`DeriveTenantBlindIndexKey` & `HashTenantBlindIndex`).
   - [x] Redaksi DSN password (`RedactDSN`) pada seluruh output log kegagalan koneksi database.
-- [ ] **T4. Celah cakupan RLS dan bypass platform admin**
-  - [ ] Pasang RLS pada `audit_log`, `job_log`, `konfigurasi_aturan`.
-  - [ ] Perbaiki jalur login tanpa bypass platform admin pra-autentikasi (`SECURITY DEFINER` sempit).
-  - [ ] Tes isolasi tenant pada audit/job log.
+- [x] **T4. Celah cakupan RLS dan bypass platform admin**
+  - [x] Migrasi `000004_enforce_rls_all_tables_and_login_helper.up.sql`: Pasang FORCE RLS dan policy isolasi tenant pada `audit_log`, `job_log`, `konfigurasi_aturan`, `koperasi`, dan `users`.
+  - [x] Perbaiki jalur login tanpa menyalakan bypass `app.is_platform_admin`: Dibuat fungsi SQL `fn_lookup_user_login(p_email_hash)` bertipe `SECURITY DEFINER` dengan `search_path = public, pg_temp` terkunci.
+  - [x] Reproduksi dan verifikasi tes isolasi lintas tenant pada `audit_log` dan `job_log` (`TestT4_RLS_AuditLog_And_JobLog_Isolation` PASS).
 - [ ] **T5. Autentikasi dan otorisasi**
   - [ ] Access token 15 menit + refresh token tabel rotasi.
   - [ ] Pilih koperasi/peran aktif secara eksplisit dan deterministik.
@@ -136,4 +136,18 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   === RUN   TestT3_RedactDSN_HidesPassword
   --- PASS: TestT3_RedactDSN_HidesPassword (0.00s)
   ok  	github.com/kopdes/merah-putih/internal/security	0.438s
+  ```
+
+### [2026-11-09] T4: Cakupan Penuh RLS & Penghapusan Pre-Auth Platform Admin Bypass
+- **Reproduksi Gagal**: `TestT4_RLS_AuditLog_And_JobLog_Isolation` membuktikan Tenant B dapat melihat `audit_log` dan `job_log` milik Tenant A sebelum migrasi 000004.
+- **Implementasi**:
+  - Migrasi `000004_enforce_rls_all_tables_and_login_helper.up.sql` dan `.down.sql`: Mengaktifkan dan memaksakan (`FORCE`) Row-Level Security pada tabel `audit_log` (induk dan partisi), `job_log`, `konfigurasi_aturan`, `koperasi`, dan `users`.
+  - Membuat fungsi SQL `fn_lookup_user_login(p_email_hash)` berpredikat `SECURITY DEFINER` dengan `search_path = public, pg_temp` terkunci, sehingga handler login Go tidak lagi memerlukan eksekusi berbahaya `set_config('app.is_platform_admin', 'true', true)` sebelum autentikasi.
+  - Memperbaiki query profil dan penyimpanan audit log agar selalu berjalan dalam wrapper `WithTenantTx`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestT4_RLS_AuditLog_And_JobLog_Isolation
+  --- PASS: TestT4_RLS_AuditLog_And_JobLog_Isolation (0.07s)
+  ok  	github.com/kopdes/merah-putih/internal/db	0.476s
+  ok  	github.com/kopdes/merah-putih/internal/api	12.510s
   ```

@@ -94,30 +94,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		roleName        string
 	)
 
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		response.InternalServerError(w, "Gagal memulai sesi autentikasi")
-		return
-	}
-	defer tx.Rollback(ctx)
-
-	// Set app.is_platform_admin sementara agar login handler dapat membaca tabel user_roles lintas tenant
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'true', true)"); err != nil {
-		response.InternalServerError(w, "Gagal mengonfigurasi sesi autentikasi")
-		return
-	}
-
-	// Cari akun pengguna berdasarkan email_hash
-	query := `
-		SELECT u.id, u.password_hash, u.nama_lengkap, u.is_super_admin, u.status_aktif,
-		       ur.koperasi_id, COALESCE(r.nama, 'anggota') as role_name
-		FROM users u
-		LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.deleted_at IS NULL
-		LEFT JOIN roles r ON r.id = ur.role_id
-		WHERE u.email_hash = $1 AND u.deleted_at IS NULL
-		LIMIT 1;
-	`
-	err = tx.QueryRow(ctx, query, emailHash).Scan(
+	// Cari akun pengguna menggunakan fungsi SECURITY DEFINER sempit tanpa membypass platform admin
+	err := h.pool.QueryRow(ctx, `
+		SELECT user_id, password_hash, nama_lengkap, is_super_admin, status_aktif,
+		       koperasi_id, role_name
+		FROM fn_lookup_user_login($1);
+	`, emailHash).Scan(
 		&userID, &passwordHash, &namaLengkap, &isSuperAdmin, &statusAktif,
 		&koperasiID, &roleName,
 	)
@@ -183,7 +165,14 @@ func (h *AuthHandler) HandleGetProfile(w http.ResponseWriter, r *http.Request) {
 		createdAt   time.Time
 	)
 
-	err := h.pool.QueryRow(ctx, "SELECT nama_lengkap, created_at FROM users WHERE id = $1", claims.UserID).Scan(&namaLengkap, &createdAt)
+	var err error
+	if claims.KoperasiID != uuid.Nil || claims.IsPlatformAdmin {
+		err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, "SELECT nama_lengkap, created_at FROM users WHERE id = $1", claims.UserID).Scan(&namaLengkap, &createdAt)
+		})
+	} else {
+		err = h.pool.QueryRow(ctx, "SELECT nama_lengkap, created_at FROM users WHERE id = $1", claims.UserID).Scan(&namaLengkap, &createdAt)
+	}
 	if err != nil {
 		response.NotFound(w, "Data pengguna tidak ditemukan")
 		return

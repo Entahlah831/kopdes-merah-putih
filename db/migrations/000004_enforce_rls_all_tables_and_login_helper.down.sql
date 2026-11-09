@@ -1,0 +1,23 @@
+-- Rollback Migrasi 000004
+
+DROP FUNCTION IF EXISTS fn_lookup_user_login(char(64));
+
+DROP POLICY IF EXISTS pol_isolasi_users ON users;
+ALTER TABLE users NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE users DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS pol_isolasi_koperasi ON koperasi;
+ALTER TABLE koperasi NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE koperasi DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS pol_isolasi_tenant_konfigurasi_aturan ON konfigurasi_aturan;
+ALTER TABLE konfigurasi_aturan NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE konfigurasi_aturan DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS pol_isolasi_tenant_job_log ON job_log;
+ALTER TABLE job_log NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE job_log DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS pol_isolasi_tenant_audit_log ON audit_log;
+ALTER TABLE audit_log NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit_log DISABLE ROW LEVEL SECURITY;

@@ -428,12 +428,36 @@ func (h *QRISHandler) HandleGetPembayaranStatus(w http.ResponseWriter, r *http.R
 		referensiRRN   *string
 	)
 
+	// Roles pengurus/admin/pengawas yang berhak melihat semua pembayaran di koperasinya
+	privilegedRoles := map[string]bool{
+		"admin":      true,
+		"pengurus":   true,
+		"bendahara":  true,
+		"ketua":      true,
+		"sekretaris": true,
+		"operator":   true,
+		"pengawas":   true,
+	}
+	isPrivileged := claims.IsPlatformAdmin || privilegedRoles[claims.Role]
+
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		if isPrivileged {
+			return tx.QueryRow(ctx, `
+				SELECT status, no_pembayaran, nominal_total::text, berlaku_sampai, referensi_rrn
+				FROM pembayaran
+				WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL;
+			`, pembayaranID, claims.KoperasiID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN)
+		}
+
+		// Anggota biasa: hanya boleh melihat data pembayaran miliknya sendiri (anti-IDOR OWASP API1:2023)
 		return tx.QueryRow(ctx, `
-			SELECT status, no_pembayaran, nominal_total::text, berlaku_sampai, referensi_rrn
-			FROM pembayaran
-			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL;
-		`, pembayaranID, claims.KoperasiID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN)
+			SELECT p.status, p.no_pembayaran, p.nominal_total::text, p.berlaku_sampai, p.referensi_rrn
+			FROM pembayaran p
+			WHERE p.id = $1 
+			  AND p.koperasi_id = $2 
+			  AND (p.pembayar_user_id = $3 OR p.anggota_id IN (SELECT a.id FROM anggota a WHERE a.user_id = $3))
+			  AND p.deleted_at IS NULL;
+		`, pembayaranID, claims.KoperasiID, claims.UserID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN)
 	})
 
 	if err != nil {

@@ -1427,3 +1427,76 @@ func TestT5_AuthAndPermissions_Reproduction(t *testing.T) {
 	}
 }
 
+func TestS1_IDOR_PembayaranStatus_Reproduction(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	// 1. Buat pembayaran untuk Anggota A
+	billID := env.CreateBill(t, env.AnggotaID, 75000)
+	bodyPay, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID},
+	})
+	reqPay := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay))
+	reqPay.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay.Header.Set("Content-Type", "application/json")
+	recPay := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPay, reqPay)
+
+	if recPay.Code != http.StatusCreated {
+		t.Fatalf("Gagal membuat pembayaran untuk Anggota A: %d (body: %s)", recPay.Code, recPay.Body.String())
+	}
+
+	var payRes struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPay.Body.Bytes(), &payRes)
+	payIDA := payRes.Data.PembayaranID
+
+	// 2. Anggota B (anggota lain dalam koperasi yang sama) mencoba mengakses pembayaran Anggota A
+	tokenAnggotaB, _ := env.createAndLoginUser(t, "anggota")
+
+	reqIDOR := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", payIDA), nil)
+	reqIDOR.Header.Set("Authorization", "Bearer "+tokenAnggotaB)
+	recIDOR := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recIDOR, reqIDOR)
+
+	// Harapan aman: Anggota B TIDAK boleh melihat pembayaran Anggota A (harus 403 atau 404)
+	if recIDOR.Code == http.StatusOK {
+		t.Fatalf("VULNERABILITY S1 REPRODUCED: Anggota B dapat membaca pembayaran Anggota A melalui IDOR (HTTP 200 OK)")
+	}
+
+	if recIDOR.Code != http.StatusNotFound && recIDOR.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 or 404 for IDOR access, got %d", recIDOR.Code)
+	}
+
+	// 3. Admin koperasi boleh melihat pembayaran siapa pun di koperasinya
+	reqAdmin := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", payIDA), nil)
+	reqAdmin.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recAdmin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAdmin, reqAdmin)
+	if recAdmin.Code != http.StatusOK {
+		t.Errorf("Expected Admin to have access to pembayaran, got %d", recAdmin.Code)
+	}
+
+	// 4. Pengurus koperasi boleh melihat pembayaran siapa pun di koperasinya
+	tokenPengurus, _ := env.createAndLoginUser(t, "pengurus")
+	reqPengurus := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", payIDA), nil)
+	reqPengurus.Header.Set("Authorization", "Bearer "+tokenPengurus)
+	recPengurus := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPengurus, reqPengurus)
+	if recPengurus.Code != http.StatusOK {
+		t.Errorf("Expected Pengurus to have access to pembayaran, got %d", recPengurus.Code)
+	}
+
+	// 5. Pemilik aslinya (Anggota A) BOLEH melihat pembayarannya sendiri
+	reqOwner := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", payIDA), nil)
+	reqOwner.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recOwner := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recOwner, reqOwner)
+	if recOwner.Code != http.StatusOK {
+		t.Errorf("Expected original payer to have access to pembayaran, got %d", recOwner.Code)
+	}
+}
+

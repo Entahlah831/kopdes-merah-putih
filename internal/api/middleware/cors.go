@@ -17,7 +17,7 @@ func DefaultCORSConfig() CORSConfig {
 	return CORSConfig{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Requested-With", "X-Koperasi-ID"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Requested-With", "X-Request-ID", "Idempotency-Key"},
 		AllowCredentials: true,
 		MaxAgeSeconds:    86400,
 	}
@@ -35,21 +35,28 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 
 			// Validasi origin yang diizinkan
 			allowed := false
+			isWildcard := false
 			for _, o := range cfg.AllowedOrigins {
-				if o == "*" || o == origin {
+				if o == "*" {
+					allowed = true
+					isWildcard = true
+					break
+				}
+				if o == origin {
 					allowed = true
 					break
 				}
 			}
 
 			if allowed {
-				if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*" {
+				if isWildcard {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
+					// W3C CORS Spec: Allow-Credentials dilarang bersamaan dengan wildcard '*'
 				} else {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
-				}
-				if cfg.AllowCredentials {
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					if cfg.AllowCredentials {
+						w.Header().Set("Access-Control-Allow-Credentials", "true")
+					}
 				}
 				w.Header().Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowedMethods, ", "))
 				w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowedHeaders, ", "))

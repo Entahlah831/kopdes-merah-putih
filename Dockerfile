@@ -46,8 +46,8 @@ USER kopdesuser
 # Port default yang diekspos (dapat dioverride via .env)
 EXPOSE 8080
 
-# Health check otomatis untuk Docker / Kubernetes
+# Health check otomatis untuk Docker / Kubernetes menggunakan variabel lingkungan port (S3)
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/healthz || exit 1
+  CMD curl -f "http://localhost:${PORT:-${APP_PORT:-8080}}/healthz" || exit 1
 
 ENTRYPOINT ["/app/kopdes-server"]

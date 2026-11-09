@@ -157,24 +157,26 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminDeactivateRekeningQRIS)),
 	))
 
-	// Middleware Pipeline Global (OWASP Headers -> CORS -> Recovery -> RateLimit)
+	// Middleware Pipeline Global (OWASP Headers -> CORS -> Recovery -> RateLimit -> BodyLimit)
 	corsCfg := middleware.DefaultCORSConfig()
 	if len(cfg.AllowedOrigins) > 0 {
 		corsCfg.AllowedOrigins = cfg.AllowedOrigins
 	}
 
 	var handler http.Handler = mux
+	handler = middleware.BodyLimit(10 * 1024 * 1024)(handler) // Batasi payload maksimal 10 MB (S3)
 	handler = middleware.RateLimit(rateLimiter)(handler)
 	handler = middleware.CORS(corsCfg)(handler)
 	handler = middleware.SecurityHeaders(handler)
 	handler = middleware.Recovery(handler)
 
 	httpSrv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,  // Anti-Slowloris attack (S3)
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	return &Server{

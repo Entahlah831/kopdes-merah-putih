@@ -111,7 +111,13 @@ func main() {
 	pgxCfg.MaxConns = 30
 	pgxCfg.MinConns = 5
 	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
+		// Pasang pembatas waktu eksekusi SQL di sisi PostgreSQL untuk mencegah hung query / lock leak (S3)
+		_, err := conn.Exec(ctx, `
+			SET statement_timeout = '15s';
+			SET lock_timeout = '5s';
+			SET idle_in_transaction_session_timeout = '30s';
+			SET ROLE kopdes_app;
+		`)
 		return err
 	}
 
@@ -162,6 +168,17 @@ func main() {
 		}
 		if len(list) > 0 {
 			cfg.AllowedOrigins = list
+		}
+	}
+
+	// Validasi kepatuhan konfigurasi produksi (S3)
+	if os.Getenv("APP_ENV") == "production" {
+		dbPass := os.Getenv("DB_PASSWORD")
+		if strings.TrimSpace(dbPass) == "" || dbPass == "kopdes_dev_password" {
+			log.Fatalf("KONFIGURASI ILEGAL: DB_PASSWORD dilarang menggunakan kata sandi bawaan pengujian pada APP_ENV=production")
+		}
+		if len(cfg.AllowedOrigins) == 0 || (len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*") {
+			log.Fatalf("KONFIGURASI ILEGAL: ALLOWED_ORIGINS wajib didefinisikan secara eksplisit dan dilarang '*' pada APP_ENV=production")
 		}
 	}
 

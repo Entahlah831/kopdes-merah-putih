@@ -67,7 +67,13 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   - [x] Fuzz test `FuzzParseTLV` dan round-trip test menjaga seluruh tag kustom/privat ASPI.
   - [x] Migrasi `000006_rekening_qris_jenis_pemilik.up.sql`: menambahkan kolom `jenis_pemilik` ('badan_hukum_koperasi' / 'perorangan_pengurus') dan penolakan mode perorangan kecuali `ALLOW_PERSONAL_PAYMENT_PILOT=true`.
   - [x] Dibuat checklist uji lapangan resmi di `docs/QRIS_UJI_LAPANGAN.md`.
-- [ ] **S3. Konfigurasi deployment & header hardening**
+- [x] **S3. Konfigurasi deployment & header hardening**
+  - [x] Sanitasi header CORS: hapus `X-Koperasi-ID` dari `AllowedHeaders` (anti-BOLA). Mencegah pengiriman `Access-Control-Allow-Credentials: true` saat origin wildcard `*`.
+  - [x] Validasi produksi: menolak start pada `APP_ENV=production` jika `ALLOWED_ORIGINS` bernilai `*` atau kosong, dan menolak jika kata sandi database menggunakan nilai bawaan dev.
+  - [x] Hardening HTTP Server: menambahkan `ReadHeaderTimeout = 5s` (perlindungan Slowloris attack) dan middleware `BodyLimit = 10MB` (mencegah DoS payload besar).
+  - [x] Pembatas waktu SQL di PostgreSQL: `statement_timeout = '15s'`, `lock_timeout = '5s'`, dan `idle_in_transaction_session_timeout = '30s'`.
+  - [x] Dockerfile healthcheck dinamis menggunakan variabel port `${PORT:-${APP_PORT:-8080}}`.
+  - [x] Sinkronisasi panduan aturan agen di `AGENTS.md` dan `GEMINI.md`.
 
 ---
 
@@ -182,4 +188,54 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih/internal/api	3.875s
   ok  	github.com/kopdes/merah-putih/internal/auth
   ok  	github.com/kopdes/merah-putih/internal/db
+  ```
+
+### [2026-11-09] S1: Pencegahan Intra-Tenant IDOR pada Status Pembayaran
+- **Reproduksi Gagal**: `TestS1_IDOR_PembayaranStatus_Reproduction` membuktikan Anggota B dapat membaca data pembayaran milik Anggota A dalam koperasi yang sama (HTTP 200 OK).
+- **Implementasi**:
+  - `HandleGetPembayaranStatus` memvalidasi kepemilikan pembayaran: pengguna berpenanda peran anggota biasa diwajibkan memiliki `pembayar_user_id` atau `anggota_id` yang cocok dengan identitas pada JWT claims.
+  - Peran pengurus/admin/pengawas (`admin`, `pengurus`, `bendahara`, `ketua`, `operator`, `pengawas`) tetap memiliki hak akses peninjauan seluruh transaksi koperasi.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestS1_IDOR_PembayaranStatus_Reproduction
+  --- PASS: TestS1_IDOR_PembayaranStatus_Reproduction (1.86s)
+  ok  	github.com/kopdes/merah-putih/internal/api	2.012s
+  ```
+
+### [2026-11-09] S2: Penguatan Parser EMVCo, Feature Flag QRIS Dinamis & Pilot Perorangan
+- **Reproduksi Gagal**: `TestS2_QRIS_FeatureFlag_And_Pilot_Validation` dan `TestEMVCo_CRC_Verification_Invalid_Rejected` membuktikan payload QRIS dengan CRC corrupt sebelumnya lolos tanpa validasi, serta tidak adanya feature flag pengontrol aktivasi QRIS dinamis.
+- **Implementasi**:
+  - `ValidateQRIS`: Memvalidasi checksum CRC16 (Tag 63) dari payload masukan, memastikan Tag 00 == '01', dan menolak tag root yang duplikat.
+  - `GenerateDynamicQRIS`: Menghapus Tag 55–57 (Tip / Convenience Fee) saat Tag 54 (Nominal Tetap) dipasang, serta mempertahankan seluruh tag kustom/privat ASPI (round-trip & fuzz tested).
+  - Feature flag `QRIS_DYNAMIC_ENABLED` (default false): saat non-aktif, endpoint mengembalikan payload statis + nominal total + kode unik.
+  - Migrasi `000006_rekening_qris_jenis_pemilik.up.sql`: Menambahkan kolom `jenis_pemilik` ('badan_hukum_koperasi' / 'perorangan_pengurus') dan konstrain bersyarat. Rekening perorangan pengurus ditolak di produksi kecuali flag `ALLOW_PERSONAL_PAYMENT_PILOT=true` diaktifkan.
+  - Dibuat panduan checklist pengujian lapangan di `docs/QRIS_UJI_LAPANGAN.md`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestCalculateCRC16
+  --- PASS: TestCalculateCRC16 (0.00s)
+  === RUN   TestGenerateDynamicQRIS_AutoLockNominal
+  --- PASS: TestGenerateDynamicQRIS_AutoLockNominal (0.00s)
+  === RUN   TestEMVCo_CRC_Verification_Invalid_Rejected
+  --- PASS: TestEMVCo_CRC_Verification_Invalid_Rejected (0.00s)
+  === RUN   FuzzParseTLV
+  --- PASS: FuzzParseTLV (0.00s)
+  === RUN   TestS2_QRIS_FeatureFlag_And_Pilot_Validation
+  --- PASS: TestS2_QRIS_FeatureFlag_And_Pilot_Validation (0.99s)
+  ```
+
+### [2026-11-09] S3: Deployment Hardening, Sanitasi Header CORS & Timeouts
+- **Implementasi**:
+  - Header `X-Koperasi-ID` dihapus dari `AllowedHeaders` CORS untuk mencegah pembocoran atau injeksi tenant via header klien (anti-BOLA).
+  - Menolak penyetelan `Access-Control-Allow-Credentials: true` jika origin bernilai wildcard `*` (kepatuhan standar W3C).
+  - Validasi ketat pada mode produksi (`APP_ENV=production`): Gagal start bila `ALLOWED_ORIGINS` bernilai `*` atau kosong, dan gagal start bila kata sandi database memakai password default dev.
+  - HTTP Server Hardening: Ditambahkan `ReadHeaderTimeout = 5s` (proteksi Slowloris) dan middleware `BodyLimit = 10MB` (proteksi payload exhaustion DoS).
+  - PostgreSQL Timeout Guardrails: Menyematkan `statement_timeout = '15s'`, `lock_timeout = '5s'`, dan `idle_in_transaction_session_timeout = '30s'` pada koneksi pgxpool `AfterConnect`.
+  - Dockerfile Healthcheck menggunakan port dinamis `${PORT:-${APP_PORT:-8080}}`.
+  - Sinkronisasi aturan agen di `AGENTS.md` dan `GEMINI.md`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestS3_Deployment_Hardening_And_CORS
+  --- PASS: TestS3_Deployment_Hardening_And_CORS (0.96s)
+  ok  	github.com/kopdes/merah-putih/internal/api	1.111s
   ```

@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1660,6 +1662,51 @@ func TestS2_QRIS_FeatureFlag_And_Pilot_Validation(t *testing.T) {
 
 	if recLegal.Code != http.StatusOK && recLegal.Code != http.StatusCreated {
 		t.Errorf("Expected success for badan_hukum_koperasi, got %d (body: %s)", recLegal.Code, recLegal.Body.String())
+	}
+}
+
+func TestS3_Deployment_Hardening_And_CORS(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	// 1. CORS Preflight & Header Sanitization (Hapus X-Koperasi-ID dari AllowedHeaders)
+	reqPreflight := httptest.NewRequest("OPTIONS", "/api/v1/pembayaran/qris", nil)
+	reqPreflight.Header.Set("Origin", "https://app.kopdes.id")
+	reqPreflight.Header.Set("Access-Control-Request-Method", "POST")
+	recPreflight := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPreflight, reqPreflight)
+
+	allowHeaders := recPreflight.Header().Get("Access-Control-Allow-Headers")
+	if strings.Contains(allowHeaders, "X-Koperasi-ID") {
+		t.Errorf("SECURITY DEFECT: AllowedHeaders must NOT expose 'X-Koperasi-ID' header, got: %s", allowHeaders)
+	}
+
+	// 2. Wildcard Origin dilarang mengirimkan Access-Control-Allow-Credentials: true (W3C Spec)
+	cfgWildcard := env.Config
+	cfgWildcard.AllowedOrigins = []string{"*"}
+	srvWildcard := api.NewServer(env.Pool, cfgWildcard)
+
+	reqWild := httptest.NewRequest("OPTIONS", "/api/v1/pembayaran/qris", nil)
+	reqWild.Header.Set("Origin", "https://untrusted-site.com")
+	reqWild.Header.Set("Access-Control-Request-Method", "POST")
+	recWild := httptest.NewRecorder()
+	srvWildcard.Router().ServeHTTP(recWild, reqWild)
+
+	if recWild.Header().Get("Access-Control-Allow-Credentials") == "true" {
+		t.Errorf("SECURITY DEFECT: Access-Control-Allow-Credentials must NOT be true when origin is wildcard '*'")
+	}
+
+	// 3. Batas ukuran body permintaan (BodyLimit)
+	// Server default membatasi ukuran body 10 MB. Kirim payload berukuran 11 MB
+	hugeReader := io.LimitReader(bytes.NewReader(make([]byte, 11*1024*1024)), 11*1024*1024)
+	reqHuge := httptest.NewRequest("POST", "/api/v1/auth/login", hugeReader)
+	reqHuge.Header.Set("Content-Type", "application/json")
+	recHuge := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recHuge, reqHuge)
+
+	// MaxBytesReader harus memicu error pembacaan (bukan panic / 200)
+	if recHuge.Code == http.StatusOK {
+		t.Errorf("Expected failure when payload exceeds BodyLimit, got status 200")
 	}
 }
 

@@ -146,6 +146,9 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("POST /api/v1/pendaftaran/{id}/verifikasi", authMw.RequireAuth(
 		middleware.RequireRoles(pendaftaranVerifikasiRoles...)(http.HandlerFunc(pendaftaranH.HandleVerifikasiPendaftaran)),
 	))
+	mux.Handle("POST /api/v1/pendaftaran/purge-ditolak", authMw.RequireAuth(
+		middleware.RequireRoles(pendaftaranVerifikasiRoles...)(http.HandlerFunc(pendaftaranH.HandlePurgeRejectedPendaftaran)),
+	))
 	mux.Handle("GET /api/v1/pembayaran/antrean", authMw.RequireAuth(
 		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(qrisH.HandleListAntreanVerifikasi)),
 	))

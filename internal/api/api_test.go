@@ -2033,5 +2033,64 @@ func TestP1_4_Operasional_Metrics_And_Idempotency(t *testing.T) {
 	}
 }
 
+func TestP1_1_PDP_30Day_Purge(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	ctx := context.Background()
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire conn failed: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	// Sisipkan data pendaftaran ditolak bertanggal 35 hari yang lalu
+	pendaftaranID := uuid.New()
+	tglLama := time.Now().Add(-35 * 24 * time.Hour)
+	nikHash := hashSHA256(fmt.Sprintf("3201%d", time.Now().UnixNano()))
+
+	// Ambil wilayah_desa_id default
+	var wilayahID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT wilayah_desa_id FROM koperasi WHERE id = $1", env.KoperasiID).Scan(&wilayahID)
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO pendaftaran_anggota (
+			id, koperasi_id, user_id, no_registrasi,
+			nik_enkripsi, nik_hash, nama_lengkap, tempat_lahir,
+			tanggal_lahir_enkripsi, jenis_kelamin, alamat_ktp_enkripsi,
+			wilayah_desa_id, status, diajukan_oleh, alasan_ditolak, updated_at, created_by
+		) VALUES (
+			$1, $2, $3, 'REG-PURGE-01',
+			'v1:k1:dummy', $4, 'Calon Ditolak', 'Bogor',
+			'v1:k1:dummy', 'L', 'v1:k1:dummy',
+			$5, 'ditolak', $3, 'Persyaratan tidak memenuhi kriteria', $6, $3
+		);
+	`, pendaftaranID, env.KoperasiID, env.AnggotaUserID, nikHash, wilayahID, tglLama)
+	if err != nil {
+		t.Fatalf("Seed pendaftaran ditolak failed: %v", err)
+	}
+
+	// Panggil endpoint pembersihan PDP via admin
+	reqPurge := httptest.NewRequest("POST", "/api/v1/pendaftaran/purge-ditolak", nil)
+	reqPurge.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recPurge := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPurge, reqPurge)
+
+	if recPurge.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for purge-ditolak, got %d: %s", recPurge.Code, recPurge.Body.String())
+	}
+
+	// Verifikasi di DB: data pendaftaran ditolak > 30 hari telah terhapus
+	var exists bool
+	_ = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pendaftaran_anggota WHERE id = $1);", pendaftaranID).Scan(&exists)
+	if exists {
+		t.Errorf("PDP RETENTION VIOLATION: Berkas pendaftaran ditolak > 30 hari seharusnya terhapus, tetapi masih ditemukan di DB")
+	}
+}
+
+
 
 

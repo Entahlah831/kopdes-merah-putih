@@ -615,3 +615,30 @@ func detectMIMEType(data []byte) string {
 	}
 	return http.DetectContentType(data)
 }
+
+// HandlePurgeRejectedPendaftaran menjalankan pembersihan PII data pendaftaran ditolak > 30 hari (UU 27/2022 PDP)
+func (h *PendaftaranHandler) HandlePurgeRejectedPendaftaran(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	var purgedCount int
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "SELECT fn_purge_rejected_pendaftaran_pdp($1, 30);", claims.KoperasiID).Scan(&purgedCount)
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal menjalankan pembersihan berkas: %v", err))
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"jumlah_dibersihkan": purgedCount,
+		"masa_retensi_hari":  30,
+		"pesan":              fmt.Sprintf("Pembersihan data pribadi (UU 27/2022 PDP) selesai: %d berkas pendaftaran ditolak dihapus permanen.", purgedCount),
+	})
+}

@@ -33,37 +33,28 @@ Sistem kini memenuhi standar keamanan enterprise, multi-tenancy aman tingkat dat
 
 ---
 
-## 3. KEPUTUSAN MANUSIA DIPERLUKAN (Decisions Required)
+## 3. KEPUTUSAN RESMI MANAJEMEN & KLIEN (Final Decisions Adopted)
 
-Meskipun sistem backend telah memiliki proteksi teknis berlapis, parameter kebijakan berikut **wajib diputuskan oleh Pengurus / Pemilik Proyek Koperasi**:
+Seluruh 5 parameter kebijakan telah ditetapkan secara resmi oleh Ketua Koperasi dan Klien:
 
-### 1. Kebijakan Rekening & QRIS Perorangan Pengurus vs Badan Hukum
-- **Kondisi Teknis Saat Ini**: Secara *default*, sistem di lingkungan produksi **MENOLAK** pendaftaran rekening settlement QRIS atas nama pribadi/perorangan pengurus (`is_atas_nama_badan_hukum = false`), sesuai regulasi Bank Indonesia dan prinsip tata kelola koperasi.
-- **Pilihan Keputusan**:
-  - *Opsi A (Direkomendasikan)*: Koperasi wajib menunggu terbitnya NIB dan Rekening Bank atas nama Koperasi (Badan Hukum) sebelum menerima transaksi QRIS.
-  - *Opsi B (Pilot Transisi)*: Aktifkan `ALLOW_PERSONAL_PAYMENT_PILOT=true` pada `.env` dengan batasan transaksi harian ketat (misal maksimal Rp 5.000.000/hari) selama koperasi dalam proses pengesahan Akta Pendirian di Kemenkumham.
+### 1. Kebijakan Rekening & QRIS Perorangan Pengurus (DISETUJUI)
+- **Keputusan**: Mengizinkan penggunaan rekening dan QRIS statis atas nama pengurus koperasi. Admin koperasi mengunggah gambar/payload QRIS statis pengurus ke sistem melalui endpoint `/api/v1/koperasi/rekening-qris`.
+- **Konfigurasi Aktif**: `ALLOW_PERSONAL_PAYMENT_PILOT=true` pada `.env` dan konfigurasi backend.
 
-### 2. Aktivasi Fitur QRIS Dinamis (Auto-Lock Nominal)
-- **Kondisi Teknis Saat Ini**: Fitur QRIS dinamis dikunci di balik flag `QRIS_DYNAMIC_ENABLED=false` untuk mencegah penolakan sistemik oleh aplikasi perbankan (BCA, Mandiri, BRI, GoPay, OVO, ShopeePay) akibat modifikasi Tag 54/55-57 pada payload statis yang belum diuji di lapangan.
-- **Pilihan Keputusan**:
-  - Lakukan checklist pengujian lapangan di 5 aplikasi perbankan/e-wallet berbeda sesuai panduan [docs/QRIS_UJI_LAPANGAN.md](file:///c:/Users/12/kopdes-merah-putih/docs/QRIS_UJI_LAPANGAN.md).
-  - Hanya ubah `QRIS_DYNAMIC_ENABLED=true` setelah pengujian lapangan di atas tervalidasi 100% berhasil tanpa error *"Kode QR Tidak Dikenal"*.
+### 2. Status Fitur QRIS Dinamis (DINONAKTIFKAN — QRIS STATIS + KODE UNIK AKTIF)
+- **Keputusan**: Fitur QRIS dinamis auto-lock dinonaktifkan sementara. Transaksi operasional koperasi sepenuhnya mengandalkan alokasi QRIS Statis dengan pencocokan 3-digit kode unik kriptografis (`nominal_total = nominal_dasar + kode_unik`).
+- **Konfigurasi Aktif**: `QRIS_DYNAMIC_ENABLED=false` pada `.env`.
 
-### 3. Ambang Persetujuan Ganda (Dual Control / Maker-Checker Transaksi Finansial)
-- **Kondisi Teknis Saat Ini**: Sistem telah melarang verifikator menyetujui transaksi yang dibuat oleh dirinya sendiri (*Maker-Checker*). Namun, untuk transaksi nominal sangat besar, belum ditetapkan ambang batas persetujuan berjenjang.
-- **Pilihan Keputusan**:
-  - Tetapkan ambang nominal (misalnya: transaksi di atas **Rp 5.000.000**) yang mewajibkan persetujuan dua pejabat koperasi sekaligus (Bendahara **DAN** Ketua).
+### 3. Persetujuan Ganda (Dual Control / Maker-Checker Transaksi Finansial) (DISETUJUI)
+- **Keputusan**: Menerapkan prinsip *Dual Control* di mana pemohon dilarang menyetujui transaksi sendiri (*Maker-Checker*). Transaksi mutasi keuangan dan pendaftaran anggota wajib diverifikasi oleh pihak berwenang (Admin/Pengurus).
 
-### 4. Kebijakan Retensi Data Pribadi (UU 27/2022 PDP)
-- **Kondisi Teknis Saat Ini**: Data identitas KTP dan foto KYC disimpan dalam format terenkripsi AES-256-GCM.
-- **Pilihan Keputusan**:
-  - Tentukan jangka waktu penyimpanan data bagi pendaftar yang **ditolak** atau anggota yang **mengundurkan diri**:
-    - Apakah data dihapus permanen (*crypto-shredding*) setelah **30 hari**, atau disimpan selama **5 tahun** sebagai arsip kepatuhan keuangan UU Perkoperasian?
+### 4. Kebijakan Retensi Data Pribadi UU 27/2022 PDP (DITETAPKAN 30 HARI)
+- **Keputusan**: Berkas foto KTP/KYC dan data pendaftaran yang berstatus `'ditolak'` disimpan paling lama **30 hari**. Setelah 30 hari, data pribadi wajib dihapus permanen (*crypto-shredding*) untuk melindungi hak privasi warga.
+- **Implementasi Database**: Fungsi `fn_purge_rejected_pendaftaran_pdp(koperasi_id, 30)` dan endpoint `POST /api/v1/pendaftaran/purge-ditolak`.
 
-### 5. Spesifikasi Resmi Integrasi SIMKOPDES Kemenkop UKM
-- **Kondisi Teknis Saat Ini**: Modul pelaporan SIMKOPDES diimplementasikan sebagai *interface contract* dan *mock stub* untuk mencegah kesalahan logika akibat mengarang payload tanpa regulasi resmi.
-- **Pilihan Keputusan**:
-  - Dapatkan dokumen spesifikasi resmi API SIMKOPDES (OpenAPI/Swagger atau format XML/JSON) dari Dinas Koperasi / Kementerian Koperasi dan UKM sebelum menghubungkan konektor jaringan secara langsung.
+### 5. Pelaporan SIMKOPDES Kemenkop UKM (DIDE-SCOPE — FOKUS LOKAL SATU CABANG)
+- **Keputusan**: Koperasi desa beroperasi secara mandiri dan lokal pada satu kantor cabang yang telah disepakati (ACC) dengan klien. Integrasi jaringan dan sinkronisasi nasional SIMKOPDES dinonaktifkan sepenuhnya.
+- **Implementasi Database**: Migrasi `000009_local_scope_and_pdp_retention.up.sql` mendrop tabel `sinkronisasi_simkopdes`, merampingkan skema database menjadi 64 tabel dasar terproteksi RLS lokal.
 
 ---
 

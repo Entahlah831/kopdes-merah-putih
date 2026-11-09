@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1709,4 +1710,328 @@ func TestS3_Deployment_Hardening_And_CORS(t *testing.T) {
 		t.Errorf("Expected failure when payload exceeds BodyLimit, got status 200")
 	}
 }
+
+func TestP1_1_Pendaftaran_KYC_MakerChecker_And_KasMutasi(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	// 1. Pendaftaran Anggota Baru (Calon Anggota)
+	nikInput := "3201123456780001"
+	regBody, _ := json.Marshal(handlers.AjukanPendaftaranRequest{
+		NIK:          nikInput,
+		NamaLengkap:  "Budi Santoso",
+		TempatLahir:  "Bogor",
+		TanggalLahir: "1990-05-15",
+		JenisKelamin: "L",
+		AlamatKTP:    "Jl. Raya Desa No. 10",
+		Pekerjaan:    "Petani",
+	})
+
+	reqReg := httptest.NewRequest("POST", "/api/v1/pendaftaran", bytes.NewReader(regBody))
+	reqReg.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqReg.Header.Set("Content-Type", "application/json")
+	recReg := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recReg, reqReg)
+
+	if recReg.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for Pendaftaran, got %d: %s", recReg.Code, recReg.Body.String())
+	}
+
+	var resReg struct {
+		Data struct {
+			PendaftaranID uuid.UUID `json:"pendaftaran_id"`
+			NoRegistrasi  string    `json:"no_registrasi"`
+			Status        string    `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recReg.Body.Bytes(), &resReg); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	pendaftaranID := resReg.Data.PendaftaranID
+	if pendaftaranID == uuid.Nil || !strings.HasPrefix(resReg.Data.NoRegistrasi, "REG") {
+		t.Fatalf("Invalid pendaftaran response data: %+v", resReg.Data)
+	}
+
+	// Verifikasi di DB: NIK tersimpan terenkripsi dengan AES-256-GCM (prefix v1:k1:) dan hash blind index
+	ctx := context.Background()
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Failed to acquire connection: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	var (
+		dbNikEnkripsi []byte
+		dbNikHash     string
+	)
+	err = conn.QueryRow(ctx, "SELECT nik_enkripsi, nik_hash FROM pendaftaran_anggota WHERE id = $1", pendaftaranID).Scan(&dbNikEnkripsi, &dbNikHash)
+	if err != nil {
+		t.Fatalf("Failed to query pendaftaran from DB: %v", err)
+	}
+
+	if !strings.HasPrefix(string(dbNikEnkripsi), "v1:k1:") {
+		t.Errorf("SECURITY DEFECT: nik_enkripsi must have version/keyID prefix 'v1:k1:', got %s", string(dbNikEnkripsi))
+	}
+	if dbNikHash == nikInput {
+		t.Errorf("SECURITY DEFECT: nik_hash must be a blind index HMAC, not plain NIK")
+	}
+
+	// 2. Uji Duplikasi NIK (Wajib 409 Conflict)
+	reqDup := httptest.NewRequest("POST", "/api/v1/pendaftaran", bytes.NewReader(regBody))
+	reqDup.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqDup.Header.Set("Content-Type", "application/json")
+	recDup := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recDup, reqDup)
+
+	if recDup.Code != http.StatusConflict {
+		t.Errorf("Expected 409 Conflict for duplicate NIK, got %d: %s", recDup.Code, recDup.Body.String())
+	}
+
+	// 3. Upload Dokumen KYC
+	// 3a. Tolak file palsu / bukan image nyata (magic bytes mismatch)
+	var bFake bytes.Buffer
+	wFake := multipart.NewWriter(&bFake)
+	_ = wFake.WriteField("jenis_dokumen", "ktp")
+	partFake, _ := wFake.CreateFormFile("file", "fake.jpg")
+	_, _ = partFake.Write([]byte("INI_BUKAN_GAMBAR_ASLI_TETAPI_TEKS_BIASA"))
+	_ = wFake.Close()
+
+	reqFakeDoc := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/dokumen", pendaftaranID), &bFake)
+	reqFakeDoc.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqFakeDoc.Header.Set("Content-Type", wFake.FormDataContentType())
+	recFakeDoc := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recFakeDoc, reqFakeDoc)
+
+	if recFakeDoc.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for fake JPEG without magic bytes, got %d: %s", recFakeDoc.Code, recFakeDoc.Body.String())
+	}
+
+	// 3b. Sukses upload file JPEG valid dengan header magic bytes
+	var bValid bytes.Buffer
+	wValid := multipart.NewWriter(&bValid)
+	_ = wValid.WriteField("jenis_dokumen", "ktp")
+	partValid, _ := wValid.CreateFormFile("file", "ktp_asli.jpg")
+	// Header JPEG valid (FF D8 FF E0 ...)
+	validJPEG := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x60}
+	_, _ = partValid.Write(validJPEG)
+	_ = wValid.Close()
+
+	reqValidDoc := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/dokumen", pendaftaranID), &bValid)
+	reqValidDoc.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqValidDoc.Header.Set("Content-Type", wValid.FormDataContentType())
+	recValidDoc := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recValidDoc, reqValidDoc)
+
+	if recValidDoc.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for valid JPEG KYC upload, got %d: %s", recValidDoc.Code, recValidDoc.Body.String())
+	}
+
+	// 4. Anti-IDOR & Masking NIK
+	// 4a. Buat user lain (Anggota B)
+	otherUserID := uuid.New()
+	otherEmail := fmt.Sprintf("other_%s@kopdes.id", uuid.New().String()[:8])
+	otherHash := security.HashBlindIndex(otherEmail, []byte(env.Config.BlindIndexSecret))
+	otherPwdHash, _ := security.HashPassword("OtherPass123!")
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, err = conn.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Other User');
+	`, otherUserID, []byte("enkripsi"), otherHash, otherPwdHash)
+	if err != nil {
+		t.Fatalf("Failed to seed other user: %v", err)
+	}
+
+	var roleAnggotaID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'anggota'").Scan(&roleAnggotaID)
+	_, _ = conn.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id, koperasi_id)
+		VALUES ($1, $2, $3);
+	`, otherUserID, roleAnggotaID, env.KoperasiID)
+
+	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+
+	bodyOtherLogin, _ := json.Marshal(handlers.LoginRequest{Email: otherEmail, Password: "OtherPass123!"})
+	reqOtherLogin := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyOtherLogin))
+	recOtherLogin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recOtherLogin, reqOtherLogin)
+	var resOtherLogin struct {
+		Data handlers.LoginResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recOtherLogin.Body.Bytes(), &resOtherLogin)
+	otherToken := resOtherLogin.Data.AccessToken
+
+	// User B mencoba mengakses pendaftaran milik User A -> Wajib 404 (Anti-IDOR)
+	reqIDOR := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pendaftaran/%s", pendaftaranID), nil)
+	reqIDOR.Header.Set("Authorization", "Bearer "+otherToken)
+	recIDOR := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recIDOR, reqIDOR)
+
+	if recIDOR.Code != http.StatusNotFound {
+		t.Errorf("SECURITY DEFECT (IDOR): User B should NOT be able to view User A's pendaftaran, expected 404, got %d", recIDOR.Code)
+	}
+
+	// User A membaca pendaftarannya sendiri -> 200 OK dengan NIK dimasking (3201********0001)
+	reqSelf := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pendaftaran/%s", pendaftaranID), nil)
+	reqSelf.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recSelf := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSelf, reqSelf)
+
+	if recSelf.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for own pendaftaran, got %d: %s", recSelf.Code, recSelf.Body.String())
+	}
+
+	var resSelf struct {
+		Data struct {
+			NIKMasked string `json:"nik_masked"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recSelf.Body.Bytes(), &resSelf)
+	if resSelf.Data.NIKMasked != "3201********0001" {
+		t.Errorf("SECURITY DEFECT: Expected masked NIK '3201********0001', got '%s'", resSelf.Data.NIKMasked)
+	}
+
+	// 5. Maker-Checker Verifikasi Pendaftaran
+	// 5a. Pemohon mencoba memverifikasi pendaftarannya sendiri -> Wajib 403 Forbidden
+	bodyVerifSelf, _ := json.Marshal(handlers.VerifikasiPendaftaranRequest{
+		Status:           "disetujui",
+		CatatanPerbaikan: "Verifikasi sendiri",
+	})
+	reqVerifSelf := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/verifikasi", pendaftaranID), bytes.NewReader(bodyVerifSelf))
+	reqVerifSelf.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqVerifSelf.Header.Set("Content-Type", "application/json")
+	recVerifSelf := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifSelf, reqVerifSelf)
+
+	if recVerifSelf.Code != http.StatusForbidden {
+		t.Errorf("SECURITY DEFECT (Maker-Checker): Applicant must NOT be able to verify own pendaftaran, expected 403, got %d", recVerifSelf.Code)
+	}
+
+	// 5b. Admin memverifikasi pendaftaran -> 200 OK & nomor anggota terbuat aman konkurensi
+	bodyVerifAdmin, _ := json.Marshal(handlers.VerifikasiPendaftaranRequest{
+		Status:           "disetujui",
+		CatatanPerbaikan: "Dokumen KTP valid dan lengkap",
+	})
+	reqVerifAdmin := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/verifikasi", pendaftaranID), bytes.NewReader(bodyVerifAdmin))
+	reqVerifAdmin.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqVerifAdmin.Header.Set("Content-Type", "application/json")
+	recVerifAdmin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifAdmin, reqVerifAdmin)
+
+	if recVerifAdmin.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for admin verification, got %d: %s", recVerifAdmin.Code, recVerifAdmin.Body.String())
+	}
+
+	var resVerif struct {
+		Data struct {
+			Status    string `json:"status"`
+			NoAnggota string `json:"no_anggota"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recVerifAdmin.Body.Bytes(), &resVerif)
+	if !strings.HasPrefix(resVerif.Data.NoAnggota, "ANG") {
+		t.Errorf("Expected valid no_anggota starting with 'ANG', got '%s'", resVerif.Data.NoAnggota)
+	}
+
+	// 6. Kas Mutasi List Endpoint (P1-1)
+	reqKas := httptest.NewRequest("GET", "/api/v1/kas/mutasi", nil)
+	reqKas.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recKas := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recKas, reqKas)
+
+	if recKas.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK for kas mutasi list, got %d: %s", recKas.Code, recKas.Body.String())
+	}
+}
+
+func TestP1_4_Operasional_Metrics_And_Idempotency(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	// 1. Uji Endpoint Prometheus Metrics (GET /metrics)
+	reqMetrics := httptest.NewRequest("GET", "/metrics", nil)
+	recMetrics := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recMetrics, reqMetrics)
+
+	if recMetrics.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /metrics, got %d", recMetrics.Code)
+	}
+
+	bodyMetrics := recMetrics.Body.String()
+	requiredMetrics := []string{
+		"kopdes_uptime_seconds",
+		"kopdes_pembayaran_antrean_verifikasi",
+		"kopdes_pembayaran_slot_kode_unik_aktif",
+		"kopdes_job_gagal_total",
+		"kopdes_partisi_tersisa",
+	}
+
+	for _, m := range requiredMetrics {
+		if !strings.Contains(bodyMetrics, m) {
+			t.Errorf("Prometheus metrics missing expected metric '%s'", m)
+		}
+	}
+
+	// 2. Uji Idempotency-Key pada POST /api/v1/pembayaran/qris
+	billID := env.CreateBill(t, env.AnggotaID, 85000)
+	bodyPay, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID},
+	})
+
+	idempKey := fmt.Sprintf("idemp-test-%d", time.Now().UnixNano())
+
+	// Permintaan Pertama
+	reqPay1 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay))
+	reqPay1.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay1.Header.Set("Content-Type", "application/json")
+	reqPay1.Header.Set("Idempotency-Key", idempKey)
+	recPay1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPay1, reqPay1)
+
+	if recPay1.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for first payment, got %d: %s", recPay1.Code, recPay1.Body.String())
+	}
+
+	var res1 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	if err := json.Unmarshal(recPay1.Body.Bytes(), &res1); err != nil {
+		t.Fatalf("Parse response 1 failed: %v", err)
+	}
+
+	// Permintaan Kedua dengan Idempotency-Key yang identik
+	reqPay2 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay))
+	reqPay2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay2.Header.Set("Content-Type", "application/json")
+	reqPay2.Header.Set("Idempotency-Key", idempKey)
+	recPay2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPay2, reqPay2)
+
+	if recPay2.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for idempotent replay, got %d: %s", recPay2.Code, recPay2.Body.String())
+	}
+
+	var res2 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	if err := json.Unmarshal(recPay2.Body.Bytes(), &res2); err != nil {
+		t.Fatalf("Parse response 2 failed: %v", err)
+	}
+
+	// Pembayaran ID dan NoPembayaran harus identik murni (idempoten)
+	if res1.Data.PembayaranID != res2.Data.PembayaranID {
+		t.Errorf("IDEMPOTENCY FAILED: PembayaranID differs: %s vs %s", res1.Data.PembayaranID, res2.Data.PembayaranID)
+	}
+	if res1.Data.NoPembayaran != res2.Data.NoPembayaran {
+		t.Errorf("IDEMPOTENCY FAILED: NoPembayaran differs: %s vs %s", res1.Data.NoPembayaran, res2.Data.NoPembayaran)
+	}
+}
+
+
 

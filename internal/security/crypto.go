@@ -223,6 +223,20 @@ func CheckPassword(password, hash string) bool {
 	return err == nil
 }
 
+// GenesisHash merepresentasikan hash awal (64 karakter nol) untuk record pertama pada rantai append-only
+const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// ComputeHashChain menghitung SHA-256 hash berantai: SHA-256(prev_hash || payload)
+func ComputeHashChain(prevHash string, payload []byte) string {
+	if len(prevHash) != 64 {
+		prevHash = GenesisHash
+	}
+	h := sha256.New()
+	h.Write([]byte(prevHash))
+	h.Write(payload)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // RedactDSN menyamarkan password pada string DSN/URL koneksi database agar tidak bocor di log
 func RedactDSN(dsn string) string {
 	u, err := url.Parse(dsn)

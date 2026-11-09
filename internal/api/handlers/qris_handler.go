@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,11 +20,18 @@ import (
 	"github.com/kopdes/merah-putih/internal/qris"
 )
 
+type IdempotentEntry struct {
+	Response  BuatQRISResponse
+	CreatedAt time.Time
+}
+
 type QRISHandler struct {
 	pool                      *pgxpool.Pool
 	qrisSecret                []byte
 	dynamicQRISEnabled        bool
 	allowPersonalPaymentPilot bool
+	idempotencyMu             sync.RWMutex
+	idempotencyCache          map[string]IdempotentEntry
 }
 
 func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
@@ -36,6 +44,7 @@ func NewQRISHandlerWithConfig(pool *pgxpool.Pool, qrisSecret []byte, dynamicQRIS
 		qrisSecret:                qrisSecret,
 		dynamicQRISEnabled:        dynamicQRISEnabled,
 		allowPersonalPaymentPilot: allowPersonalPaymentPilot,
+		idempotencyCache:          make(map[string]IdempotentEntry),
 	}
 }
 
@@ -102,6 +111,19 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 	if !ok || claims.KoperasiID == uuid.Nil {
 		response.Unauthorized(w, "Konteks tenant koperasi tidak valid")
 		return
+	}
+
+	// Idempotency-Key support (P1-4)
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey != "" {
+		cacheKey := fmt.Sprintf("%s:%s", claims.UserID, idempotencyKey)
+		h.idempotencyMu.RLock()
+		cached, exists := h.idempotencyCache[cacheKey]
+		h.idempotencyMu.RUnlock()
+		if exists && time.Since(cached.CreatedAt) < 15*time.Minute {
+			response.JSON(w, http.StatusCreated, cached.Response)
+			return
+		}
 	}
 
 	// 1. Kumpulkan seluruh ID tagihan yang diminta dan deduplikasi
@@ -400,7 +422,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	response.JSON(w, http.StatusCreated, BuatQRISResponse{
+	resObj := BuatQRISResponse{
 		PembayaranID:       res.PembayaranID,
 		NoPembayaran:       noPembayaran,
 		KodeUnik:           res.KodeUnikTerpilih,
@@ -414,7 +436,28 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		NMID:               nmid,
 		BerlakuSampai:      res.BerlakuSampai,
 		SisaWaktuDetik:     sisaDetik,
-	})
+	}
+
+	if idempotencyKey != "" {
+		cacheKey := fmt.Sprintf("%s:%s", claims.UserID, idempotencyKey)
+		h.idempotencyMu.Lock()
+		if h.idempotencyCache == nil {
+			h.idempotencyCache = make(map[string]IdempotentEntry)
+		}
+		if len(h.idempotencyCache) > 1000 {
+			for k := range h.idempotencyCache {
+				delete(h.idempotencyCache, k)
+				break
+			}
+		}
+		h.idempotencyCache[cacheKey] = IdempotentEntry{
+			Response:  resObj,
+			CreatedAt: time.Now(),
+		}
+		h.idempotencyMu.Unlock()
+	}
+
+	response.JSON(w, http.StatusCreated, resObj)
 }
 
 // HandleGetPembayaranStatus memeriksa status terkini pembayaran QRIS

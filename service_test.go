@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kopdes "github.com/kopdes/merah-putih"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 func getTestPool(t testing.TB) *pgxpool.Pool {
@@ -633,3 +635,143 @@ func TestAppendOnly_ProteksiTabelLog(t *testing.T) {
 		t.Logf("Operasi DELETE berhasil ditolak: %v", err)
 	})
 }
+
+func TestP1_2_Kapasitas_KodeUnik_4Digit_Dan_PeringatanSlot(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	fix := seedFixture(t, pool, "P12")
+	ctx := context.Background()
+	secret := []byte("secret-key-32-bytes-minimum-ok!!")
+
+	// 1. Uji alokasi QRIS 4 digit (1..9999 slot)
+	req4Digit := kopdes.BuatPembayaranQRISReq{
+		KoperasiID:         fix.KoperasiID,
+		PembayarUserID:     fix.UserID,
+		AnggotaID:          fix.AnggotaID,
+		MetodePembayaranID: fix.MetodeID,
+		RekeningQRISID:     fix.RekeningQRISID,
+		JenisTransaksi:     "iuran_bulanan",
+		NoPembayaran:       fmt.Sprintf("PAY-4DIGIT-%d", time.Now().UnixNano()),
+		NominalDasarRp:     50000,
+		TTL:                1 * time.Hour,
+		KodeUnikDigits:     4,
+	}
+
+	res, err := kopdes.BuatPembayaranQRISStatis(ctx, pool, secret, req4Digit)
+	if err != nil {
+		t.Fatalf("Gagal membuat pembayaran 4 digit: %v", err)
+	}
+
+	if res.KodeUnikTerpilih < 1 || res.KodeUnikTerpilih > 9999 {
+		t.Errorf("Kode unik 4 digit di luar jangkauan (1..9999): %d", res.KodeUnikTerpilih)
+	}
+
+	// 2. Uji metrik pemakaian slot (GetSlotUsage)
+	active, capacity, ratio, err := kopdes.GetSlotUsage(ctx, pool, fix.KoperasiID, fix.RekeningQRISID, 50000, 9999)
+	if err != nil {
+		t.Fatalf("GetSlotUsage error: %v", err)
+	}
+	if active < 1 {
+		t.Errorf("Expected active slots >= 1, got %d", active)
+	}
+	if capacity != 9999 {
+		t.Errorf("Expected capacity 9999, got %d", capacity)
+	}
+	if ratio <= 0 {
+		t.Errorf("Expected ratio > 0, got %f", ratio)
+	}
+
+	// 3. Uji kapasitas default 3 digit
+	active3, capacity3, _, err := kopdes.GetSlotUsage(ctx, pool, fix.KoperasiID, fix.RekeningQRISID, 50000, 999)
+	if err != nil {
+		t.Fatalf("GetSlotUsage 3 digit error: %v", err)
+	}
+	if capacity3 != 999 {
+		t.Errorf("Expected capacity 999, got %d", capacity3)
+	}
+	if active3 != active {
+		t.Errorf("Active count mismatch: %d vs %d", active3, active)
+	}
+}
+
+func TestP1_3_AppendOnly_HashChain_Dan_ProteksiTRUNCATE(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	fix := seedFixture(t, pool, "P13")
+	ctx := context.Background()
+
+	// 1. Uji proteksi BEFORE TRUNCATE trigger pada tabel append-only
+	t.Run("Proteksi_TRUNCATE_kas_mutasi", func(t *testing.T) {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("Acquire conn failed: %v", err)
+		}
+		defer conn.Release()
+
+		// Coba eksekusi TRUNCATE kas_mutasi
+		_, err = conn.Exec(ctx, "TRUNCATE kas_mutasi;")
+		if err == nil {
+			t.Fatalf("SECURITY VIOLATION: TRUNCATE kas_mutasi berhasil! Harusnya ditolak oleh trigger fn_prevent_truncate()")
+		}
+		if !strings.Contains(err.Error(), "TABEL APPEND-ONLY: Operasi TRUNCATE dilarang") {
+			t.Errorf("Expected prevent_truncate error, got: %v", err)
+		}
+		t.Logf("TRUNCATE berhasil dicegah oleh trigger: %v", err)
+	})
+
+	// 2. Uji pembentukan rantai hash kriptografis SHA-256 (Hash Chain)
+	t.Run("Verifikasi_Hash_Chain_Integritas", func(t *testing.T) {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("Acquire conn failed: %v", err)
+		}
+		defer conn.Release()
+
+		_, _ = conn.Exec(ctx, "RESET ROLE;")
+		_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", fix.KoperasiID.String())
+
+		// Genesis block (baris ke-1)
+		prev0 := security.GenesisHash
+		payload1 := []byte("audit_log_entry_1_create_tenant")
+		hash1 := security.ComputeHashChain(prev0, payload1)
+		id1 := uuid.New()
+
+		_, err = conn.Exec(ctx, `
+			INSERT INTO audit_log (
+				id, koperasi_id, user_id, nama_tabel, record_id, aksi,
+				data_baru, prev_hash, row_hash, created_by
+			) VALUES ($1, $2, $3, 'koperasi', $2, 'INSERT', '{"test": 1}', $4, $5, $3);
+		`, id1, fix.KoperasiID, fix.UserID, prev0, hash1)
+		if err != nil {
+			t.Fatalf("Gagal insert audit_log ke-1: %v", err)
+		}
+
+		// Baris ke-2 (prev_hash merujuk ke row_hash baris ke-1)
+		payload2 := []byte("audit_log_entry_2_update_config")
+		hash2 := security.ComputeHashChain(hash1, payload2)
+		id2 := uuid.New()
+
+		_, err = conn.Exec(ctx, `
+			INSERT INTO audit_log (
+				id, koperasi_id, user_id, nama_tabel, record_id, aksi,
+				data_baru, prev_hash, row_hash, created_by
+			) VALUES ($1, $2, $3, 'konfigurasi', $2, 'UPDATE', '{"test": 2}', $4, $5, $3);
+		`, id2, fix.KoperasiID, fix.UserID, hash1, hash2)
+		if err != nil {
+			t.Fatalf("Gagal insert audit_log ke-2: %v", err)
+		}
+
+		// Validasi integritas rantai
+		valid, count, brokenID, err := kopdes.VerifyHashChain(ctx, pool, "audit_log", fix.KoperasiID)
+		if err != nil || !valid {
+			t.Fatalf("VerifyHashChain gagal: valid=%v, brokenID=%v, err=%v", valid, brokenID, err)
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 verified rows, got %d", count)
+		}
+		t.Logf("Hash chain berhasil divalidasi penuh: %d baris terverifikasi tanpa anomali", count)
+	})
+}
+

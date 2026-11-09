@@ -78,12 +78,31 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 ---
 
 ### IV. KELENGKAPAN FUNGSI & LAPORAN
-- [ ] **P1-1. Endpoint KYC, Pendaftaran Anggota, Bukti Bayar, Mutasi Bank**
-- [ ] **P1-2. Kapasitas & Metrik Slot Kode Unik**
-- [ ] **P1-3. Append-Only Hash Chaining**
-- [ ] **P1-4. Operasional, Prometheus & Notifier**
-- [ ] **P1-5. Rekonsiliasi Cakupan Skema**
-- [ ] **Laporan Akhir: docs/AUDIT_REPORT.md**
+- [x] **P1-1. Endpoint KYC, Pendaftaran Anggota, Bukti Bayar, Mutasi Kas**
+  - [x] Handler pendaftaran calon anggota baru dengan enkripsi PII (AES-256-GCM + AAD) dan blind index HKDF per tenant.
+  - [x] Cek duplikasi NIK aktif (HTTP 409 Conflict).
+  - [x] Unggah dokumen KYC multipart form dengan deteksi magic-bytes (hanya JPEG/PNG/PDF), batas 5MB, SHA-256 checksum.
+  - [x] Anti-IDOR pada `GET /api/v1/pendaftaran/{id}` (404 jika bukan miliknya/bukan admin) dengan masking NIK (`3201********0001`).
+  - [x] Maker-checker verifikasi: pemohon dilarang menyetujui formulirnya sendiri (403), admin menyetujui menghasilkan `no_anggota` atomik aman konkurensi.
+  - [x] Endpoint `GET /api/v1/kas/mutasi` untuk membaca mutasi kas ringan ber-RLS.
+- [x] **P1-2. Kapasitas & Metrik Slot Kode Unik**
+  - [x] Migrasi `000008_kode_unik_configurable_digits`: mendukung 3 digit (1..999) atau 4 digit (1..9999).
+  - [x] Metrik pemakaian slot (`GetSlotUsage`) dan peringatan otomatis jika pemakaian melebihi 70%.
+  - [x] Penanganan respons error ramah `409 Conflict` saat kapasitas slot penuh.
+- [x] **P1-3. Append-Only Hash Chaining & Perlindungan TRUNCATE**
+  - [x] Migrasi `000007_append_only_hash_chain`: kolom `prev_hash`, `row_hash`, `ip_address`, `user_agent`, `request_id`.
+  - [x] Trigger `BEFORE TRUNCATE` pada tabel append-only `kas_mutasi`, `audit_log`, `pembayaran_verifikasi_log` (`fn_prevent_truncate`).
+  - [x] Generator hash chain SHA-256 `ComputeHashChain` dan fungsi pemeriksa integritas `VerifyHashChain`.
+- [x] **P1-4. Operasional, Prometheus & Notifier**
+  - [x] Header `Idempotency-Key` pada `POST /api/v1/pembayaran/qris`.
+  - [x] Endpoint metrik Prometheus `GET /metrics` (`kopdes_uptime_seconds`, `kopdes_pembayaran_antrean_verifikasi`, `kopdes_pembayaran_slot_kode_unik_aktif`, `kopdes_job_gagal_total`, `kopdes_partisi_tersisa`).
+  - [x] Interface `Notifier` dan `OutboxWorker` dengan pola `FOR UPDATE SKIP LOCKED`.
+  - [x] Skrip backup snapshot dan uji restore PITR di `scripts/backup.sh` dan `scripts/restore_test.sh`.
+- [x] **P1-5. Rekonsiliasi Cakupan Skema**
+  - [x] Dokumen rekonsiliasi `docs/SCOPE_RECONCILIATION.md` mendokumentasikan 65 tabel dasar + 8 partisi bulanan.
+- [x] **Laporan Akhir: docs/AUDIT_REPORT.md & docs/FRONTEND_GUIDE.md**
+  - [x] Panduan frontend UI/UX mobile-first di `docs/FRONTEND_GUIDE.md`.
+  - [x] Laporan audit komprehensif beserta keputusan manusia di `docs/AUDIT_REPORT.md`.
 
 ---
 

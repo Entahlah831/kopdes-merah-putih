@@ -109,12 +109,16 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	iuranH := handlers.NewIuranHandler(pool)
 	katalogH := handlers.NewKatalogHandler(pool)
 	healthH := handlers.NewHealthHandler(pool)
+	metricsH := handlers.NewMetricsHandler(pool)
+	pendaftaranH := handlers.NewPendaftaranHandler(pool, keyProvider, []byte(cfg.BlindIndexSecret))
+	kasH := handlers.NewKasHandler(pool)
 
 	mux := http.NewServeMux()
 
 	// --- 1. Public Endpoints ---
 	mux.HandleFunc("GET /healthz", healthH.HandleHealthz)
 	mux.HandleFunc("GET /readyz", healthH.HandleReadyz)
+	mux.HandleFunc("GET /metrics", metricsH.HandleMetrics)
 	mux.HandleFunc("POST /api/v1/auth/login", authH.HandleLogin)
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.HandleRefreshToken)
 	mux.HandleFunc("POST /api/v1/auth/revoke", authH.HandleRevokeToken)
@@ -127,12 +131,21 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("GET /api/v1/katalog/stok", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleListStokGudang)))
 	mux.Handle("GET /api/v1/katalog/harga", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleGetHargaAnggota)))
 
+	// Pendaftaran & KYC Calon Anggota (P1-1)
+	mux.Handle("POST /api/v1/pendaftaran", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleAjukanPendaftaran)))
+	mux.Handle("GET /api/v1/pendaftaran/{id}", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleGetPendaftaran)))
+	mux.Handle("POST /api/v1/pendaftaran/{id}/dokumen", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleUploadDokumenPendaftaran)))
+
 	// --- 3. Operator / Pengurus Endpoints (RBAC Guard) ---
 	// Pemisahan izin: pengawas & operator hanya read-only antrean/tunggakan, verifikasi & generate dibatasi
 	readOnlyAdminRoles := []string{"admin", "pengurus", "operator", "pengawas", "bendahara", "ketua"}
 	pembayaranVerifikasiRoles := []string{"admin", "pengurus", "bendahara", "ketua"}
 	iuranGenerateRoles := []string{"admin", "pengurus", "bendahara"}
+	pendaftaranVerifikasiRoles := []string{"admin", "pengurus", "ketua", "sekretaris"}
 
+	mux.Handle("POST /api/v1/pendaftaran/{id}/verifikasi", authMw.RequireAuth(
+		middleware.RequireRoles(pendaftaranVerifikasiRoles...)(http.HandlerFunc(pendaftaranH.HandleVerifikasiPendaftaran)),
+	))
 	mux.Handle("GET /api/v1/pembayaran/antrean", authMw.RequireAuth(
 		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(qrisH.HandleListAntreanVerifikasi)),
 	))
@@ -144,6 +157,9 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	))
 	mux.Handle("GET /api/v1/iuran/menunggak", authMw.RequireAuth(
 		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(iuranH.HandleListMenunggak)),
+	))
+	mux.Handle("GET /api/v1/kas/mutasi", authMw.RequireAuth(
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(kasH.HandleListKasMutasi)),
 	))
 
 	// --- 4. Admin Koperasi QRIS Management (PERLU VERIFIKASI) ---

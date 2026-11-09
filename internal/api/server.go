@@ -82,6 +82,17 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(iuranH.HandleListMenunggak)),
 	))
 
+	// --- 4. Admin Koperasi QRIS Management (PADG BI 21/18/PADG/2019) ---
+	mux.Handle("POST /api/v1/koperasi/rekening-qris", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminDaftarRekeningQRIS)),
+	))
+	mux.Handle("GET /api/v1/koperasi/rekening-qris", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminListRekeningQRIS)),
+	))
+	mux.Handle("DELETE /api/v1/koperasi/rekening-qris/{id}", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminDeactivateRekeningQRIS)),
+	))
+
 	// Middleware Pipeline Global (OWASP Headers -> CORS -> Recovery -> RateLimit)
 	corsCfg := middleware.DefaultCORSConfig()
 	if len(cfg.AllowedOrigins) > 0 {

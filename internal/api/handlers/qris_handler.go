@@ -15,6 +15,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	db "github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/qris"
 )
 
 type QRISHandler struct {
@@ -38,16 +39,19 @@ type BuatQRISRequest struct {
 }
 
 type BuatQRISResponse struct {
-	PembayaranID     uuid.UUID `json:"pembayaran_id"`
-	NoPembayaran     string    `json:"no_pembayaran"`
-	KodeUnik         int       `json:"kode_unik"`
-	NominalDasarRp   int64     `json:"nominal_dasar"`
-	NominalTotalRp   int64     `json:"nominal_total"`
-	QRISPayload      string    `json:"qris_payload"`
-	NamaMerchant     string    `json:"nama_merchant"`
-	NMID             string    `json:"nmid"`
-	BerlakuSampai    time.Time `json:"berlaku_sampai"`
-	SisaWaktuDetik   int64     `json:"sisa_waktu_detik"`
+	PembayaranID       uuid.UUID `json:"pembayaran_id"`
+	NoPembayaran       string    `json:"no_pembayaran"`
+	KodeUnik           int       `json:"kode_unik"`
+	NominalDasarRp     int64     `json:"nominal_dasar"`
+	NominalTotalRp     int64     `json:"nominal_total"`
+	QRISPayload        string    `json:"qris_payload"`
+	QRISPayloadDinamis string    `json:"qris_payload_dinamis,omitempty"`
+	QRISPayloadStatis  string    `json:"qris_payload_statis,omitempty"`
+	IsAutoLockNominal  bool      `json:"is_autolock_nominal"`
+	NamaMerchant       string    `json:"nama_merchant"`
+	NMID               string    `json:"nmid"`
+	BerlakuSampai      time.Time `json:"berlaku_sampai"`
+	SisaWaktuDetik     int64     `json:"sisa_waktu_detik"`
 }
 
 // HandleBuatQRIS menghasilkan alokasi transaksi QRIS statis 3-digit anti-tabrakan
@@ -152,17 +156,29 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		sisaDetik = 0
 	}
 
+	// Generate QRIS Dinamis dengan Tag 54 Auto-Lock Nominal & Tag 62 Nomor Invoice
+	dynamicPayload, dynErr := qris.GenerateDynamicQRIS(qrisPayload, res.NominalTotalRp, noPembayaran)
+	finalPayload := qrisPayload
+	isAutoLock := false
+	if dynErr == nil {
+		finalPayload = dynamicPayload
+		isAutoLock = true
+	}
+
 	response.JSON(w, http.StatusCreated, BuatQRISResponse{
-		PembayaranID:   res.PembayaranID,
-		NoPembayaran:   noPembayaran,
-		KodeUnik:       res.KodeUnikTerpilih,
-		NominalDasarRp: req.NominalDasarRp,
-		NominalTotalRp: res.NominalTotalRp,
-		QRISPayload:    qrisPayload,
-		NamaMerchant:   namaMerchant,
-		NMID:           nmid,
-		BerlakuSampai:  res.BerlakuSampai,
-		SisaWaktuDetik: sisaDetik,
+		PembayaranID:       res.PembayaranID,
+		NoPembayaran:       noPembayaran,
+		KodeUnik:           res.KodeUnikTerpilih,
+		NominalDasarRp:     req.NominalDasarRp,
+		NominalTotalRp:     res.NominalTotalRp,
+		QRISPayload:        finalPayload,
+		QRISPayloadDinamis: dynamicPayload,
+		QRISPayloadStatis:  qrisPayload,
+		IsAutoLockNominal:  isAutoLock,
+		NamaMerchant:       namaMerchant,
+		NMID:               nmid,
+		BerlakuSampai:      res.BerlakuSampai,
+		SisaWaktuDetik:     sisaDetik,
 	})
 }
 
@@ -365,5 +381,245 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 		"pembayaran_id": pembayaranID,
 		"status":        "berhasil_diverifikasi",
 		"pesan":         "Verifikasi pembayaran berhasil dicatat ke jurnal append-only.",
+	})
+}
+
+type AdminDaftarRekeningQRISRequest struct {
+	NamaMerchant         string `json:"nama_merchant"`
+	NMID                 string `json:"nmid"`
+	NamaBankPJP          string `json:"nama_bank_pjp"`
+	NoRekeningSettlement string `json:"no_rekening_settlement"`
+	NamaPemilikRekening  string `json:"nama_pemilik_rekening"`
+	IsAtasNamaBadanHukum bool   `json:"is_atas_nama_badan_hukum"`
+	QRISPayloadStatis    string `json:"qris_payload_statis"`
+}
+
+type RekeningQRISItem struct {
+	ID                   uuid.UUID `json:"id"`
+	NamaMerchant         string    `json:"nama_merchant"`
+	NMID                 string    `json:"nmid"`
+	NamaBankPJP          string    `json:"nama_bank_pjp"`
+	NoRekeningSettlement string    `json:"no_rekening_settlement"`
+	NamaPemilikRekening  string    `json:"nama_pemilik_rekening"`
+	QRISPayloadStatis    string    `json:"qris_payload_statis"`
+	StatusAktif          bool      `json:"status_aktif"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+// HandleAdminDaftarRekeningQRIS mendaftarkan QRIS Statis resmi badan hukum koperasi
+func (h *QRISHandler) HandleAdminDaftarRekeningQRIS(w http.ResponseWriter, r *http.Request) {
+	var req AdminDaftarRekeningQRISRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "Format payload JSON tidak valid")
+		return
+	}
+
+	if req.NamaMerchant == "" {
+		response.BadRequest(w, "Nama merchant QRIS wajib diisi")
+		return
+	}
+	if req.NMID == "" {
+		response.BadRequest(w, "NMID wajib diisi (contoh: ID1020304050607)")
+		return
+	}
+	if req.NamaBankPJP == "" {
+		response.BadRequest(w, "Nama bank PJP wajib diisi (misal: Bank Mandiri, BRI, BNI, BCA)")
+		return
+	}
+	if req.NoRekeningSettlement == "" {
+		response.BadRequest(w, "Nomor rekening settlement penampung dana wajib diisi")
+		return
+	}
+	if req.NamaPemilikRekening == "" {
+		response.BadRequest(w, "Nama pemilik rekening wajib diisi")
+		return
+	}
+	if !req.IsAtasNamaBadanHukum {
+		response.BadRequest(w, "Sesuai regulasi PADG BI 21/18/PADG/2019, rekening merchant QRIS wajib atas nama badan hukum koperasi")
+		return
+	}
+	if req.QRISPayloadStatis == "" {
+		response.BadRequest(w, "Payload QRIS statis (string teks EMVCo) wajib diisi")
+		return
+	}
+
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Konteks tenant koperasi tidak valid")
+		return
+	}
+
+	ctx := r.Context()
+	var rekeningID uuid.UUID
+	var createdAt time.Time
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		// 1. Pastikan record penyedia_pembayaran default ada
+		var penyediaID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			INSERT INTO penyedia_pembayaran (kode, nama, tipe_integrasi)
+			VALUES ('qris_statis_manual', 'QRIS Statis Bank Indonesia', 'qris_statis_manual')
+			ON CONFLICT (kode) DO UPDATE SET nama = EXCLUDED.nama
+			RETURNING id;
+		`).Scan(&penyediaID)
+		if err != nil {
+			return fmt.Errorf("gagal inisialisasi penyedia pembayaran: %w", err)
+		}
+
+		// 2. Simpan atau perbarui rekening QRIS koperasi
+		err = tx.QueryRow(ctx, `
+			INSERT INTO rekening_qris_koperasi (
+				koperasi_id, penyedia_id, nama_merchant, nmid,
+				nama_bank_pjp, no_rekening_settlement, nama_pemilik_rekening,
+				is_atas_nama_badan_hukum, qris_payload_statis, status_aktif, created_by
+			) VALUES (
+				$1, $2, $3, $4,
+				$5, $6, $7,
+				true, $8, true, $9
+			)
+			ON CONFLICT (koperasi_id, nmid) DO UPDATE SET
+				nama_merchant = EXCLUDED.nama_merchant,
+				nama_bank_pjp = EXCLUDED.nama_bank_pjp,
+				no_rekening_settlement = EXCLUDED.no_rekening_settlement,
+				nama_pemilik_rekening = EXCLUDED.nama_pemilik_rekening,
+				qris_payload_statis = EXCLUDED.qris_payload_statis,
+				status_aktif = true,
+				updated_at = NOW()
+			RETURNING id, created_at;
+		`,
+			claims.KoperasiID, penyediaID, req.NamaMerchant, req.NMID,
+			req.NamaBankPJP, req.NoRekeningSettlement,
+			req.NamaPemilikRekening, req.QRISPayloadStatis,
+			claims.UserID,
+		).Scan(&rekeningID, &createdAt)
+		if err != nil {
+			return fmt.Errorf("gagal menyimpan rekening QRIS: %w", err)
+		}
+
+		// 3. Pastikan metode pembayaran 'qris_statis' aktif untuk koperasi ini
+		_, err = tx.Exec(ctx, `
+			INSERT INTO metode_pembayaran (
+				koperasi_id, penyedia_id, kode, nama,
+				butuh_kode_unik, butuh_verifikasi_manual, batas_waktu_menit, status_aktif
+			) VALUES (
+				$1, $2, 'qris_statis', 'QRIS Statis Badan Hukum',
+				true, true, 60, true
+			)
+			ON CONFLICT (koperasi_id, kode) DO UPDATE SET status_aktif = true;
+		`, claims.KoperasiID, penyediaID)
+		if err != nil {
+			return fmt.Errorf("gagal mengaktifkan metode pembayaran QRIS: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		response.InternalServerError(w, err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusCreated, map[string]interface{}{
+		"id":                      rekeningID,
+		"nama_merchant":           req.NamaMerchant,
+		"nmid":                    req.NMID,
+		"nama_bank_pjp":           req.NamaBankPJP,
+		"no_rekening_settlement":  req.NoRekeningSettlement,
+		"nama_pemilik_rekening":   req.NamaPemilikRekening,
+		"is_atas_nama_badan_hukum": true,
+		"status_aktif":            true,
+		"pesan":                   "Rekening QRIS statis badan hukum koperasi berhasil didaftarkan.",
+		"created_at":              createdAt,
+	})
+}
+
+// HandleAdminListRekeningQRIS menampilkan daftar rekening QRIS terdaftar milik koperasi
+func (h *QRISHandler) HandleAdminListRekeningQRIS(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Konteks tenant koperasi tidak valid")
+		return
+	}
+
+	ctx := r.Context()
+	var list []RekeningQRISItem
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, nama_merchant, nmid, nama_bank_pjp, no_rekening_settlement,
+			       nama_pemilik_rekening, qris_payload_statis, status_aktif, created_at
+			FROM rekening_qris_koperasi
+			WHERE koperasi_id = $1 AND deleted_at IS NULL
+			ORDER BY created_at DESC;
+		`, claims.KoperasiID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var it RekeningQRISItem
+			if err := rows.Scan(
+				&it.ID, &it.NamaMerchant, &it.NMID, &it.NamaBankPJP,
+				&it.NoRekeningSettlement, &it.NamaPemilikRekening,
+				&it.QRISPayloadStatis, &it.StatusAktif, &it.CreatedAt,
+			); err != nil {
+				return err
+			}
+			list = append(list, it)
+		}
+		return rows.Err()
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal mengambil data rekening QRIS: %v", err))
+		return
+	}
+
+	if list == nil {
+		list = []RekeningQRISItem{}
+	}
+
+	response.JSON(w, http.StatusOK, list)
+}
+
+// HandleAdminDeactivateRekeningQRIS menonaktifkan konfigurasi QRIS koperasi
+func (h *QRISHandler) HandleAdminDeactivateRekeningQRIS(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	targetID, err := uuid.Parse(idStr)
+	if err != nil {
+		response.BadRequest(w, "ID rekening QRIS tidak valid")
+		return
+	}
+
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Konteks tenant koperasi tidak valid")
+		return
+	}
+
+	ctx := r.Context()
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE rekening_qris_koperasi
+			SET status_aktif = false, updated_at = NOW()
+			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL;
+		`, targetID, claims.KoperasiID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errors.New("rekening QRIS tidak ditemukan atau sudah non-aktif")
+		}
+		return nil
+	})
+
+	if err != nil {
+		response.BadRequest(w, err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]string{
+		"pesan": "Rekening QRIS berhasil dinonaktifkan.",
 	})
 }

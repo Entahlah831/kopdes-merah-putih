@@ -1,12 +1,73 @@
-﻿# docker-compose.yml
 services:
+  # ============================================================================
+  # 1. DATABASE POSTGRESQL 16 (Multi-Tenant & Row Level Security)
+  # ============================================================================
   postgres:
     image: postgres:16-alpine
+    container_name: kopdes_postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: kopdes_dev_password
-      POSTGRES_DB: kopdes_db
+      POSTGRES_DB: ${DB_NAME:-kopdes_db}
+      POSTGRES_USER: ${DB_USER:-kopdes_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-kopdes_dev_password}
     ports:
-      - "5432:5432"
+      # Port di sisi host dapat diedit bebas melalui DB_PORT di .env (misal 5432 atau 5433)
+      - "${DB_PORT:-5432}:5432"
     volumes:
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      - kopdes_pgdata:/var/lib/postgresql/data
+      # Inisialisasi skema 76 tabel, fungsi UUID v7, trigger append-only, dan RLS secara otomatis
+      - ./db/migrations/000001_init_kopdes_schema.up.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kopdes_app} -d ${DB_NAME:-kopdes_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kopdes_net
+
+  # ============================================================================
+  # 2. BACKEND API KOPDES MERAH PUTIH (Golang High-Performance API)
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kopdes_api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PORT: ${APP_PORT:-8080}
+      APP_PORT: ${APP_PORT:-8080}
+      # Komunikasi internal Docker ke kontainer postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-kopdes_app}
+      DB_PASSWORD: ${DB_PASSWORD:-kopdes_dev_password}
+      DB_NAME: ${DB_NAME:-kopdes_db}
+      DB_SSLMODE: disable
+      DATABASE_URL: postgres://${DB_USER:-kopdes_app}:${DB_PASSWORD:-kopdes_dev_password}@postgres:5432/${DB_NAME:-kopdes_db}?sslmode=disable
+      # Kunci kriptografi dari file .env
+      JWT_SECRET: ${JWT_SECRET}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET}
+      AES_MASTER_KEY: ${AES_MASTER_KEY}
+      QRIS_SECRET: ${QRIS_SECRET}
+      # Kebijakan CORS
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
+    ports:
+      # Port HTTP API di sisi host mengikuti APP_PORT di .env (misal 8080, 3000, 5000)
+      - "${APP_PORT:-8080}:${APP_PORT:-8080}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kopdes_net
+
+networks:
+  kopdes_net:
+    driver: bridge
+
+volumes:
+  kopdes_pgdata:
+    driver: local

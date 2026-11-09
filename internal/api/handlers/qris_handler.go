@@ -31,12 +31,39 @@ func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
 	}
 }
 
+type UUIDSlice []uuid.UUID
+
+func (s *UUIDSlice) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if len(trimmed) == 0 || trimmed == "null" {
+		*s = nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var list []uuid.UUID
+		if err := json.Unmarshal(data, &list); err != nil {
+			return err
+		}
+		*s = list
+		return nil
+	}
+	var single uuid.UUID
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	*s = []uuid.UUID{single}
+	return nil
+}
+
 type BuatQRISRequest struct {
-	NominalDasarRp     int64     `json:"nominal_dasar"`
-	JenisTransaksi     string    `json:"jenis_transaksi"`
-	AnggotaID          uuid.UUID `json:"anggota_id,omitempty"`
-	MetodePembayaranID uuid.UUID `json:"metode_pembayaran_id,omitempty"`
-	RekeningQRISID     uuid.UUID `json:"rekening_qris_id,omitempty"`
+	NominalDasarRp        int64      `json:"nominal_dasar,omitempty"`
+	TagihanIuranIDs       UUIDSlice  `json:"tagihan_iuran_id,omitempty"`
+	TagihanIuranIDsPlural UUIDSlice  `json:"tagihan_iuran_ids,omitempty"`
+	PesananID             *uuid.UUID `json:"pesanan_id,omitempty"`
+	JenisTransaksi        string     `json:"jenis_transaksi,omitempty"`
+	AnggotaID             uuid.UUID  `json:"anggota_id,omitempty"`
+	MetodePembayaranID    uuid.UUID  `json:"metode_pembayaran_id,omitempty"`
+	RekeningQRISID        uuid.UUID  `json:"rekening_qris_id,omitempty"`
 }
 
 type BuatQRISResponse struct {
@@ -63,33 +90,85 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.NominalDasarRp <= 0 {
-		response.BadRequest(w, "Nominal dasar wajib lebih besar dari 0")
-		return
-	}
-
-	if req.JenisTransaksi == "" {
-		req.JenisTransaksi = "iuran_bulanan"
-	}
-
 	claims, ok := middleware.GetUserClaims(r.Context())
 	if !ok || claims.KoperasiID == uuid.Nil {
 		response.Unauthorized(w, "Konteks tenant koperasi tidak valid")
 		return
 	}
 
+	// 1. Kumpulkan seluruh ID tagihan yang diminta dan deduplikasi
+	var allTagihanIDs []uuid.UUID
+	allTagihanIDs = append(allTagihanIDs, req.TagihanIuranIDs...)
+	allTagihanIDs = append(allTagihanIDs, req.TagihanIuranIDsPlural...)
+
+	seenTagihan := make(map[uuid.UUID]bool)
+	var dedupTagihanIDs []uuid.UUID
+	for _, id := range allTagihanIDs {
+		if id != uuid.Nil && !seenTagihan[id] {
+			seenTagihan[id] = true
+			dedupTagihanIDs = append(dedupTagihanIDs, id)
+		}
+	}
+	allTagihanIDs = dedupTagihanIDs
+
+	// Wajib terikat minimal ke 1 tagihan atau 1 pesanan (anti arbitrary payment T1)
+	if len(allTagihanIDs) == 0 && req.PesananID == nil {
+		response.BadRequest(w, "Pembayaran wajib terikat pada minimal satu tagihan iuran atau pesanan")
+		return
+	}
+
 	ctx := r.Context()
 
-	// 1. Cari default rekening QRIS dan metode pembayaran jika tidak disertakan dalam request
+	if req.JenisTransaksi == "" {
+		if req.PesananID != nil {
+			req.JenisTransaksi = "pesanan_katalog"
+		} else {
+			req.JenisTransaksi = "iuran_bulanan"
+		}
+	}
+
+	// 2. Validasi anggota, rekening QRIS, metode pembayaran, dan hitung nominal_dasar dari tagihan/pesanan
 	var (
-		rekeningID     = req.RekeningQRISID
-		metodeID       = req.MetodePembayaranID
-		qrisPayload    string
-		namaMerchant   string
-		nmid           string
+		targetAnggotaID   uuid.UUID
+		rekeningID        = req.RekeningQRISID
+		metodeID          = req.MetodePembayaranID
+		qrisPayload       string
+		namaMerchant      string
+		nmid              string
+		totalNominalDasar int64
+		alokasiList       []kopdes.AlokasiReq
 	)
 
 	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		// Tentukan target AnggotaID: untuk peran anggota wajib murni dari identitas terautentikasi
+		if claims.Role == "anggota" {
+			err := tx.QueryRow(ctx, `
+				SELECT id FROM anggota
+				WHERE user_id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+				LIMIT 1;
+			`, claims.UserID, claims.KoperasiID).Scan(&targetAnggotaID)
+			if err != nil {
+				return errors.New("pengguna tidak terdaftar sebagai anggota aktif pada koperasi ini")
+			}
+		} else {
+			// Admin / pengurus membayar atas nama anggota
+			if req.AnggotaID != uuid.Nil {
+				targetAnggotaID = req.AnggotaID
+			} else if len(allTagihanIDs) > 0 {
+				_ = tx.QueryRow(ctx, `
+					SELECT anggota_id FROM tagihan_iuran WHERE id = $1 AND koperasi_id = $2
+				`, allTagihanIDs[0], claims.KoperasiID).Scan(&targetAnggotaID)
+			} else if req.PesananID != nil {
+				_ = tx.QueryRow(ctx, `
+					SELECT COALESCE(anggota_id, '00000000-0000-0000-0000-000000000000'::uuid) FROM pesanan WHERE id = $1 AND koperasi_id = $2
+				`, *req.PesananID, claims.KoperasiID).Scan(&targetAnggotaID)
+			}
+
+			if targetAnggotaID == uuid.Nil {
+				return errors.New("identitas anggota tujuan wajib ditentukan")
+			}
+		}
+		// Validasi rekening QRIS
 		if rekeningID == uuid.Nil {
 			err := tx.QueryRow(ctx, `
 				SELECT id, qris_payload_statis, nama_merchant, nmid
@@ -111,6 +190,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Validasi metode pembayaran
 		if metodeID == uuid.Nil {
 			err := tx.QueryRow(ctx, `
 				SELECT id FROM metode_pembayaran
@@ -121,6 +201,126 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("metode pembayaran QRIS tidak ditemukan: %w", err)
 			}
 		}
+
+		// Validasi tagihan iuran
+		for _, tagihanID := range allTagihanIDs {
+			var (
+				ownerAnggotaID uuid.UUID
+				sisaNominal    int64
+				statusTagihan  string
+			)
+			err := tx.QueryRow(ctx, `
+				SELECT anggota_id, (nominal_tagihan - nominal_terbayar)::bigint, status
+				FROM tagihan_iuran
+				WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+				FOR UPDATE;
+			`, tagihanID, claims.KoperasiID).Scan(&ownerAnggotaID, &sisaNominal, &statusTagihan)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("tagihan iuran %s tidak ditemukan", tagihanID)
+				}
+				return fmt.Errorf("gagal memeriksa tagihan iuran %s: %w", tagihanID, err)
+			}
+
+			if ownerAnggotaID != targetAnggotaID {
+				return fmt.Errorf("tagihan iuran %s bukan milik anggota yang bersangkutan", tagihanID)
+			}
+
+			if statusTagihan == "lunas" || sisaNominal <= 0 {
+				return fmt.Errorf("tagihan iuran %s sudah lunas", tagihanID)
+			}
+
+			// Cek apakah ada pembayaran aktif untuk tagihan ini
+			var hasActivePayment bool
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM pembayaran_alokasi pa
+					JOIN pembayaran p ON p.id = pa.pembayaran_id
+					WHERE pa.tagihan_iuran_id = $1
+					  AND pa.koperasi_id = $2
+					  AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+					  AND p.berlaku_sampai > NOW()
+					  AND p.deleted_at IS NULL
+				);
+			`, tagihanID, claims.KoperasiID).Scan(&hasActivePayment)
+			if err != nil {
+				return fmt.Errorf("gagal memeriksa status pembayaran tagihan: %w", err)
+			}
+			if hasActivePayment {
+				return fmt.Errorf("tagihan iuran %s sedang memiliki pembayaran aktif", tagihanID)
+			}
+
+			tID := tagihanID
+			alokasiList = append(alokasiList, kopdes.AlokasiReq{
+				JenisAlokasi:   "tagihan_iuran",
+				TagihanIuranID: &tID,
+				NominalAlokasi: sisaNominal,
+				UrutanAlokasi:  len(alokasiList) + 1,
+			})
+			totalNominalDasar += sisaNominal
+		}
+
+		// Validasi pesanan jika ada
+		if req.PesananID != nil {
+			var (
+				ownerAnggotaID uuid.UUID
+				pembeliUserID  uuid.UUID
+				totalAkhir     int64
+				statusPesanan  string
+			)
+			err := tx.QueryRow(ctx, `
+				SELECT COALESCE(anggota_id, '00000000-0000-0000-0000-000000000000'::uuid), pembeli_user_id, total_akhir::bigint, status
+				FROM pesanan
+				WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+				FOR UPDATE;
+			`, *req.PesananID, claims.KoperasiID).Scan(&ownerAnggotaID, &pembeliUserID, &totalAkhir, &statusPesanan)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("pesanan %s tidak ditemukan", *req.PesananID)
+				}
+				return fmt.Errorf("gagal memeriksa pesanan: %w", err)
+			}
+
+			if claims.Role == "anggota" && ownerAnggotaID != targetAnggotaID && pembeliUserID != claims.UserID {
+				return fmt.Errorf("pesanan %s bukan milik anggota yang bersangkutan", *req.PesananID)
+			}
+
+			if statusPesanan != "draft" && statusPesanan != "menunggu_pembayaran" {
+				return fmt.Errorf("pesanan %s tidak dalam status menunggu pembayaran", *req.PesananID)
+			}
+
+			var hasActivePayment bool
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM pembayaran_alokasi pa
+					JOIN pembayaran p ON p.id = pa.pembayaran_id
+					WHERE pa.pesanan_id = $1
+					  AND pa.koperasi_id = $2
+					  AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+					  AND p.berlaku_sampai > NOW()
+					  AND p.deleted_at IS NULL
+				);
+			`, *req.PesananID, claims.KoperasiID).Scan(&hasActivePayment)
+			if err != nil {
+				return fmt.Errorf("gagal memeriksa status pembayaran pesanan: %w", err)
+			}
+			if hasActivePayment {
+				return fmt.Errorf("pesanan %s sedang memiliki pembayaran aktif", *req.PesananID)
+			}
+
+			alokasiList = append(alokasiList, kopdes.AlokasiReq{
+				JenisAlokasi:   "pesanan",
+				PesananID:      req.PesananID,
+				NominalAlokasi: totalAkhir,
+				UrutanAlokasi:  len(alokasiList) + 1,
+			})
+			totalNominalDasar += totalAkhir
+		}
+
+		if totalNominalDasar <= 0 {
+			return errors.New("total nominal dasar tagihan/pesanan wajib lebih besar dari 0")
+		}
+
 		return nil
 	})
 
@@ -133,13 +333,14 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 	serviceReq := kopdes.BuatPembayaranQRISReq{
 		KoperasiID:         claims.KoperasiID,
 		PembayarUserID:     claims.UserID,
-		AnggotaID:          req.AnggotaID,
+		AnggotaID:          targetAnggotaID,
 		MetodePembayaranID: metodeID,
 		RekeningQRISID:     rekeningID,
 		JenisTransaksi:     req.JenisTransaksi,
 		NoPembayaran:       noPembayaran,
-		NominalDasarRp:     req.NominalDasarRp,
+		NominalDasarRp:     totalNominalDasar,
 		TTL:                1 * time.Hour,
+		Alokasi:            alokasiList,
 	}
 
 	res, err := kopdes.BuatPembayaranQRISStatis(ctx, h.pool, h.qrisSecret, serviceReq)
@@ -150,6 +351,23 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		}
 		response.InternalServerError(w, fmt.Sprintf("Gagal mengalokasikan QRIS: %v", err))
 		return
+	}
+
+	// Catat audit log jika pembayaran dibuat oleh admin atas nama anggota
+	if claims.Role != "anggota" {
+		auditData, _ := json.Marshal(map[string]interface{}{
+			"aksi_admin":             "bayar_atas_nama_anggota",
+			"admin_user_id":          claims.UserID.String(),
+			"target_anggota_id":      targetAnggotaID.String(),
+			"nominal_dasar":          totalNominalDasar,
+			"alokasi_count":          len(alokasiList),
+		})
+		_, _ = h.pool.Exec(ctx, `
+			INSERT INTO audit_log (
+				koperasi_id, user_id, nama_tabel, record_id, aksi,
+				data_baru, created_by
+			) VALUES ($1, $2, 'pembayaran', $3, 'INSERT', $4::jsonb, $2);
+		`, claims.KoperasiID, claims.UserID, res.PembayaranID, auditData)
 	}
 
 	sisaDetik := int64(time.Until(res.BerlakuSampai).Seconds())
@@ -170,7 +388,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		PembayaranID:       res.PembayaranID,
 		NoPembayaran:       noPembayaran,
 		KodeUnik:           res.KodeUnikTerpilih,
-		NominalDasarRp:     req.NominalDasarRp,
+		NominalDasarRp:     totalNominalDasar,
 		NominalTotalRp:     res.NominalTotalRp,
 		QRISPayload:        finalPayload,
 		QRISPayloadDinamis: dynamicPayload,

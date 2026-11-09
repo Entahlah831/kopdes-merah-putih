@@ -163,19 +163,22 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		t.Fatalf("seed roles error: %v", err)
 	}
 
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", koperasiID.String())
+
 	var roleAdminID, roleAnggotaID uuid.UUID
 	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'admin'").Scan(&roleAdminID)
 	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'anggota'").Scan(&roleAnggotaID)
 
 	if roleAdminID != uuid.Nil && roleAnggotaID != uuid.Nil {
-		_, _ = conn.Exec(ctx, `
+		_, err = conn.Exec(ctx, `
 			INSERT INTO user_roles (user_id, role_id, koperasi_id)
 			VALUES ($1, $2, $3), ($4, $5, $3)
 			ON CONFLICT (koperasi_id, user_id, role_id) DO NOTHING;
 		`, adminUserID, roleAdminID, koperasiID, anggotaUserID, roleAnggotaID)
+		if err != nil {
+			t.Fatalf("seed user_roles error: %v", err)
+		}
 	}
-
-	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", koperasiID.String())
 
 	// Anggota
 	nik := fmt.Sprintf("3201%012d", time.Now().UnixNano()%1000000000000)
@@ -221,11 +224,19 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 
 	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
 
-	// Generate JWT tokens
-	adminTok, _ := server.Router().(interface{
-		// Token manager is internal to server, but we can do login via HTTP to test!
-	})
-	_ = adminTok
+	loginHelper := func(email, pwd string) string {
+		body, _ := json.Marshal(handlers.LoginRequest{Email: email, Password: pwd})
+		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.Router().ServeHTTP(rec, req)
+		var res struct {
+			Data handlers.LoginResponse `json:"data"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		return res.Data.AccessToken
+	}
+	adminTok := loginHelper(adminEmail, "AdminPass123!")
+	anggotaTok := loginHelper(anggotaEmail, "AnggotaPass123!")
 
 	return &TestEnv{
 		Server:        server,
@@ -238,6 +249,8 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		RekeningID:    rekeningID,
 		MetodeID:      metodeID,
 		PenyediaID:    penyediaID,
+		AdminToken:    adminTok,
+		AnggotaToken:  anggotaTok,
 	}
 }
 
@@ -289,6 +302,44 @@ func (env *TestEnv) createAndLoginUser(t testing.TB, roleName string) (string, u
 		t.Fatalf("Login gagal untuk user %s (status %d): %s", email, recLogin.Code, recLogin.Body.String())
 	}
 	return loginRes.Data.AccessToken, userID
+}
+
+func (env *TestEnv) CreateBill(t testing.TB, anggotaID uuid.UUID, nominal int64) uuid.UUID {
+	ctx := context.Background()
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire error: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	var jenisID uuid.UUID
+	err = conn.QueryRow(ctx, "SELECT id FROM jenis_iuran WHERE koperasi_id = $1 LIMIT 1", env.KoperasiID).Scan(&jenisID)
+	if err != nil || jenisID == uuid.Nil {
+		jenisID = uuid.New()
+		_, err = conn.Exec(ctx, `
+			INSERT INTO jenis_iuran (id, koperasi_id, kode, nama, nominal, hari_jatuh_tempo, berlaku_mulai, created_by)
+			VALUES ($1, $2, $3, 'Iuran Test', $4, 10, '2026-01-01', $5);
+		`, jenisID, env.KoperasiID, "JI-"+uuid.New().String()[:8], nominal, env.AdminUserID)
+		if err != nil {
+			t.Fatalf("create jenis_iuran error: %v", err)
+		}
+	}
+
+	billID := uuid.New()
+	periode := fmt.Sprintf("2026-%02d", (time.Now().UnixNano()%12)+1)
+	_, err = conn.Exec(ctx, `
+		INSERT INTO tagihan_iuran (id, koperasi_id, anggota_id, jenis_iuran_id, periode, jatuh_tempo, nominal_pokok, status, created_by)
+		VALUES ($1, $2, $3, $4, $5, '2026-11-10', $6, 'belum_bayar', $7);
+	`, billID, env.KoperasiID, anggotaID, jenisID, periode, nominal, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("create bill error: %v", err)
+	}
+
+	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	return billID
 }
 
 func TestAPI_HealthAndSecurityHeaders(t *testing.T) {
@@ -449,14 +500,22 @@ func TestAPI_QRIS_CreateAndCheckStatus(t *testing.T) {
 	}
 
 	// Kaitkan user ke Koperasi
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
 	var roleAnggotaID uuid.UUID
-	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE nama = 'anggota'").Scan(&roleAnggotaID)
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'anggota'").Scan(&roleAnggotaID)
 	if roleAnggotaID != uuid.Nil {
 		_, _ = conn.Exec(ctx, `
 			INSERT INTO user_roles (user_id, role_id, koperasi_id)
 			VALUES ($1, $2, $3);
 		`, testUserID, roleAnggotaID, env.KoperasiID)
 	}
+
+	testAnggotaID := uuid.New()
+	nik := fmt.Sprintf("3203%012d", time.Now().UnixNano()%1000000000000)
+	_, _ = conn.Exec(ctx, `
+		INSERT INTO anggota (id, koperasi_id, user_id, no_anggota, nik_enkripsi, nik_hash, nama_lengkap, tempat_lahir, tanggal_lahir_enkripsi, jenis_kelamin, status, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, 'Penyetor QRIS', 'Bogor', $5, 'L', 'aktif', $7);
+	`, testAnggotaID, env.KoperasiID, testUserID, "ANG-"+uuid.New().String()[:8], []byte("enkripsi"), hashSHA256(nik), env.AdminUserID)
 
 	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
 
@@ -472,12 +531,14 @@ func TestAPI_QRIS_CreateAndCheckStatus(t *testing.T) {
 	_ = json.Unmarshal(recLogin.Body.Bytes(), &loginRes)
 	token := loginRes.Data.AccessToken
 
+	billID := env.CreateBill(t, testAnggotaID, 50000)
+
 	// 1. POST /api/v1/pembayaran/qris
 	qrisReqBody, _ := json.Marshal(handlers.BuatQRISRequest{
-		NominalDasarRp: 50000,
-		JenisTransaksi: "iuran_bulanan",
-		AnggotaID:      env.AnggotaID,
-		RekeningQRISID: env.RekeningID,
+		TagihanIuranIDs: []uuid.UUID{billID},
+		JenisTransaksi:  "iuran_bulanan",
+		AnggotaID:       testAnggotaID,
+		RekeningQRISID:  env.RekeningID,
 	})
 
 	reqQRIS := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(qrisReqBody))
@@ -565,12 +626,14 @@ func TestAPI_MakerChecker_HTTP_Violation(t *testing.T) {
 	_ = json.Unmarshal(recLogin.Body.Bytes(), &loginRes)
 	tokenAdmin := loginRes.Data.AccessToken
 
+	billID := env.CreateBill(t, env.AnggotaID, 100000)
+
 	// Admin membuat pembayaran atas namanya sendiri
 	bodyQRIS, _ := json.Marshal(handlers.BuatQRISRequest{
-		NominalDasarRp: 100000,
-		JenisTransaksi: "iuran_bulanan",
-		AnggotaID:      env.AnggotaID,
-		RekeningQRISID: env.RekeningID,
+		TagihanIuranIDs: []uuid.UUID{billID},
+		JenisTransaksi:  "iuran_bulanan",
+		AnggotaID:       env.AnggotaID,
+		RekeningQRISID:  env.RekeningID,
 	})
 	reqQRIS := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyQRIS))
 	reqQRIS.Header.Set("Authorization", "Bearer "+tokenAdmin)
@@ -612,12 +675,14 @@ func TestK3_ApprovalSuccessFlow_EndToEnd(t *testing.T) {
 	tokenAdminA, _ := env.createAndLoginUser(t, "admin")
 	tokenAdminB, _ := env.createAndLoginUser(t, "admin")
 
+	billID := env.CreateBill(t, env.AnggotaID, 50000)
+
 	// 1. Admin A membuat pembayaran
 	bodyQRIS, _ := json.Marshal(handlers.BuatQRISRequest{
-		NominalDasarRp: 50000,
-		JenisTransaksi: "iuran_bulanan",
-		AnggotaID:      env.AnggotaID,
-		RekeningQRISID: env.RekeningID,
+		TagihanIuranIDs: []uuid.UUID{billID},
+		JenisTransaksi:  "iuran_bulanan",
+		AnggotaID:       env.AnggotaID,
+		RekeningQRISID:  env.RekeningID,
 	})
 	reqQRIS := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyQRIS))
 	reqQRIS.Header.Set("Authorization", "Bearer "+tokenAdminA)
@@ -810,7 +875,8 @@ func TestAPI_QRIS_AutoLockNominal(t *testing.T) {
 	env := setupAPITestEnv(t)
 	defer env.Pool.Close()
 
-	token, userID := env.createAndLoginUser(t, "anggota")
+	token := env.AnggotaToken
+	billID := env.CreateBill(t, env.AnggotaID, 75000)
 
 	// Daftarkan QRIS Statis valid format EMVCo Bank Indonesia
 	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
@@ -828,17 +894,17 @@ func TestAPI_QRIS_AutoLockNominal(t *testing.T) {
 			'Bank Mandiri', '1300011223344', 'Koperasi Makmur Sejahtera',
 			true, $3, true, $4
 		) RETURNING id;
-	`, env.KoperasiID, env.PenyediaID, validStaticQR, userID).Scan(&newRekeningID)
+	`, env.KoperasiID, env.PenyediaID, validStaticQR, env.AdminUserID).Scan(&newRekeningID)
 	if err != nil {
 		t.Fatalf("Gagal insert rekening QRIS valid: %v", err)
 	}
 
 	// Anggota meminta pembuatan QRIS pembayaran
 	qrisReqBody, _ := json.Marshal(handlers.BuatQRISRequest{
-		NominalDasarRp: 75000,
-		JenisTransaksi: "iuran_bulanan",
-		AnggotaID:      env.AnggotaID,
-		RekeningQRISID: newRekeningID,
+		TagihanIuranIDs: []uuid.UUID{billID},
+		JenisTransaksi:  "iuran_bulanan",
+		AnggotaID:       env.AnggotaID,
+		RekeningQRISID:  newRekeningID,
 	})
 
 	req := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(qrisReqBody))
@@ -868,4 +934,213 @@ func TestAPI_QRIS_AutoLockNominal(t *testing.T) {
 	}
 
 	t.Logf("Sukses Auto-Lock QRIS: Nominal Rp %d terkunci di payload dinamis %s", res.Data.NominalTotalRp, res.Data.QRISPayload)
+}
+
+func TestT1_PaymentBindingToBills(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	ctx := context.Background()
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire error: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+
+	// 1. Seed another anggota for testing unauthorized access to bills
+	otherUserID := uuid.New()
+	otherEmail := fmt.Sprintf("other_%s@kopdes.id", uuid.New().String()[:8])
+	otherEmailHash := security.HashBlindIndex(otherEmail, []byte(env.Config.BlindIndexSecret))
+	otherPwdHash, _ := security.HashPassword("OtherPass123!")
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Anggota Lain');
+	`, otherUserID, []byte("enkripsi"), otherEmailHash, otherPwdHash)
+	if err != nil {
+		t.Fatalf("seed other user error: %v", err)
+	}
+
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	var roleAnggotaID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'anggota'").Scan(&roleAnggotaID)
+	_, err = conn.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id, koperasi_id)
+		VALUES ($1, $2, $3);
+	`, otherUserID, roleAnggotaID, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("seed other user_roles error: %v", err)
+	}
+
+	otherAnggotaID := uuid.New()
+	nikOther := fmt.Sprintf("3202%012d", time.Now().UnixNano()%1000000000000)
+	_, err = conn.Exec(ctx, `
+		INSERT INTO anggota (id, koperasi_id, user_id, no_anggota, nik_enkripsi, nik_hash, nama_lengkap, tempat_lahir, tanggal_lahir_enkripsi, jenis_kelamin, status, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, 'Anggota Lain', 'Bandung', $5, 'P', 'aktif', $7);
+	`, otherAnggotaID, env.KoperasiID, otherUserID, "ANG-"+uuid.New().String()[:8], []byte("enkripsi"), hashSHA256(nikOther), env.AdminUserID)
+	if err != nil {
+		t.Fatalf("seed other anggota error: %v", err)
+	}
+
+	// Seed jenis_iuran
+	jenisIuranID := uuid.New()
+	_, err = conn.Exec(ctx, `
+		INSERT INTO jenis_iuran (id, koperasi_id, kode, nama, nominal, hari_jatuh_tempo, berlaku_mulai, created_by)
+		VALUES ($1, $2, $3, 'Iuran Wajib Bulanan', 50000, 10, '2026-01-01', $4);
+	`, jenisIuranID, env.KoperasiID, "WAJIB-"+uuid.New().String()[:6], env.AdminUserID)
+	if err != nil {
+		t.Fatalf("seed jenis_iuran error: %v", err)
+	}
+
+	// Seed bill 1 for env.AnggotaID (unpaid, 50000)
+	bill1ID := uuid.New()
+	_, err = conn.Exec(ctx, `
+		INSERT INTO tagihan_iuran (id, koperasi_id, anggota_id, jenis_iuran_id, periode, jatuh_tempo, nominal_pokok, status, created_by)
+		VALUES ($1, $2, $3, $4, '2026-11', '2026-11-10', 50000, 'belum_bayar', $5);
+	`, bill1ID, env.KoperasiID, env.AnggotaID, jenisIuranID, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("seed bill1 error: %v", err)
+	}
+
+	// Seed bill for other anggota (75000)
+	billOtherID := uuid.New()
+	_, err = conn.Exec(ctx, `
+		INSERT INTO tagihan_iuran (id, koperasi_id, anggota_id, jenis_iuran_id, periode, jatuh_tempo, nominal_pokok, status, created_by)
+		VALUES ($1, $2, $3, $4, '2026-11', '2026-11-10', 75000, 'belum_bayar', $5);
+	`, billOtherID, env.KoperasiID, otherAnggotaID, jenisIuranID, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("seed other bill error: %v", err)
+	}
+
+	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+
+	// Case 1: Member submits request WITHOUT any tagihan_iuran_id or pesanan_id (pure arbitrary nominal)
+	// Must be rejected with HTTP 400 Bad Request
+	bodyNoBill, _ := json.Marshal(map[string]interface{}{
+		"nominal_dasar": 50000,
+		"rekening_qris_id": env.RekeningID,
+	})
+	req1 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyNoBill))
+	req1.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusBadRequest {
+		t.Fatalf("Case 1 FAILED: Expected 400 Bad Request for payment without bills/orders, got %d (body: %s)", rec1.Code, rec1.Body.String())
+	}
+
+	// Case 2: Member tries to pay another member's bill
+	// Must be rejected with 400 Bad Request or 403 Forbidden
+	bodyOtherBill, _ := json.Marshal(map[string]interface{}{
+		"tagihan_iuran_id": []string{billOtherID.String()},
+		"rekening_qris_id": env.RekeningID,
+	})
+	req2 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyOtherBill))
+	req2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusBadRequest && rec2.Code != http.StatusForbidden {
+		t.Fatalf("Case 2 FAILED: Expected 400 or 403 for paying another member's bill, got %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+
+	// Case 3: Member pays their own bill successfully
+	bodyOwnBill, _ := json.Marshal(map[string]interface{}{
+		"tagihan_iuran_id": []string{bill1ID.String()},
+		"rekening_qris_id": env.RekeningID,
+	})
+	req3 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyOwnBill))
+	req3.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req3.Header.Set("Content-Type", "application/json")
+	rec3 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusCreated {
+		t.Fatalf("Case 3 FAILED: Expected 201 Created for valid member bill payment, got %d (body: %s)", rec3.Code, rec3.Body.String())
+	}
+
+	var res3 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(rec3.Body.Bytes(), &res3)
+
+	// Verify server calculated nominal_dasar from the bill
+	if res3.Data.NominalDasarRp != 50000 {
+		t.Errorf("Expected nominal_dasar 50000 from bill, got %d", res3.Data.NominalDasarRp)
+	}
+
+	// Verify pembayaran_alokasi is created in database
+	var (
+		alokasiCount int
+		nominalAlokasi int64
+		alokasiTagihanID uuid.UUID
+	)
+	err = conn.QueryRow(ctx, `
+		SELECT count(*), coalesce(sum(nominal_alokasi), 0), (array_agg(tagihan_iuran_id))[1]
+		FROM pembayaran_alokasi
+		WHERE pembayaran_id = $1
+	`, res3.Data.PembayaranID).Scan(&alokasiCount, &nominalAlokasi, &alokasiTagihanID)
+	if err != nil {
+		t.Fatalf("Query pembayaran_alokasi error: %v", err)
+	}
+
+	if alokasiCount != 1 {
+		t.Errorf("Expected 1 pembayaran_alokasi record, got %d", alokasiCount)
+	}
+	if nominalAlokasi != 50000 {
+		t.Errorf("Expected nominal_alokasi 50000, got %d", nominalAlokasi)
+	}
+	if alokasiTagihanID != bill1ID {
+		t.Errorf("Expected alokasi tagihan_iuran_id %s, got %s", bill1ID, alokasiTagihanID)
+	}
+
+	// Case 4: Member tries to pay the SAME bill while payment is still active/pending
+	// Must be rejected
+	req4 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyOwnBill))
+	req4.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req4.Header.Set("Content-Type", "application/json")
+	rec4 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec4, req4)
+
+	if rec4.Code != http.StatusBadRequest && rec4.Code != http.StatusConflict {
+		t.Fatalf("Case 4 FAILED: Expected 400 or 409 for paying a bill with active payment, got %d (body: %s)", rec4.Code, rec4.Body.String())
+	}
+
+	// Case 5: Admin pays on behalf of other member with audit trail logged
+	bodyAdmin, _ := json.Marshal(map[string]interface{}{
+		"tagihan_iuran_id": []string{billOtherID.String()},
+		"rekening_qris_id": env.RekeningID,
+	})
+	req5 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyAdmin))
+	req5.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	req5.Header.Set("Content-Type", "application/json")
+	rec5 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec5, req5)
+
+	if rec5.Code != http.StatusCreated {
+		t.Fatalf("Case 5 FAILED: Expected 201 Created for Admin on-behalf payment, got %d (body: %s)", rec5.Code, rec5.Body.String())
+	}
+
+	var res5 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(rec5.Body.Bytes(), &res5)
+
+	// Verify audit_log recorded for admin on-behalf action
+	var auditCount int
+	err = conn.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log
+		WHERE record_id = $1 AND nama_tabel = 'pembayaran' AND aksi = 'INSERT' AND user_id = $2
+	`, res5.Data.PembayaranID, env.AdminUserID).Scan(&auditCount)
+	if err != nil {
+		t.Fatalf("Query audit_log error: %v", err)
+	}
+	if auditCount < 1 {
+		t.Errorf("Expected at least 1 audit_log entry for admin on-behalf payment, got %d", auditCount)
+	}
 }

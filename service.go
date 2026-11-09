@@ -17,6 +17,14 @@ import (
 
 var ErrKodeUnikPenuh = errors.New("seluruh 999 slot kode unik QRIS untuk nominal ini sedang aktif digunakan")
 
+type AlokasiReq struct {
+	JenisAlokasi   string
+	TagihanIuranID *uuid.UUID
+	PesananID      *uuid.UUID
+	NominalAlokasi int64
+	UrutanAlokasi  int
+}
+
 type BuatPembayaranQRISReq struct {
 	KoperasiID         uuid.UUID
 	PembayarUserID     uuid.UUID
@@ -27,6 +35,7 @@ type BuatPembayaranQRISReq struct {
 	NoPembayaran       string
 	NominalDasarRp     int64
 	TTL                time.Duration
+	Alokasi            []AlokasiReq
 }
 
 type BuatPembayaranQRISRes struct {
@@ -94,6 +103,20 @@ func BuatPembayaranQRISStatis(ctx context.Context, pool *pgxpool.Pool, secret []
 		).Scan(&pembayaranID, &nominalTotalStr)
 
 		if err == nil {
+			for _, al := range req.Alokasi {
+				_, err = tx.Exec(ctx, `
+					INSERT INTO pembayaran_alokasi (
+						koperasi_id, pembayaran_id, jenis_alokasi,
+						tagihan_iuran_id, pesanan_id, urutan_alokasi,
+						nominal_alokasi, created_by
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				`, req.KoperasiID, pembayaranID, al.JenisAlokasi, al.TagihanIuranID, al.PesananID, al.UrutanAlokasi, al.NominalAlokasi, req.PembayarUserID)
+				if err != nil {
+					_ = tx.Rollback(ctx)
+					return nil, fmt.Errorf("gagal mencatat pembayaran_alokasi: %w", err)
+				}
+			}
+
 			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT sp_qris_unik")
 			if err := tx.Commit(ctx); err != nil {
 				return nil, err

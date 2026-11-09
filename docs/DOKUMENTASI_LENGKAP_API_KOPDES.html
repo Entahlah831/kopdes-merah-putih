@@ -582,6 +582,109 @@ docker compose up -d --build</code></pre>
     </div>
   </div>
 
+  <!-- 5.9 PENDAFTARAN ANGGOTA & KYC (P1-1) -->
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-post">POST</span>
+      <span class="endpoint-path">/api/v1/pendaftaran</span>
+      <span class="auth-badge">Calon Anggota</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Mengajukan formulir pendaftaran anggota baru. Data sensitif (NIK, Tanggal Lahir, Alamat) otomatis dienkripsi dengan AES-256-GCM + AAD, nomor registrasi dibuat secara atomik (REG/YYYY/XXXXX), dan duplikasi NIK dicegah via Blind Index HKDF-SHA256 (Kepatuhan UU 27/2022 PDP).</p>
+      <strong>Request Body:</strong>
+      <pre><code>{
+  "nik": "3201123456780001",
+  "nama_lengkap": "Budi Santoso",
+  "tempat_lahir": "Bogor",
+  "tanggal_lahir": "1990-05-15",
+  "jenis_kelamin": "L",
+  "alamat_ktp": "Jl. Raya Desa No. 10",
+  "pekerjaan": "Petani"
+}</code></pre>
+      <strong>Response Sukses (201 Created):</strong>
+      <pre><code>{
+  "success": true,
+  "data": {
+    "pendaftaran_id": "0193109b-1234-7000-...",
+    "no_registrasi": "REG/2026/00001",
+    "status": "diajukan"
+  }
+}</code></pre>
+    </div>
+  </div>
+
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-get">GET</span>
+      <span class="endpoint-path">/api/v1/pendaftaran/{id}</span>
+      <span class="auth-badge">Pemohon / Admin</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Memeriksa status pendaftaran calon anggota. Dilindungi anti-IDOR (pemohon lain mendapat 404). NIK ditampilkan dalam bentuk tersamar (masking) otomatis <code>3201********0001</code>.</p>
+    </div>
+  </div>
+
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-post">POST</span>
+      <span class="endpoint-path">/api/v1/pendaftaran/{id}/dokumen</span>
+      <span class="auth-badge">Pemohon (Multipart)</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Mengunggah foto KTP / dokumen KYC calon anggota. Sistem memvalidasi Magic Bytes file asli (hanya menerima JPEG, PNG, PDF asli), menolak script/eksekutabel, membatasi ukuran maksimal 5MB, dan mencatat checksum integritas SHA-256.</p>
+    </div>
+  </div>
+
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-post">POST</span>
+      <span class="endpoint-path">/api/v1/pendaftaran/{id}/verifikasi</span>
+      <span class="auth-badge">Role: Admin / Pengurus (Maker-Checker)</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Memproses verifikasi penerimaan calon anggota. Dilindungi kontrol Maker-Checker (pemohon dilarang menyetujui pendaftarannya sendiri). Saat disetujui, nomor anggota unik <code>ANG/2026/XXXXX</code> diterbitkan secara atomik dan akun pengguna langsung dipromosikan ke role <code>anggota</code>.</p>
+      <strong>Request Body:</strong>
+      <pre><code>{
+  "status": "disetujui",
+  "catatan_perbaikan": "Dokumen KTP valid dan terverifikasi"
+}</code></pre>
+    </div>
+  </div>
+
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-post">POST</span>
+      <span class="endpoint-path">/api/v1/pendaftaran/purge-ditolak</span>
+      <span class="auth-badge">Role: Admin / Pengurus (UU PDP)</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Menjalankan prosedur pembersihan berkas fisik dan enkripsi PII bagi formulir pendaftaran yang ditolak lebih dari 30 hari (Kepatuhan UU 27/2022 PDP).</p>
+    </div>
+  </div>
+
+  <!-- 5.10 KAS MUTASI & PROMETHEUS -->
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-get">GET</span>
+      <span class="endpoint-path">/api/v1/kas/mutasi</span>
+      <span class="auth-badge">Role: Admin / Pengawas</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Membaca catatan buku mutasi kas masuk/keluar terpartisi bulanan berantai hash SHA-256 append-only (dilindungi trigger anti-TRUNCATE).</p>
+    </div>
+  </div>
+
+  <div class="endpoint-card">
+    <div class="endpoint-header">
+      <span class="method-badge method-get">GET</span>
+      <span class="endpoint-path">/metrics</span>
+      <span class="auth-badge">Publik (Monitoring)</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Eksposisi metrik operasional standar Prometheus (uptime, antrean verifikasi pembayaran, slot kode unik QRIS aktif, total job gagal, dan status partisi database).</p>
+    </div>
+  </div>
+
   <!-- SECTION 6: PANDUAN FRONT-END -->
   <div class="page-break"></div>
   <h1>6. Panduan Praktis Integrasi Front-End (Web & Mobile)</h1>

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -19,13 +20,26 @@ type AuthHandler struct {
 	pool             *pgxpool.Pool
 	tokenManager     *auth.TokenManager
 	blindIndexSecret []byte
+	loginLimiter     *middleware.LoginRateLimiter
+	trustedProxies   *middleware.TrustedProxyMatcher
 }
 
-func NewAuthHandler(pool *pgxpool.Pool, tm *auth.TokenManager, blindIndexSecret []byte) *AuthHandler {
+func NewAuthHandler(
+	pool *pgxpool.Pool,
+	tm *auth.TokenManager,
+	blindIndexSecret []byte,
+	loginLimiter *middleware.LoginRateLimiter,
+	trustedProxies *middleware.TrustedProxyMatcher,
+) *AuthHandler {
+	if loginLimiter == nil {
+		loginLimiter = middleware.NewLoginRateLimiter(5, 15*time.Minute, 10000)
+	}
 	return &AuthHandler{
 		pool:             pool,
 		tokenManager:     tm,
 		blindIndexSecret: blindIndexSecret,
+		loginLimiter:     loginLimiter,
+		trustedProxies:   trustedProxies,
 	}
 }
 
@@ -60,6 +74,15 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// Hitung blind-index hash deterministik dari email (UU 27/2022 PDP)
 	emailHash := security.HashBlindIndex(req.Email, h.blindIndexSecret)
+	accountKey := emailHash
+	clientIP := middleware.GetClientIP(r, h.trustedProxies)
+
+	// Periksa rate limiting akun dan IP untuk mencegah brute-force login
+	if allowed, retryAfter := h.loginLimiter.CheckAllowed(clientIP, accountKey); !allowed {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())+1))
+		response.Error(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Terlalu banyak percobaan login yang gagal. Akun atau IP Anda dibatasi sementara.")
+		return
+	}
 
 	var (
 		userID          uuid.UUID
@@ -101,6 +124,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			h.loginLimiter.RecordFailure(clientIP, accountKey)
 			response.Unauthorized(w, "Kombinasi email atau password salah")
 			return
 		}
@@ -115,9 +139,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Verifikasi kata sandi dengan bcrypt
 	if !security.CheckPassword(req.Password, passwordHash) {
+		h.loginLimiter.RecordFailure(clientIP, accountKey)
 		response.Unauthorized(w, "Kombinasi email atau password salah")
 		return
 	}
+
+	h.loginLimiter.RecordSuccess(accountKey)
 
 	targetKoperasiID := uuid.Nil
 	if koperasiID.Valid {

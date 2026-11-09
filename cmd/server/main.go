@@ -157,6 +157,18 @@ func main() {
 		}
 	}
 
+	if tp := os.Getenv("TRUSTED_PROXIES"); tp != "" {
+		var list []string
+		for _, p := range strings.Split(tp, ",") {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				list = append(list, trimmed)
+			}
+		}
+		if len(list) > 0 {
+			cfg.TrustedProxies = list
+		}
+	}
+
 	server := api.NewServer(pool, cfg)
 
 	// Channel sinyal shutdown

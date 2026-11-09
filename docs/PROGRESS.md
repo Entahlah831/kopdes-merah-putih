@@ -33,9 +33,11 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   - [x] Request memuat `tagihan_iuran_id[]` / `pesanan_id`, hitung nominal di server, buat `pembayaran_alokasi`, gunakan `anggota_id` dari token (admin via catatan audit).
   - [x] Validasi kepemilikan tagihan/pesanan, tolak tagihan anggota lain, tagihan lunas, atau tagihan dengan pembayaran aktif.
   - [x] Verifikasi atomik: alokasi tersimpan pada `pembayaran_alokasi`, audit log tercatat untuk admin on-behalf, tes `TestT1_PaymentBindingToBills` PASS.
-- [ ] **T2. Rate limiter dapat dilewati dan rawan kehabisan memori**
-  - [ ] Reproduksi spoofing X-Forwarded-For bypass rate limit.
-  - [ ] Batasi proxy terpercaya (`TRUSTED_PROXIES`), batasi ukuran map LRU, tambahkan limit login per akun.
+- [x] **T2. Rate limiter dapat dilewati dan rawan kehabisan memori**
+  - [x] Reproduksi spoofing X-Forwarded-For bypass rate limit (`TestT2_SpoofedXFF_BypassesLimit_Reproduced` membuktikan bypass rate limiter).
+  - [x] Batasi proxy terpercaya (`TRUSTED_PROXIES` via `TrustedProxyMatcher`), tolak percaya header proxy dari `RemoteAddr` yang tidak terdaftar.
+  - [x] Batasi ukuran memory map dengan bounded LRU eviction (`container/list`, default 10.000 entri).
+  - [x] Tambahkan `LoginRateLimiter` per akun (`email_hash`) dan per IP dengan backoff & lockout pada `/api/v1/auth/login`.
 - [ ] **T3. Secret default di kode, AES key tidak pernah dipakai, DSN bocor ke log**
   - [ ] Hapus secret default di `DefaultConfig()`. Gagal start jika kunci < 32 byte.
   - [ ] Sambungkan `AES_MASTER_KEY` ke enkripsi data pribadi anggota dengan AAD.
@@ -95,4 +97,23 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih	2.474s
   ok  	github.com/kopdes/merah-putih/internal/db	(cached)
   ok  	github.com/kopdes/merah-putih/internal/qris	(cached)
+  ```
+
+### [2026-11-09] T2: Penguatan Rate Limiter (Anti-Spoofing, LRU, Account Lockout)
+- **Reproduksi Gagal**: `TestT2_SpoofedXFF_BypassesLimit_Reproduced` membuktikan penyerang yang memalsukan `X-Forwarded-For` dari satu IP dapat membypass rate limit (mendapatkan HTTP 200 berulang alih-alih 429).
+- **Implementasi**:
+  - Dibuat `TrustedProxyMatcher` yang memverifikasi `RemoteAddr` terhadap daftar IP / CIDR terpercaya. Jika `RemoteAddr` bukan proxy terpercaya, header `X-Forwarded-For` dan `X-Real-IP` diabaikan sepenuhnya.
+  - Implementasi Token Bucket LRU Cache berbasis `container/list` dengan batas kapasitas `maxClients` (default 10.000). Mencegah memory leak dan serangan exhaustion memory.
+  - Dibuat `LoginRateLimiter` khusus untuk `/api/v1/auth/login` yang membatasi kegagalan per akun (`email_hash`) dan per IP, dengan durasi lockout 15 menit dan reset otomatis saat login sukses.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestT2_SpoofedXFF_BypassesLimit_Fixed
+  --- PASS: TestT2_SpoofedXFF_BypassesLimit_Fixed (0.00s)
+  === RUN   TestT2_TrustedProxy_ValidXFF_Allowed
+  --- PASS: TestT2_TrustedProxy_ValidXFF_Allowed (0.00s)
+  === RUN   TestT2_BoundedMemory_LRUEviction
+  --- PASS: TestT2_BoundedMemory_LRUEviction (0.00s)
+  === RUN   TestT2_LoginRateLimiter_AccountAndIPLockout
+  --- PASS: TestT2_LoginRateLimiter_AccountAndIPLockout (0.12s)
+  ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.296s
   ```

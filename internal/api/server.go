@@ -13,24 +13,28 @@ import (
 )
 
 type Config struct {
-	Port             int
-	JWTSecret        string
-	BlindIndexSecret string
-	QRISSecret       string
-	AllowedOrigins   []string
-	RateLimitRPS     float64
-	RateLimitBurst   int
+	Port                int
+	JWTSecret           string
+	BlindIndexSecret    string
+	QRISSecret          string
+	AllowedOrigins      []string
+	RateLimitRPS        float64
+	RateLimitBurst      int
+	TrustedProxies      []string
+	MaxRateLimitClients int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Port:             8080,
-		JWTSecret:        "dev-super-secret-jwt-key-minimum-32bytes-long!",
-		BlindIndexSecret: "dev-blind-index-hmac-sha256-secret-32b!",
-		QRISSecret:       "dev-qris-linear-probing-secret-32b-key!",
-		AllowedOrigins:   []string{"*"},
-		RateLimitRPS:     20.0,
-		RateLimitBurst:   40,
+		Port:                8080,
+		JWTSecret:           "dev-super-secret-jwt-key-minimum-32bytes-long!",
+		BlindIndexSecret:    "dev-blind-index-hmac-sha256-secret-32b!",
+		QRISSecret:          "dev-qris-linear-probing-secret-32b-key!",
+		AllowedOrigins:      []string{"*"},
+		RateLimitRPS:        20.0,
+		RateLimitBurst:      40,
+		TrustedProxies:      nil,
+		MaxRateLimitClients: 10000,
 	}
 }
 
@@ -44,10 +48,17 @@ type Server struct {
 func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	tm := auth.NewTokenManager(cfg.JWTSecret, "kopdes-merah-putih-api")
 	authMw := middleware.NewAuthMiddleware(tm)
-	rateLimiter := middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
+	rateLimiter := middleware.NewIPRateLimiterWithConfig(
+		cfg.RateLimitRPS,
+		cfg.RateLimitBurst,
+		cfg.TrustedProxies,
+		cfg.MaxRateLimitClients,
+	)
+	trustedMatcher := middleware.NewTrustedProxyMatcher(cfg.TrustedProxies)
+	loginLimiter := middleware.NewLoginRateLimiter(5, 15*time.Minute, 10000)
 
 	// Inisialisasi Handlers
-	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret))
+	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher)
 	qrisH := handlers.NewQRISHandler(pool, []byte(cfg.QRISSecret))
 	iuranH := handlers.NewIuranHandler(pool)
 	katalogH := handlers.NewKatalogHandler(pool)
@@ -83,7 +94,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(iuranH.HandleListMenunggak)),
 	))
 
-	// --- 4. Admin Koperasi QRIS Management (PADG BI 21/18/PADG/2019) ---
+	// --- 4. Admin Koperasi QRIS Management (PERLU VERIFIKASI) ---
 	mux.Handle("POST /api/v1/koperasi/rekening-qris", authMw.RequireAuth(
 		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminDaftarRekeningQRIS)),
 	))

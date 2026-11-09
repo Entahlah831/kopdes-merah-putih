@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api"
+	"github.com/kopdes/merah-putih/internal/db"
 )
 
 // loadEnv membaca file .env dan melakukan ekspansi variabel lingkungan secara dinamis
@@ -123,6 +124,14 @@ func main() {
 		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", dsn, err)
 	}
 	log.Printf("Koneksi ke PostgreSQL berhasil terhubung.")
+
+	allowSuperuser := os.Getenv("ALLOW_SUPERUSER_DB") == "true"
+	if os.Getenv("APP_ENV") == "production" && allowSuperuser {
+		log.Fatalf("KONFIGURASI ILEGAL: ALLOW_SUPERUSER_DB dilarang bernilai true pada APP_ENV=production")
+	}
+	if err := db.CheckDatabaseRole(ctx, pool, allowSuperuser); err != nil {
+		log.Fatalf("Gagal validasi keamanan role database: %v", err)
+	}
 
 	cfg := api.DefaultConfig()
 	cfg.Port = port

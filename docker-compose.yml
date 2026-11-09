@@ -8,17 +8,19 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-kopdes_db}
-      POSTGRES_USER: ${DB_USER:-kopdes_app}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-kopdes_dev_password}
+      # Inisialisasi awal menggunakan user administratif sementara (bukan user aplikasi)
+      POSTGRES_USER: ${POSTGRES_INIT_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_INIT_PASSWORD:-postgres_dev_init_pass}
     ports:
-      # Port di sisi host dapat diedit bebas melalui DB_PORT di .env (misal 5432 atau 5433)
-      - "${DB_PORT:-5432}:5432"
+      # K1: Batasi port PostgreSQL pada host ke 127.0.0.1 (mencegah akses terbuka dari luar)
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - kopdes_pgdata:/var/lib/postgresql/data
-      # Inisialisasi skema 76 tabel, fungsi UUID v7, trigger append-only, dan RLS secara otomatis
-      - ./db/migrations/000001_init_kopdes_schema.up.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      # Inisialisasi role kopdes_app non-superuser dan eksekusi seluruh migrasi berurutan
+      - ./db/docker-init:/docker-entrypoint-initdb.d:ro
+      - ./db/migrations:/docker-entrypoint-initdb.d/migrations:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kopdes_app} -d ${DB_NAME:-kopdes_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_INIT_USER:-postgres} -d ${DB_NAME:-kopdes_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -38,7 +40,7 @@ services:
       APP_ENV: ${APP_ENV:-production}
       PORT: ${APP_PORT:-8080}
       APP_PORT: ${APP_PORT:-8080}
-      # Komunikasi internal Docker ke kontainer postgres
+      # K1: API berjalan menggunakan role kopdes_app (NOSUPERUSER, NOBYPASSRLS)
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: ${DB_USER:-kopdes_app}
@@ -52,11 +54,10 @@ services:
       AES_MASTER_KEY: ${AES_MASTER_KEY}
       QRIS_SECRET: ${QRIS_SECRET}
       # Kebijakan CORS
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
       RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
     ports:
-      # Port HTTP API di sisi host mengikuti APP_PORT di .env (misal 8080, 3000, 5000)
       - "${APP_PORT:-8080}:${APP_PORT:-8080}"
     depends_on:
       postgres:

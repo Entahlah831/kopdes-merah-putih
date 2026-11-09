@@ -28,9 +28,6 @@ func WithTenantTx(ctx context.Context, pool *pgxpool.Pool, koperasiID uuid.UUID,
 	}
 	defer tx.Rollback(ctx)
 
-	// Pastikan peran non-superuser aktif jika diatur
-	_, _ = tx.Exec(ctx, "SET ROLE kopdes_app;")
-
 	// Suntikkan koperasi_id ke session settings PostgreSQL 16
 	if koperasiID != uuid.Nil {
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, true)", koperasiID.String()); err != nil {

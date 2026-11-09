@@ -1,0 +1,29 @@
+# Binaries & build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Environment variables & secrets (UU 27/2022 PDP)
+.env
+.env.*
+!.env.example
+
+# Test outputs
+*.out
+*.test
+coverage.txt
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local PostgreSQL data (jika ditaruh di dalam folder project)
+.pgdata/
+pgdata/

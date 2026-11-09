@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,7 +17,30 @@ import (
 	"github.com/kopdes/merah-putih/internal/api"
 )
 
+func loadEnv(filepath string) {
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.TrimSpace(parts[1])
+			if os.Getenv(k) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
+}
+
 func main() {
+	loadEnv(".env")
+
 	portStr := os.Getenv("PORT")
 	port := 8080
 	if portStr != "" {

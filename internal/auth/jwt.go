@@ -1,7 +1,11 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -45,6 +49,7 @@ func (tm *TokenManager) GenerateToken(userID, koperasiID uuid.UUID, role string,
 		Role:            role,
 		IsPlatformAdmin: isPlatformAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.New().String(),
 			Subject:   userID.String(),
 			Issuer:    tm.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -79,4 +84,22 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*UserClaims, error) {
 	}
 
 	return claims, nil
+}
+
+// GenerateRefreshToken menghasilkan string random 32-byte berkode hex dan hash SHA-256 untuk database
+func GenerateRefreshToken() (plainToken string, tokenHash string, err error) {
+	bytes := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, bytes); err != nil {
+		return "", "", err
+	}
+	plainToken = hex.EncodeToString(bytes)
+	h := sha256.Sum256([]byte(plainToken))
+	tokenHash = hex.EncodeToString(h[:])
+	return plainToken, tokenHash, nil
+}
+
+// HashRefreshToken menghitung hash SHA-256 dari plain token untuk pencarian database
+func HashRefreshToken(plainToken string) string {
+	h := sha256.Sum256([]byte(plainToken))
+	return hex.EncodeToString(h[:])
 }

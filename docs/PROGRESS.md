@@ -47,11 +47,12 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   - [x] Migrasi `000004_enforce_rls_all_tables_and_login_helper.up.sql`: Pasang FORCE RLS dan policy isolasi tenant pada `audit_log`, `job_log`, `konfigurasi_aturan`, `koperasi`, dan `users`.
   - [x] Perbaiki jalur login tanpa menyalakan bypass `app.is_platform_admin`: Dibuat fungsi SQL `fn_lookup_user_login(p_email_hash)` bertipe `SECURITY DEFINER` dengan `search_path = public, pg_temp` terkunci.
   - [x] Reproduksi dan verifikasi tes isolasi lintas tenant pada `audit_log` dan `job_log` (`TestT4_RLS_AuditLog_And_JobLog_Isolation` PASS).
-- [ ] **T5. Autentikasi dan otorisasi**
-  - [ ] Access token 15 menit + refresh token tabel rotasi.
-  - [ ] Pilih koperasi/peran aktif secara eksplisit dan deterministik.
-  - [ ] Constant-time login response (dummy hash bila user tidak ditemukan).
-  - [ ] Biaya bcrypt >= 12 / Argon2id.
+- [x] **T5. Autentikasi dan otorisasi**
+  - [x] Access token 15 menit + refresh token tabel rotasi (`refresh_tokens`), deteksi token reuse yang mencabut seluruh sesi jika token usang dipakai kembali.
+  - [x] Pilih koperasi/peran aktif secara eksplisit dan deterministik melalui `fn_lookup_user_login(p_email_hash, p_koperasi_id)`.
+  - [x] Constant-time login response (dummy bcrypt check jika user tidak ditemukan untuk mencegah time-based account enumeration).
+  - [x] Biaya bcrypt dinaikkan menjadi 12.
+  - [x] Pemisahan izin granular: peranan `pengawas` (hanya read-only audit) dan `operator` (hanya entri antrean/tunggakan) dibatasi dari mutasi pembayaran (`verifikasi`) dan tagihan (`generate`).
 
 ---
 
@@ -150,4 +151,27 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestT4_RLS_AuditLog_And_JobLog_Isolation (0.07s)
   ok  	github.com/kopdes/merah-putih/internal/db	0.476s
   ok  	github.com/kopdes/merah-putih/internal/api	12.510s
+  ```
+
+### [2026-11-09] T5: Penguatan Autentikasi, Rotasi Refresh Token, Deteksi Reuse, dan Granular RBAC
+- **Reproduksi Gagal**: `TestT5_AuthAndPermissions_Reproduction` membuktikan peran `pengawas` dan `operator` sebelumnya dapat memanggil endpoint mutatif verifikasi pembayaran dan generate tagihan massal, masa aktif access token terlalu lama (24 jam) tanpa refresh token dan deteksi reuse, serta ketiadaan seleksi koperasi/peran deterministik.
+- **Implementasi**:
+  - Migrasi `000005_refresh_tokens_and_permissions.up.sql` dan `.down.sql`:
+    - Membuat tabel `refresh_tokens` untuk menyimpan token hash SHA-256, rantai rotasi token (`replaced_by_token_hash`), status revokasi (`revoked_at`), dan masa kedaluwarsa 7 hari.
+    - Memperbarui fungsi `fn_lookup_user_login(p_email_hash, p_koperasi_id)` dengan parameter opsional `p_koperasi_id` dan hierarki peran deterministik (`admin > ketua > bendahara > sekretaris > pengurus > pengawas > operator > anggota`).
+  - Access Token dipersingkat menjadi 15 menit (`ExpiresIn: 900`) dan disematkan klaim unik `ID` (`jti`).
+  - Dibuat endpoint `POST /api/v1/auth/refresh` dengan mekanisme rotasi token otomatis dan **Deteksi Token Reuse** (jika refresh token yang sudah dicabut digunakan kembali, sistem otomatis mencabut seluruh sesi pengguna tersebut).
+  - Dibuat endpoint `POST /api/v1/auth/revoke` untuk logout/pembatalan refresh token secara eksplisit.
+  - Constant-time login timing: Eksekusi dummy bcrypt saat user tidak ditemukan untuk mencegah enumeration akun via perbedaan durasi eksekusi. Bcrypt cost diatur $\ge 12$.
+  - Pemisahan izin RBAC:
+    - Endpoint mutatif verifikasi pembayaran (`POST /api/v1/pembayaran/{id}/verifikasi`) dibatasi khusus untuk `admin`, `pengurus`, `bendahara`, dan `ketua`. Peran `pengawas` dan `operator` mendapatkan HTTP 403 Forbidden.
+    - Endpoint mutatif generate tagihan (`POST /api/v1/iuran/generate`) dibatasi khusus untuk `admin`, `pengurus`, dan `bendahara`. Peran `operator` mendapatkan HTTP 403 Forbidden.
+    - Peran `pengawas` dan `operator` tetap diberikan hak akses read-only pada antrean pembayaran dan daftar tunggakan iuran.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestT5_AuthAndPermissions_Reproduction
+  --- PASS: TestT5_AuthAndPermissions_Reproduction (3.72s)
+  ok  	github.com/kopdes/merah-putih/internal/api	3.875s
+  ok  	github.com/kopdes/merah-putih/internal/auth
+  ok  	github.com/kopdes/merah-putih/internal/db
   ```

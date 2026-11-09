@@ -223,7 +223,7 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		t.Fatalf("seed rekening QRIS error: %v", err)
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	loginHelper := func(email, pwd string) string {
 		body, _ := json.Marshal(handlers.LoginRequest{Email: email, Password: pwd})
@@ -255,7 +255,7 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 	}
 }
 
-func (env *TestEnv) createAndLoginUser(t testing.TB, roleName string) (string, uuid.UUID) {
+func (env *TestEnv) createAndLoginUserFull(t testing.TB, roleName string) (handlers.LoginResponse, string, string, uuid.UUID) {
 	ctx := context.Background()
 	conn, err := env.Pool.Acquire(ctx)
 	if err != nil {
@@ -280,15 +280,31 @@ func (env *TestEnv) createAndLoginUser(t testing.TB, roleName string) (string, u
 	}
 
 	var roleID uuid.UUID
-	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE nama = $1", roleName).Scan(&roleID)
-	if roleID != uuid.Nil {
-		_, _ = conn.Exec(ctx, `
-			INSERT INTO user_roles (user_id, role_id, koperasi_id)
-			VALUES ($1, $2, $3);
-		`, userID, roleID, env.KoperasiID)
+	err = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = $1 OR nama = $1 LIMIT 1", roleName).Scan(&roleID)
+	if err != nil || roleID == uuid.Nil {
+		roleID = uuid.New()
+		_, err = conn.Exec(ctx, "INSERT INTO roles (id, kode, nama, deskripsi) VALUES ($1, $2, $3, $4) ON CONFLICT (kode) DO NOTHING;", roleID, roleName, roleName, roleName)
+		if err != nil {
+			t.Fatalf("insert role error: %v", err)
+		}
+		err = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = $1", roleName).Scan(&roleID)
+		if err != nil {
+			t.Fatalf("scan role error: %v", err)
+		}
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	if roleID != uuid.Nil {
+		_, err = conn.Exec(ctx, `
+			INSERT INTO user_roles (user_id, role_id, koperasi_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (koperasi_id, user_id, role_id) DO NOTHING;
+		`, userID, roleID, env.KoperasiID)
+		if err != nil {
+			t.Fatalf("insert user_roles error: %v", err)
+		}
+	}
+
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	bodyLogin, _ := json.Marshal(handlers.LoginRequest{Email: email, Password: pwdPlain})
 	reqLogin := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
@@ -302,7 +318,12 @@ func (env *TestEnv) createAndLoginUser(t testing.TB, roleName string) (string, u
 	if loginRes.Data.AccessToken == "" {
 		t.Fatalf("Login gagal untuk user %s (status %d): %s", email, recLogin.Code, recLogin.Body.String())
 	}
-	return loginRes.Data.AccessToken, userID
+	return loginRes.Data, email, pwdPlain, userID
+}
+
+func (env *TestEnv) createAndLoginUser(t testing.TB, roleName string) (string, uuid.UUID) {
+	loginRes, _, _, userID := env.createAndLoginUserFull(t, roleName)
+	return loginRes.AccessToken, userID
 }
 
 func (env *TestEnv) CreateBill(t testing.TB, anggotaID uuid.UUID, nominal int64) uuid.UUID {
@@ -339,7 +360,7 @@ func (env *TestEnv) CreateBill(t testing.TB, anggotaID uuid.UUID, nominal int64)
 		t.Fatalf("create bill error: %v", err)
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 	return billID
 }
 
@@ -423,7 +444,7 @@ func TestAPI_Auth_LoginAndProfile(t *testing.T) {
 		t.Fatalf("seed user error: %v", err)
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	// 1. Test Login dengan password salah -> 401
 	bodyWrong, _ := json.Marshal(handlers.LoginRequest{
@@ -518,7 +539,7 @@ func TestAPI_QRIS_CreateAndCheckStatus(t *testing.T) {
 		VALUES ($1, $2, $3, $4, $5, $6, 'Penyetor QRIS', 'Bogor', $5, 'L', 'aktif', $7);
 	`, testAnggotaID, env.KoperasiID, testUserID, "ANG-"+uuid.New().String()[:8], []byte("enkripsi"), hashSHA256(nik), env.AdminUserID)
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	// Login via HTTP
 	bodyLogin, _ := json.Marshal(handlers.LoginRequest{Email: email, Password: pwdPlain})
@@ -613,7 +634,7 @@ func TestAPI_MakerChecker_HTTP_Violation(t *testing.T) {
 		`, adminID, roleAdminID, env.KoperasiID)
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	// Login admin
 	bodyLogin, _ := json.Marshal(handlers.LoginRequest{Email: emailAdmin, Password: pwdPlain})
@@ -1016,7 +1037,7 @@ func TestT1_PaymentBindingToBills(t *testing.T) {
 		t.Fatalf("seed other bill error: %v", err)
 	}
 
-	_, _ = conn.Exec(ctx, "SET ROLE kopdes_app;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
 	// Case 1: Member submits request WITHOUT any tagihan_iuran_id or pesanan_id (pure arbitrary nominal)
 	// Must be rejected with HTTP 400 Bad Request
@@ -1145,3 +1166,264 @@ func TestT1_PaymentBindingToBills(t *testing.T) {
 		t.Errorf("Expected at least 1 audit_log entry for admin on-behalf payment, got %d", auditCount)
 	}
 }
+
+func TestT5_AuthAndPermissions_Reproduction(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	ctx := context.Background()
+
+	// 1. Pengawas hanya memiliki hak akses read-only (bukan mutatif)
+	tokenPengawas, _ := env.createAndLoginUser(t, "pengawas")
+
+	// 1a. Pengawas mencoba verifikasi pembayaran (MUTATIF) -> 403 Forbidden
+	dummyPayID := uuid.New()
+	bodyVerif, _ := json.Marshal(handlers.VerifikasiRequest{
+		Disetujui:    true,
+		ReferensiRRN: "112233445566",
+	})
+	reqVerif := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", dummyPayID), bytes.NewReader(bodyVerif))
+	reqVerif.Header.Set("Authorization", "Bearer "+tokenPengawas)
+	recVerif := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerif, reqVerif)
+
+	if recVerif.Code != http.StatusForbidden {
+		t.Fatalf("T5 FAILED: Role 'pengawas' must get 403 Forbidden on payment verification, got %d", recVerif.Code)
+	}
+
+	// 1b. Pengawas membaca antrean pembayaran (READ-ONLY) -> 200 OK
+	reqAntrean := httptest.NewRequest("GET", "/api/v1/pembayaran/antrean", nil)
+	reqAntrean.Header.Set("Authorization", "Bearer "+tokenPengawas)
+	recAntrean := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAntrean, reqAntrean)
+	if recAntrean.Code != http.StatusOK {
+		t.Fatalf("T5 FAILED: Role 'pengawas' must be allowed to read antrean, got %d", recAntrean.Code)
+	}
+
+	// 2. Operator tidak boleh melakukan mutasi iuran massal
+	tokenOperator, _ := env.createAndLoginUser(t, "operator")
+
+	// 2a. Operator mencoba POST /api/v1/iuran/generate (MUTATIF) -> 403 Forbidden
+	bodyGen, _ := json.Marshal(map[string]string{
+		"periode": "2026-11",
+	})
+	reqGen := httptest.NewRequest("POST", "/api/v1/iuran/generate", bytes.NewReader(bodyGen))
+	reqGen.Header.Set("Authorization", "Bearer "+tokenOperator)
+	recGen := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recGen, reqGen)
+
+	if recGen.Code != http.StatusForbidden {
+		t.Fatalf("T5 FAILED: Role 'operator' must get 403 Forbidden on generate bill, got %d", recGen.Code)
+	}
+
+	// 2b. Operator membaca daftar menunggak (READ-ONLY) -> 200 OK
+	reqTunggak := httptest.NewRequest("GET", "/api/v1/iuran/menunggak", nil)
+	reqTunggak.Header.Set("Authorization", "Bearer "+tokenOperator)
+	recTunggak := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recTunggak, reqTunggak)
+	if recTunggak.Code != http.StatusOK {
+		t.Fatalf("T5 FAILED: Role 'operator' must be allowed to read menunggak, got %d", recTunggak.Code)
+	}
+
+	// 3. Admin / Pengurus tetap boleh mengakses endpoint mutasi (tidak 403 Forbidden)
+	reqAdminGen := httptest.NewRequest("POST", "/api/v1/iuran/generate", bytes.NewReader(bodyGen))
+	reqAdminGen.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recAdminGen := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAdminGen, reqAdminGen)
+	if recAdminGen.Code == http.StatusForbidden {
+		t.Fatalf("T5 FAILED: Role 'admin' should not receive 403 Forbidden, got %d", recAdminGen.Code)
+	}
+
+	// 4. Verifikasi masa aktif access token (15 menit = 900 detik) dan keberadaan refresh token
+	loginRes1, _, _, _ := env.createAndLoginUserFull(t, "anggota")
+	if loginRes1.ExpiresIn != 900 {
+		t.Errorf("T5 FAILED: Expected access token ExpiresIn to be 900 seconds (15m), got %d", loginRes1.ExpiresIn)
+	}
+	if loginRes1.RefreshToken == "" {
+		t.Fatalf("T5 FAILED: RefreshToken must not be empty in login response")
+	}
+
+	// 5. Rotasi Refresh Token (POST /api/v1/auth/refresh)
+	bodyRef1, _ := json.Marshal(handlers.RefreshRequest{
+		RefreshToken: loginRes1.RefreshToken,
+	})
+	reqRef1 := httptest.NewRequest("POST", "/api/v1/auth/refresh", bytes.NewReader(bodyRef1))
+	recRef1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recRef1, reqRef1)
+
+	if recRef1.Code != http.StatusOK {
+		t.Fatalf("T5 FAILED: Refresh token rotation failed, got %d (body: %s)", recRef1.Code, recRef1.Body.String())
+	}
+
+	var refRes1 struct {
+		Data handlers.RefreshResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recRef1.Body.Bytes(), &refRes1)
+
+	if refRes1.Data.AccessToken == "" || refRes1.Data.RefreshToken == "" {
+		t.Fatalf("T5 FAILED: RefreshResponse missing new access or refresh token (body: %s)", recRef1.Body.String())
+	}
+	if refRes1.Data.AccessToken == loginRes1.AccessToken {
+		t.Errorf("T5 FAILED: Expected rotated access token to differ from original")
+	}
+	if refRes1.Data.RefreshToken == loginRes1.RefreshToken {
+		t.Errorf("T5 FAILED: Expected rotated refresh token to differ from original")
+	}
+	if refRes1.Data.ExpiresIn != 900 {
+		t.Errorf("T5 FAILED: Expected new access token ExpiresIn 900, got %d", refRes1.Data.ExpiresIn)
+	}
+
+	// Uji access token baru berfungsi untuk endpoint autentikasi
+	reqMe := httptest.NewRequest("GET", "/api/v1/auth/me", nil)
+	reqMe.Header.Set("Authorization", "Bearer "+refRes1.Data.AccessToken)
+	recMe := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recMe, reqMe)
+	if recMe.Code != http.StatusOK {
+		t.Fatalf("T5 FAILED: Rotated access token cannot access /auth/me, got %d", recMe.Code)
+	}
+
+	// 6. Deteksi Token Reuse (Gunakan kembali refresh token lama yang sudah dicabut)
+	reqReuse := httptest.NewRequest("POST", "/api/v1/auth/refresh", bytes.NewReader(bodyRef1))
+	recReuse := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recReuse, reqReuse)
+
+	if recReuse.Code != http.StatusUnauthorized {
+		t.Fatalf("T5 FAILED: Expected 401 Unauthorized for reused refresh token, got %d", recReuse.Code)
+	}
+
+	// Karena ada deteksi pelanggaran sesi (reuse), token turunan (refRes1.Data.RefreshToken) pun ikut hangus
+	bodyRef2, _ := json.Marshal(handlers.RefreshRequest{
+		RefreshToken: refRes1.Data.RefreshToken,
+	})
+	reqRef2 := httptest.NewRequest("POST", "/api/v1/auth/refresh", bytes.NewReader(bodyRef2))
+	recRef2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recRef2, reqRef2)
+
+	if recRef2.Code != http.StatusUnauthorized {
+		t.Fatalf("T5 FAILED: Expected 401 on active refresh token after breach detection, got %d", recRef2.Code)
+	}
+
+	// 7. Revokasi Eksplisit (Logout via POST /api/v1/auth/revoke)
+	loginRes2, _, _, _ := env.createAndLoginUserFull(t, "anggota")
+	bodyRev, _ := json.Marshal(handlers.RefreshRequest{
+		RefreshToken: loginRes2.RefreshToken,
+	})
+	reqRev := httptest.NewRequest("POST", "/api/v1/auth/revoke", bytes.NewReader(bodyRev))
+	recRev := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recRev, reqRev)
+
+	if recRev.Code != http.StatusOK {
+		t.Fatalf("T5 FAILED: Revoke endpoint failed, got %d", recRev.Code)
+	}
+
+	// Coba refresh setelah di-revoke -> wajib 401
+	reqAfterRev := httptest.NewRequest("POST", "/api/v1/auth/refresh", bytes.NewReader(bodyRev))
+	recAfterRev := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAfterRev, reqAfterRev)
+	if recAfterRev.Code != http.StatusUnauthorized {
+		t.Fatalf("T5 FAILED: Expected 401 after explicit revocation, got %d", recAfterRev.Code)
+	}
+
+	// 8. Pemilihan Koperasi Eksplisit & Hierarki Peran Deterministik
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn error: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE; SELECT set_config('app.is_platform_admin', 'true', false);")
+
+	// Buat Koperasi Kedua
+	coop2ID := uuid.New()
+	_, err = conn.Exec(ctx, `
+		INSERT INTO koperasi (id, kode_koperasi, nama, jenis_kopdes, wilayah_desa_id, alamat)
+		VALUES ($1, $2, 'Koperasi Multi Tenant Test', 'desa',
+		        (SELECT id FROM wilayah LIMIT 1), 'Jl. Merdeka No. 2');
+	`, coop2ID, fmt.Sprintf("KOP-MULTI-%s", uuid.New().String()[:10]))
+	if err != nil {
+		t.Fatalf("seed coop2 error: %v", err)
+	}
+
+	multiUserID := uuid.New()
+	multiEmail := fmt.Sprintf("multi_%s@kopdes.id", uuid.New().String()[:8])
+	multiEmailHash := security.HashBlindIndex(multiEmail, []byte(env.Config.BlindIndexSecret))
+	multiPwdPlain := "MultiPass123!"
+	multiPwdHash, _ := security.HashPassword(multiPwdPlain)
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Multi Role User');
+	`, multiUserID, []byte("enkripsi"), multiEmailHash, multiPwdHash)
+	if err != nil {
+		t.Fatalf("seed multi user error: %v", err)
+	}
+
+	var roleAdminID, roleAnggotaID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'admin'").Scan(&roleAdminID)
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'anggota'").Scan(&roleAnggotaID)
+
+	// Hubungkan: di env.KoperasiID sebagai 'anggota', di coop2ID sebagai 'admin'
+	_, err = conn.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id, koperasi_id)
+		VALUES ($1, $2, $3), ($1, $4, $5);
+	`, multiUserID, roleAnggotaID, env.KoperasiID, roleAdminID, coop2ID)
+	if err != nil {
+		t.Fatalf("seed multi user_roles error: %v", err)
+	}
+
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
+
+	// 8a. Login eksplisit memilih env.KoperasiID -> peran harus 'anggota'
+	bodyLoginCoop1, _ := json.Marshal(handlers.LoginRequest{
+		Email:      multiEmail,
+		Password:   multiPwdPlain,
+		KoperasiID: &env.KoperasiID,
+	})
+	reqLoginCoop1 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLoginCoop1))
+	recLoginCoop1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLoginCoop1, reqLoginCoop1)
+
+	var resCoop1 struct {
+		Data handlers.LoginResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recLoginCoop1.Body.Bytes(), &resCoop1)
+	if resCoop1.Data.Role != "anggota" || resCoop1.Data.KoperasiID != env.KoperasiID {
+		t.Errorf("T5 FAILED: Expected role 'anggota' for coop1, got '%s', coop: %s", resCoop1.Data.Role, resCoop1.Data.KoperasiID)
+	}
+
+	// 8b. Login eksplisit memilih coop2ID -> peran harus 'admin'
+	bodyLoginCoop2, _ := json.Marshal(handlers.LoginRequest{
+		Email:      multiEmail,
+		Password:   multiPwdPlain,
+		KoperasiID: &coop2ID,
+	})
+	reqLoginCoop2 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLoginCoop2))
+	recLoginCoop2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLoginCoop2, reqLoginCoop2)
+
+	var resCoop2 struct {
+		Data handlers.LoginResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recLoginCoop2.Body.Bytes(), &resCoop2)
+	if resCoop2.Data.Role != "admin" || resCoop2.Data.KoperasiID != coop2ID {
+		t.Errorf("T5 FAILED: Expected role 'admin' for coop2, got '%s', coop: %s", resCoop2.Data.Role, resCoop2.Data.KoperasiID)
+	}
+
+	// 8c. Login tanpa memilih koperasi -> urutan hierarki deterministik memprioritaskan 'admin'
+	bodyLoginNoCoop, _ := json.Marshal(handlers.LoginRequest{
+		Email:    multiEmail,
+		Password: multiPwdPlain,
+	})
+	reqLoginNoCoop := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLoginNoCoop))
+	recLoginNoCoop := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLoginNoCoop, reqLoginNoCoop)
+
+	var resNoCoop struct {
+		Data handlers.LoginResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recLoginNoCoop.Body.Bytes(), &resNoCoop)
+	if resNoCoop.Data.Role != "admin" {
+		t.Errorf("T5 FAILED: Expected deterministic highest priority role 'admin', got '%s'", resNoCoop.Data.Role)
+	}
+}
+

@@ -112,6 +112,8 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.HandleFunc("GET /healthz", healthH.HandleHealthz)
 	mux.HandleFunc("GET /readyz", healthH.HandleReadyz)
 	mux.HandleFunc("POST /api/v1/auth/login", authH.HandleLogin)
+	mux.HandleFunc("POST /api/v1/auth/refresh", authH.HandleRefreshToken)
+	mux.HandleFunc("POST /api/v1/auth/revoke", authH.HandleRevokeToken)
 
 	// --- 2. Authenticated Endpoints (Semua Anggota/User) ---
 	mux.Handle("GET /api/v1/auth/me", authMw.RequireAuth(http.HandlerFunc(authH.HandleGetProfile)))
@@ -122,18 +124,22 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("GET /api/v1/katalog/harga", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleGetHargaAnggota)))
 
 	// --- 3. Operator / Pengurus Endpoints (RBAC Guard) ---
-	adminRoles := []string{"admin", "pengurus", "operator", "pengawas"}
+	// Pemisahan izin: pengawas & operator hanya read-only antrean/tunggakan, verifikasi & generate dibatasi
+	readOnlyAdminRoles := []string{"admin", "pengurus", "operator", "pengawas", "bendahara", "ketua"}
+	pembayaranVerifikasiRoles := []string{"admin", "pengurus", "bendahara", "ketua"}
+	iuranGenerateRoles := []string{"admin", "pengurus", "bendahara"}
+
 	mux.Handle("GET /api/v1/pembayaran/antrean", authMw.RequireAuth(
-		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(qrisH.HandleListAntreanVerifikasi)),
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(qrisH.HandleListAntreanVerifikasi)),
 	))
 	mux.Handle("POST /api/v1/pembayaran/{id}/verifikasi", authMw.RequireAuth(
-		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(qrisH.HandleVerifikasiPembayaran)),
+		middleware.RequireRoles(pembayaranVerifikasiRoles...)(http.HandlerFunc(qrisH.HandleVerifikasiPembayaran)),
 	))
 	mux.Handle("POST /api/v1/iuran/generate", authMw.RequireAuth(
-		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(iuranH.HandleGenerateTagihan)),
+		middleware.RequireRoles(iuranGenerateRoles...)(http.HandlerFunc(iuranH.HandleGenerateTagihan)),
 	))
 	mux.Handle("GET /api/v1/iuran/menunggak", authMw.RequireAuth(
-		middleware.RequireRoles(adminRoles...)(http.HandlerFunc(iuranH.HandleListMenunggak)),
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(iuranH.HandleListMenunggak)),
 	))
 
 	// --- 4. Admin Koperasi QRIS Management (PERLU VERIFIKASI) ---

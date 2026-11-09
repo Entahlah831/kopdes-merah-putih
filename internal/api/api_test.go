@@ -87,6 +87,7 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 	cfg.JWTSecret = "test-jwt-secret-key-32-bytes-minimum-ok!"
 	cfg.BlindIndexSecret = "test-blind-index-secret-32-bytes!"
 	cfg.QRISSecret = "test-qris-linear-probing-secret-32b!"
+	cfg.AESMasterKey = "test-aes-master-key-32-bytes-long!"
 
 	server := api.NewServer(pool, cfg)
 

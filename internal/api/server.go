@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/auth"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 type Config struct {
@@ -17,6 +20,7 @@ type Config struct {
 	JWTSecret           string
 	BlindIndexSecret    string
 	QRISSecret          string
+	AESMasterKey        string
 	AllowedOrigins      []string
 	RateLimitRPS        float64
 	RateLimitBurst      int
@@ -24,12 +28,40 @@ type Config struct {
 	MaxRateLimitClients int
 }
 
+func decodeSecretBytes(secret string) []byte {
+	if s, err := hex.DecodeString(secret); err == nil && len(s) >= 32 {
+		return s
+	}
+	if s, err := base64.StdEncoding.DecodeString(secret); err == nil && len(s) >= 32 {
+		return s
+	}
+	return []byte(secret)
+}
+
+// Validate memastikan tidak ada secret default/kosong dan panjang memenuhi standar 32-byte
+func (c *Config) Validate() error {
+	if err := security.ValidateSecretKey("JWT_SECRET", decodeSecretBytes(c.JWTSecret)); err != nil {
+		return err
+	}
+	if err := security.ValidateSecretKey("BLIND_INDEX_SECRET", decodeSecretBytes(c.BlindIndexSecret)); err != nil {
+		return err
+	}
+	if err := security.ValidateSecretKey("QRIS_SECRET", decodeSecretBytes(c.QRISSecret)); err != nil {
+		return err
+	}
+	if err := security.ValidateSecretKey("AES_MASTER_KEY", decodeSecretBytes(c.AESMasterKey)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Port:                8080,
-		JWTSecret:           "dev-super-secret-jwt-key-minimum-32bytes-long!",
-		BlindIndexSecret:    "dev-blind-index-hmac-sha256-secret-32b!",
-		QRISSecret:          "dev-qris-linear-probing-secret-32b-key!",
+		JWTSecret:           "",
+		BlindIndexSecret:    "",
+		QRISSecret:          "",
+		AESMasterKey:        "",
 		AllowedOrigins:      []string{"*"},
 		RateLimitRPS:        20.0,
 		RateLimitBurst:      40,
@@ -39,10 +71,11 @@ func DefaultConfig() Config {
 }
 
 type Server struct {
-	cfg        Config
-	pool       *pgxpool.Pool
-	httpServer *http.Server
-	router     *http.ServeMux
+	cfg         Config
+	pool        *pgxpool.Pool
+	keyProvider security.KeyProvider
+	httpServer  *http.Server
+	router      *http.ServeMux
 }
 
 func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
@@ -56,6 +89,15 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	)
 	trustedMatcher := middleware.NewTrustedProxyMatcher(cfg.TrustedProxies)
 	loginLimiter := middleware.NewLoginRateLimiter(5, 15*time.Minute, 10000)
+
+	var keyProvider security.KeyProvider
+	aesBytes := decodeSecretBytes(cfg.AESMasterKey)
+	if len(aesBytes) >= 32 {
+		kp, err := security.NewMasterKeyProvider("v1", "k1", aesBytes[:32])
+		if err == nil {
+			keyProvider = kp
+		}
+	}
 
 	// Inisialisasi Handlers
 	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher)
@@ -126,10 +168,11 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	}
 
 	return &Server{
-		cfg:        cfg,
-		pool:       pool,
-		httpServer: httpSrv,
-		router:     mux,
+		cfg:         cfg,
+		pool:        pool,
+		keyProvider: keyProvider,
+		httpServer:  httpSrv,
+		router:      mux,
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 // loadEnv membaca file .env dan melakukan ekspansi variabel lingkungan secara dinamis
@@ -104,7 +105,7 @@ func main() {
 
 	pgxCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", dsn, err)
+		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", security.RedactDSN(dsn), err)
 	}
 
 	pgxCfg.MaxConns = 30
@@ -121,7 +122,7 @@ func main() {
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", dsn, err)
+		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", security.RedactDSN(dsn), err)
 	}
 	log.Printf("Koneksi ke PostgreSQL berhasil terhubung.")
 
@@ -143,6 +144,13 @@ func main() {
 	}
 	if s := os.Getenv("QRIS_SECRET"); s != "" {
 		cfg.QRISSecret = s
+	}
+	if s := os.Getenv("AES_MASTER_KEY"); s != "" {
+		cfg.AESMasterKey = s
+	}
+
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Konfigurasi keamanan aplikasi tidak valid: %v", err)
 	}
 
 	if origins := os.Getenv("ALLOWED_ORIGINS"); origins != "" {

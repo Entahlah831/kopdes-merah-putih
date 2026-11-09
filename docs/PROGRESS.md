@@ -38,11 +38,11 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   - [x] Batasi proxy terpercaya (`TRUSTED_PROXIES` via `TrustedProxyMatcher`), tolak percaya header proxy dari `RemoteAddr` yang tidak terdaftar.
   - [x] Batasi ukuran memory map dengan bounded LRU eviction (`container/list`, default 10.000 entri).
   - [x] Tambahkan `LoginRateLimiter` per akun (`email_hash`) dan per IP dengan backoff & lockout pada `/api/v1/auth/login`.
-- [ ] **T3. Secret default di kode, AES key tidak pernah dipakai, DSN bocor ke log**
-  - [ ] Hapus secret default di `DefaultConfig()`. Gagal start jika kunci < 32 byte.
-  - [ ] Sambungkan `AES_MASTER_KEY` ke enkripsi data pribadi anggota dengan AAD.
-  - [ ] Blind index per tenant dengan HKDF(master, koperasi_id).
-  - [ ] Redaksi DSN password dan PII di log.
+- [x] **T3. Secret default di kode, AES key tidak pernah dipakai, DSN bocor ke log**
+  - [x] Hapus secret default di `DefaultConfig()`. Gagal start jika kunci JWT/BLIND/QRIS/AES kosong atau < 32 byte (`ValidateSecretKey`).
+  - [x] Implementasi `KeyProvider` / `MasterKeyProvider` dengan AAD (`table:column:record_id`) dan prefix versi kunci pada AES-256-GCM.
+  - [x] Blind index per tenant dengan HKDF-SHA256 (`DeriveTenantBlindIndexKey` & `HashTenantBlindIndex`).
+  - [x] Redaksi DSN password (`RedactDSN`) pada seluruh output log kegagalan koneksi database.
 - [ ] **T4. Celah cakupan RLS dan bypass platform admin**
   - [ ] Pasang RLS pada `audit_log`, `job_log`, `konfigurasi_aturan`.
   - [ ] Perbaiki jalur login tanpa bypass platform admin pra-autentikasi (`SECURITY DEFINER` sempit).
@@ -116,4 +116,24 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   === RUN   TestT2_LoginRateLimiter_AccountAndIPLockout
   --- PASS: TestT2_LoginRateLimiter_AccountAndIPLockout (0.12s)
   ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.296s
+  ```
+
+### [2026-11-09] T3: Pengamanan Secret, KeyProvider AES-AAD, HKDF Blind Index, Redaksi DSN
+- **Reproduksi Gagal**: `TestT3_SecretValidation_RequiresStrongKey` dan `TestT3_AESGCM_WithAAD_TamperProof` gagal jika secret < 32 byte diizinkan atau enkripsi tanpa pengikatan AAD.
+- **Implementasi**:
+  - Hapus seluruh hardcoded dev fallback secrets di `DefaultConfig()`. Tambahkan validasi ketat `cfg.Validate()` (memvalidasi panjang $\ge 32$ byte untuk `JWT_SECRET`, `BLIND_INDEX_SECRET`, `QRIS_SECRET`, dan `AES_MASTER_KEY`).
+  - Dibuat `MasterKeyProvider` dengan AAD (`table:column:record_id`) dan prefix metadata versi kunci (`v1:key_id:nonce+ciphertext`), menolak dekripsi jika AAD / tabel / kolom / record ID dimanipulasi.
+  - Dibuat `DeriveTenantBlindIndexKey` menggunakan HKDF-SHA256 ber-garam `koperasi_id` untuk mengisolasi blind index NIK per koperasi, memutus korelasi frekuensi lintas tenant.
+  - Ditambahkan fungsi `RedactDSN` untuk menyamarkan password database menjadi `******` pada semua pesan log fatal/error.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestT3_SecretValidation_RequiresStrongKey
+  --- PASS: TestT3_SecretValidation_RequiresStrongKey (0.00s)
+  === RUN   TestT3_AESGCM_WithAAD_TamperProof
+  --- PASS: TestT3_AESGCM_WithAAD_TamperProof (0.00s)
+  === RUN   TestT3_HKDF_TenantBlindIndex_Isolation
+  --- PASS: TestT3_HKDF_TenantBlindIndex_Isolation (0.00s)
+  === RUN   TestT3_RedactDSN_HidesPassword
+  --- PASS: TestT3_RedactDSN_HidesPassword (0.00s)
+  ok  	github.com/kopdes/merah-putih/internal/security	0.438s
   ```

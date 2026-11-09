@@ -177,6 +177,9 @@ func main() {
 		}
 	}
 
+	cfg.QRISDynamicEnabled = strings.EqualFold(os.Getenv("QRIS_DYNAMIC_ENABLED"), "true")
+	cfg.AllowPersonalPaymentPilot = strings.EqualFold(os.Getenv("ALLOW_PERSONAL_PAYMENT_PILOT"), "true")
+
 	server := api.NewServer(pool, cfg)
 
 	// Channel sinyal shutdown

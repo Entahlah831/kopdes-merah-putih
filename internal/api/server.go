@@ -16,16 +16,18 @@ import (
 )
 
 type Config struct {
-	Port                int
-	JWTSecret           string
-	BlindIndexSecret    string
-	QRISSecret          string
-	AESMasterKey        string
-	AllowedOrigins      []string
-	RateLimitRPS        float64
-	RateLimitBurst      int
-	TrustedProxies      []string
-	MaxRateLimitClients int
+	Port                      int
+	JWTSecret                 string
+	BlindIndexSecret          string
+	QRISSecret                string
+	AESMasterKey              string
+	AllowedOrigins            []string
+	RateLimitRPS              float64
+	RateLimitBurst            int
+	TrustedProxies            []string
+	MaxRateLimitClients       int
+	QRISDynamicEnabled        bool
+	AllowPersonalPaymentPilot bool
 }
 
 func decodeSecretBytes(secret string) []byte {
@@ -65,8 +67,10 @@ func DefaultConfig() Config {
 		AllowedOrigins:      []string{"*"},
 		RateLimitRPS:        20.0,
 		RateLimitBurst:      40,
-		TrustedProxies:      nil,
-		MaxRateLimitClients: 10000,
+		TrustedProxies:            nil,
+		MaxRateLimitClients:       10000,
+		QRISDynamicEnabled:        false,
+		AllowPersonalPaymentPilot: false,
 	}
 }
 
@@ -101,7 +105,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 
 	// Inisialisasi Handlers
 	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher)
-	qrisH := handlers.NewQRISHandler(pool, []byte(cfg.QRISSecret))
+	qrisH := handlers.NewQRISHandlerWithConfig(pool, []byte(cfg.QRISSecret), cfg.QRISDynamicEnabled, cfg.AllowPersonalPaymentPilot)
 	iuranH := handlers.NewIuranHandler(pool)
 	katalogH := handlers.NewKatalogHandler(pool)
 	healthH := handlers.NewHealthHandler(pool)

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/api/handlers"
+	"github.com/kopdes/merah-putih/internal/qris"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -207,6 +208,11 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		t.Fatalf("seed metode error: %v", err)
 	}
 
+	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
+	tag26 := fmt.Sprintf("26%02d%s", len(tag26Val), tag26Val)
+	qrisPrefix := fmt.Sprintf("000201010211%s5204541153033605802ID5917Merchant API Test6007Jakarta6304", tag26)
+	validQRISPayload := qrisPrefix + qris.CalculateCRC16(qrisPrefix)
+
 	nmid := fmt.Sprintf("ID%013d", time.Now().UnixNano()%10000000000000)
 	_, err = conn.Exec(ctx, `
 		INSERT INTO rekening_qris_koperasi (
@@ -216,9 +222,9 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		) VALUES (
 			$1, $2, $3, 'Merchant API Test', $4,
 			'Bank Mandiri', '1112223334', 'Koperasi API',
-			true, '00020101021126570011ID.CO.QRIS.WWW...', $5
+			true, $5, $6
 		);
-	`, rekeningID, koperasiID, penyediaID, nmid, adminUserID)
+	`, rekeningID, koperasiID, penyediaID, nmid, validQRISPayload, adminUserID)
 	if err != nil {
 		t.Fatalf("seed rekening QRIS error: %v", err)
 	}
@@ -337,17 +343,13 @@ func (env *TestEnv) CreateBill(t testing.TB, anggotaID uuid.UUID, nominal int64)
 	_, _ = conn.Exec(ctx, "RESET ROLE;")
 	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
 
-	var jenisID uuid.UUID
-	err = conn.QueryRow(ctx, "SELECT id FROM jenis_iuran WHERE koperasi_id = $1 LIMIT 1", env.KoperasiID).Scan(&jenisID)
-	if err != nil || jenisID == uuid.Nil {
-		jenisID = uuid.New()
-		_, err = conn.Exec(ctx, `
-			INSERT INTO jenis_iuran (id, koperasi_id, kode, nama, nominal, hari_jatuh_tempo, berlaku_mulai, created_by)
-			VALUES ($1, $2, $3, 'Iuran Test', $4, 10, '2026-01-01', $5);
-		`, jenisID, env.KoperasiID, "JI-"+uuid.New().String()[:8], nominal, env.AdminUserID)
-		if err != nil {
-			t.Fatalf("create jenis_iuran error: %v", err)
-		}
+	jenisID := uuid.New()
+	_, err = conn.Exec(ctx, `
+		INSERT INTO jenis_iuran (id, koperasi_id, kode, nama, nominal, hari_jatuh_tempo, berlaku_mulai, created_by)
+		VALUES ($1, $2, $3, 'Iuran Test', $4, 10, '2026-01-01', $5);
+	`, jenisID, env.KoperasiID, "JI-"+uuid.New().String()[:12], nominal, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("create jenis_iuran error: %v", err)
 	}
 
 	billID := uuid.New()
@@ -784,10 +786,11 @@ func TestAPI_Admin_RekeningQRIS_Management(t *testing.T) {
 	tokenAdmin, _ := env.createAndLoginUser(t, "admin")
 	tokenAnggota, _ := env.createAndLoginUser(t, "anggota")
 
-	// Payload EMVCo Statis valid
+	// Payload EMVCo Statis valid dengan CRC16 terhitung
 	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
 	tag26 := fmt.Sprintf("26%02d%s", len(tag26Val), tag26Val)
-	validStaticQR := fmt.Sprintf("000201010211%s5204541153033605802ID5913KOPDES MAKMUR6007BANDUNG63041234", tag26)
+	validStaticQRPrefix := fmt.Sprintf("000201010211%s5204541153033605802ID5913KOPDES MAKMUR6007BANDUNG6304", tag26)
+	validStaticQR := validStaticQRPrefix + qris.CalculateCRC16(validStaticQRPrefix)
 
 	// 1. Pengujian Akses Non-Admin (Wajib Ditolak 403)
 	bodyNonAdmin, _ := json.Marshal(handlers.AdminDaftarRekeningQRISRequest{
@@ -825,8 +828,8 @@ func TestAPI_Admin_RekeningQRIS_Management(t *testing.T) {
 	recBadanHukum := httptest.NewRecorder()
 	env.Server.Router().ServeHTTP(recBadanHukum, reqBadanHukum)
 
-	if recBadanHukum.Code != http.StatusBadRequest {
-		t.Errorf("Expected 400 Bad Request for non-legal-entity QRIS, got %d", recBadanHukum.Code)
+	if recBadanHukum.Code != http.StatusBadRequest && recBadanHukum.Code != http.StatusForbidden {
+		t.Errorf("Expected 400 Bad Request or 403 Forbidden for non-legal-entity QRIS, got %d", recBadanHukum.Code)
 	}
 
 	// 3. Admin Mendaftarkan QRIS Statis Badan Hukum yang Sah
@@ -900,10 +903,16 @@ func TestAPI_QRIS_AutoLockNominal(t *testing.T) {
 	token := env.AnggotaToken
 	billID := env.CreateBill(t, env.AnggotaID, 75000)
 
-	// Daftarkan QRIS Statis valid format EMVCo Bank Indonesia
+	// Daftarkan QRIS Statis valid format EMVCo Bank Indonesia dengan CRC valid
 	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
 	tag26 := fmt.Sprintf("26%02d%s", len(tag26Val), tag26Val)
-	validStaticQR := fmt.Sprintf("000201010211%s5204541153033605802ID5913KOPDES MAKMUR6007BANDUNG63041234", tag26)
+	validStaticQRPrefix := fmt.Sprintf("000201010211%s5204541153033605802ID5913KOPDES MAKMUR6007BANDUNG6304", tag26)
+	validStaticQR := validStaticQRPrefix + qris.CalculateCRC16(validStaticQRPrefix)
+
+	// Aktifkan server dengan QRISDynamicEnabled = true untuk menguji AutoLock
+	cfgDynamic := env.Config
+	cfgDynamic.QRISDynamicEnabled = true
+	serverDynamic := api.NewServer(env.Pool, cfgDynamic)
 
 	var newRekeningID uuid.UUID
 	err := env.Pool.QueryRow(context.Background(), `
@@ -933,7 +942,7 @@ func TestAPI_QRIS_AutoLockNominal(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	env.Server.Router().ServeHTTP(rec, req)
+	serverDynamic.Router().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("Expected 201 Created for AutoLock QRIS, got %d (body: %s)", rec.Code, rec.Body.String())
@@ -1497,6 +1506,160 @@ func TestS1_IDOR_PembayaranStatus_Reproduction(t *testing.T) {
 	env.Server.Router().ServeHTTP(recOwner, reqOwner)
 	if recOwner.Code != http.StatusOK {
 		t.Errorf("Expected original payer to have access to pembayaran, got %d", recOwner.Code)
+	}
+}
+
+func TestS2_QRIS_FeatureFlag_And_Pilot_Validation(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	// 1. Uji default feature flag QRISDynamicEnabled == false
+	billID := env.CreateBill(t, env.AnggotaID, 60000)
+	bodyPay, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID},
+	})
+	reqPay := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay))
+	reqPay.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay.Header.Set("Content-Type", "application/json")
+	recPay := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPay, reqPay)
+
+	if recPay.Code != http.StatusCreated {
+		t.Fatalf("Buat pembayaran QRIS gagal: %d (body: %s)", recPay.Code, recPay.Body.String())
+	}
+
+	var resDefault struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPay.Body.Bytes(), &resDefault)
+
+	// Karena QRIS_DYNAMIC_ENABLED default false:
+	if resDefault.Data.IsAutoLockNominal {
+		t.Errorf("Expected IsAutoLockNominal to be false when QRIS_DYNAMIC_ENABLED is false")
+	}
+	if resDefault.Data.QRISPayloadDinamis != "" {
+		t.Errorf("Expected QRISPayloadDinamis to be empty when flag is disabled, got %s", resDefault.Data.QRISPayloadDinamis)
+	}
+
+	// 2. Uji ketika QRIS_DYNAMIC_ENABLED diaktifkan
+	cfgDynamic := env.Config
+	cfgDynamic.QRISDynamicEnabled = true
+	serverDynamic := api.NewServer(env.Pool, cfgDynamic)
+
+	billID2 := env.CreateBill(t, env.AnggotaID, 65000)
+	bodyPay2, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID2},
+	})
+	reqPay2 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay2))
+	reqPay2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay2.Header.Set("Content-Type", "application/json")
+	recPay2 := httptest.NewRecorder()
+	serverDynamic.Router().ServeHTTP(recPay2, reqPay2)
+
+	if recPay2.Code != http.StatusCreated {
+		t.Fatalf("Buat pembayaran QRIS dinamis gagal: %d (body: %s)", recPay2.Code, recPay2.Body.String())
+	}
+
+	var resDynamic struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPay2.Body.Bytes(), &resDynamic)
+
+	if !resDynamic.Data.IsAutoLockNominal {
+		t.Errorf("Expected IsAutoLockNominal to be true when QRIS_DYNAMIC_ENABLED is true")
+	}
+	if resDynamic.Data.QRISPayloadDinamis == "" {
+		t.Errorf("Expected QRISPayloadDinamis to be generated when flag is enabled")
+	}
+
+	// 3. Uji Admin Daftar Rekening QRIS: Validasi Payload EMVCo & CRC Masukan
+	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
+	tag26 := fmt.Sprintf("26%02d%s", len(tag26Val), tag26Val)
+	validPrefix := fmt.Sprintf("000201010211%s5204541153033605802ID5912Kopdes Juara6007Bandung6304", tag26)
+	validCRC := qris.CalculateCRC16(validPrefix)
+	validPayload := validPrefix + validCRC
+	corruptPayload := validPrefix + "DEAD"
+
+	// 3a. Tolak jika payload CRC rusak -> 400 Bad Request
+	bodyBadCRC, _ := json.Marshal(handlers.AdminDaftarRekeningQRISRequest{
+		NamaMerchant:         "Kopdes Juara",
+		NMID:                 "ID1099887766554",
+		NamaBankPJP:          "Bank Mandiri",
+		NoRekeningSettlement: "1234567890",
+		NamaPemilikRekening:  "Koperasi Desa Juara",
+		IsAtasNamaBadanHukum: true,
+		JenisPemilik:         "badan_hukum_koperasi",
+		QRISPayloadStatis:    corruptPayload,
+	})
+	reqBadCRC := httptest.NewRequest("POST", "/api/v1/koperasi/rekening-qris", bytes.NewReader(bodyBadCRC))
+	reqBadCRC.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqBadCRC.Header.Set("Content-Type", "application/json")
+	recBadCRC := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recBadCRC, reqBadCRC)
+
+	if recBadCRC.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for corrupted CRC, got %d", recBadCRC.Code)
+	}
+
+	// 3b. Tolak perorangan_pengurus jika pilot mode non-aktif -> 403 Forbidden
+	bodyPersonalNoPilot, _ := json.Marshal(handlers.AdminDaftarRekeningQRISRequest{
+		NamaMerchant:         "Toko Pribadi Pengurus",
+		NMID:                 "ID1099887766555",
+		NamaBankPJP:          "Bank BRI",
+		NoRekeningSettlement: "0987654321",
+		NamaPemilikRekening:  "Budi Pengurus",
+		IsAtasNamaBadanHukum: false,
+		JenisPemilik:         "perorangan_pengurus",
+		QRISPayloadStatis:    validPayload,
+	})
+	reqPersonalNoPilot := httptest.NewRequest("POST", "/api/v1/koperasi/rekening-qris", bytes.NewReader(bodyPersonalNoPilot))
+	reqPersonalNoPilot.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqPersonalNoPilot.Header.Set("Content-Type", "application/json")
+	recPersonalNoPilot := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPersonalNoPilot, reqPersonalNoPilot)
+
+	if recPersonalNoPilot.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for perorangan_pengurus when pilot disabled, got %d", recPersonalNoPilot.Code)
+	}
+
+	// 3c. Izinkan perorangan_pengurus jika ALLOW_PERSONAL_PAYMENT_PILOT diaktifkan -> 200/201 OK
+	cfgPilot := env.Config
+	cfgPilot.AllowPersonalPaymentPilot = true
+	serverPilot := api.NewServer(env.Pool, cfgPilot)
+
+	reqPersonalPilot := httptest.NewRequest("POST", "/api/v1/koperasi/rekening-qris", bytes.NewReader(bodyPersonalNoPilot))
+	reqPersonalPilot.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqPersonalPilot.Header.Set("Content-Type", "application/json")
+	recPersonalPilot := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recPersonalPilot, reqPersonalPilot)
+
+	if recPersonalPilot.Code != http.StatusOK && recPersonalPilot.Code != http.StatusCreated {
+		t.Errorf("Expected success for perorangan_pengurus when pilot enabled, got %d (body: %s)", recPersonalPilot.Code, recPersonalPilot.Body.String())
+	}
+
+	// 3d. Pendaftaran resmi badan_hukum_koperasi dengan QRIS valid -> 200/201 OK
+	bodyLegal, _ := json.Marshal(handlers.AdminDaftarRekeningQRISRequest{
+		NamaMerchant:         "Kopdes Juara",
+		NMID:                 "ID1099887766556",
+		NamaBankPJP:          "Bank Mandiri",
+		NoRekeningSettlement: "1234567890",
+		NamaPemilikRekening:  "Koperasi Desa Juara",
+		IsAtasNamaBadanHukum: true,
+		JenisPemilik:         "badan_hukum_koperasi",
+		QRISPayloadStatis:    validPayload,
+	})
+	reqLegal := httptest.NewRequest("POST", "/api/v1/koperasi/rekening-qris", bytes.NewReader(bodyLegal))
+	reqLegal.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqLegal.Header.Set("Content-Type", "application/json")
+	recLegal := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLegal, reqLegal)
+
+	if recLegal.Code != http.StatusOK && recLegal.Code != http.StatusCreated {
+		t.Errorf("Expected success for badan_hukum_koperasi, got %d (body: %s)", recLegal.Code, recLegal.Body.String())
 	}
 }
 

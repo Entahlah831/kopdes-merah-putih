@@ -20,14 +20,22 @@ import (
 )
 
 type QRISHandler struct {
-	pool       *pgxpool.Pool
-	qrisSecret []byte
+	pool                      *pgxpool.Pool
+	qrisSecret                []byte
+	dynamicQRISEnabled        bool
+	allowPersonalPaymentPilot bool
 }
 
 func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
+	return NewQRISHandlerWithConfig(pool, qrisSecret, false, false)
+}
+
+func NewQRISHandlerWithConfig(pool *pgxpool.Pool, qrisSecret []byte, dynamicQRISEnabled bool, allowPersonalPaymentPilot bool) *QRISHandler {
 	return &QRISHandler{
-		pool:       pool,
-		qrisSecret: qrisSecret,
+		pool:                      pool,
+		qrisSecret:                qrisSecret,
+		dynamicQRISEnabled:        dynamicQRISEnabled,
+		allowPersonalPaymentPilot: allowPersonalPaymentPilot,
 	}
 }
 
@@ -378,13 +386,18 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		sisaDetik = 0
 	}
 
-	// Generate QRIS Dinamis dengan Tag 54 Auto-Lock Nominal & Tag 62 Nomor Invoice
-	dynamicPayload, dynErr := qris.GenerateDynamicQRIS(qrisPayload, res.NominalTotalRp, noPembayaran)
+	// Generate QRIS Dinamis hanya jika feature flag QRIS_DYNAMIC_ENABLED bernilai true (S2)
 	finalPayload := qrisPayload
+	dynamicPayload := ""
 	isAutoLock := false
-	if dynErr == nil {
-		finalPayload = dynamicPayload
-		isAutoLock = true
+
+	if h.dynamicQRISEnabled {
+		dynPayload, dynErr := qris.GenerateDynamicQRIS(qrisPayload, res.NominalTotalRp, noPembayaran)
+		if dynErr == nil {
+			dynamicPayload = dynPayload
+			finalPayload = dynamicPayload
+			isAutoLock = true
+		}
 	}
 
 	response.JSON(w, http.StatusCreated, BuatQRISResponse{
@@ -730,6 +743,7 @@ type AdminDaftarRekeningQRISRequest struct {
 	NoRekeningSettlement string `json:"no_rekening_settlement"`
 	NamaPemilikRekening  string `json:"nama_pemilik_rekening"`
 	IsAtasNamaBadanHukum bool   `json:"is_atas_nama_badan_hukum"`
+	JenisPemilik         string `json:"jenis_pemilik,omitempty"` // 'badan_hukum_koperasi' | 'perorangan_pengurus'
 	QRISPayloadStatis    string `json:"qris_payload_statis"`
 }
 
@@ -740,6 +754,7 @@ type RekeningQRISItem struct {
 	NamaBankPJP          string    `json:"nama_bank_pjp"`
 	NoRekeningSettlement string    `json:"no_rekening_settlement"`
 	NamaPemilikRekening  string    `json:"nama_pemilik_rekening"`
+	JenisPemilik         string    `json:"jenis_pemilik"`
 	QRISPayloadStatis    string    `json:"qris_payload_statis"`
 	StatusAktif          bool      `json:"status_aktif"`
 	CreatedAt            time.Time `json:"created_at"`
@@ -773,12 +788,35 @@ func (h *QRISHandler) HandleAdminDaftarRekeningQRIS(w http.ResponseWriter, r *ht
 		response.BadRequest(w, "Nama pemilik rekening wajib diisi")
 		return
 	}
-	if !req.IsAtasNamaBadanHukum {
-		response.BadRequest(w, "Sesuai regulasi PADG BI 21/18/PADG/2019, rekening merchant QRIS wajib atas nama badan hukum koperasi")
-		return
-	}
+
+	// 1. Validasi integritas QRIS statis masukan (EMVCo & CRC16)
 	if req.QRISPayloadStatis == "" {
 		response.BadRequest(w, "Payload QRIS statis (string teks EMVCo) wajib diisi")
+		return
+	}
+	if err := qris.ValidateQRIS(req.QRISPayloadStatis); err != nil {
+		response.BadRequest(w, fmt.Sprintf("Payload QRIS statis tidak valid: %v", err))
+		return
+	}
+
+	// 2. Evaluasi jenis kepemilikan rekening (S2)
+	jenisPemilik := req.JenisPemilik
+	if jenisPemilik == "" {
+		if req.IsAtasNamaBadanHukum {
+			jenisPemilik = "badan_hukum_koperasi"
+		} else {
+			jenisPemilik = "perorangan_pengurus"
+		}
+	}
+
+	if jenisPemilik != "badan_hukum_koperasi" && jenisPemilik != "perorangan_pengurus" {
+		response.BadRequest(w, "jenis_pemilik harus bernilai 'badan_hukum_koperasi' atau 'perorangan_pengurus'")
+		return
+	}
+
+	// Penolakan rekening perorangan jika pilot mode tidak diaktifkan
+	if jenisPemilik == "perorangan_pengurus" && !h.allowPersonalPaymentPilot {
+		response.Forbidden(w, "Rekening QRIS perorangan pengurus dinonaktifkan dalam lingkungan produksi. Wajib menggunakan rekening atas nama badan hukum koperasi atau mengaktifkan ALLOW_PERSONAL_PAYMENT_PILOT.")
 		return
 	}
 
@@ -805,22 +843,26 @@ func (h *QRISHandler) HandleAdminDaftarRekeningQRIS(w http.ResponseWriter, r *ht
 			return fmt.Errorf("gagal inisialisasi penyedia pembayaran: %w", err)
 		}
 
+		isBadanHukum := (jenisPemilik == "badan_hukum_koperasi")
+
 		// 2. Simpan atau perbarui rekening QRIS koperasi
 		err = tx.QueryRow(ctx, `
 			INSERT INTO rekening_qris_koperasi (
 				koperasi_id, penyedia_id, nama_merchant, nmid,
 				nama_bank_pjp, no_rekening_settlement, nama_pemilik_rekening,
-				is_atas_nama_badan_hukum, qris_payload_statis, status_aktif, created_by
+				is_atas_nama_badan_hukum, jenis_pemilik, qris_payload_statis, status_aktif, created_by
 			) VALUES (
 				$1, $2, $3, $4,
 				$5, $6, $7,
-				true, $8, true, $9
+				$8, $9, $10, true, $11
 			)
 			ON CONFLICT (koperasi_id, nmid) DO UPDATE SET
 				nama_merchant = EXCLUDED.nama_merchant,
 				nama_bank_pjp = EXCLUDED.nama_bank_pjp,
 				no_rekening_settlement = EXCLUDED.no_rekening_settlement,
 				nama_pemilik_rekening = EXCLUDED.nama_pemilik_rekening,
+				is_atas_nama_badan_hukum = EXCLUDED.is_atas_nama_badan_hukum,
+				jenis_pemilik = EXCLUDED.jenis_pemilik,
 				qris_payload_statis = EXCLUDED.qris_payload_statis,
 				status_aktif = true,
 				updated_at = NOW()
@@ -828,11 +870,28 @@ func (h *QRISHandler) HandleAdminDaftarRekeningQRIS(w http.ResponseWriter, r *ht
 		`,
 			claims.KoperasiID, penyediaID, req.NamaMerchant, req.NMID,
 			req.NamaBankPJP, req.NoRekeningSettlement,
-			req.NamaPemilikRekening, req.QRISPayloadStatis,
+			req.NamaPemilikRekening, isBadanHukum, jenisPemilik, req.QRISPayloadStatis,
 			claims.UserID,
 		).Scan(&rekeningID, &createdAt)
 		if err != nil {
 			return fmt.Errorf("gagal menyimpan rekening QRIS: %w", err)
+		}
+
+		// Catat audit log khusus bila menggunakan pilot perorangan pengurus
+		if jenisPemilik == "perorangan_pengurus" {
+			auditData, _ := json.Marshal(map[string]interface{}{
+				"aksi":          "daftar_rekening_qris_pilot_perorangan",
+				"rekening_id":   rekeningID.String(),
+				"nmid":          req.NMID,
+				"nama_pemilik":  req.NamaPemilikRekening,
+				"catatan":       "Pendaftaran rekening QRIS perorangan pengurus diizinkan via ALLOW_PERSONAL_PAYMENT_PILOT",
+			})
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO audit_log (
+					koperasi_id, user_id, nama_tabel, record_id, aksi,
+					data_baru, created_by
+				) VALUES ($1, $2, 'rekening_qris_koperasi', $3, 'INSERT', $4::jsonb, $2);
+			`, claims.KoperasiID, claims.UserID, rekeningID, auditData)
 		}
 
 		// 3. Pastikan metode pembayaran 'qris_statis' aktif untuk koperasi ini

@@ -57,8 +57,16 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 ---
 
 ### III. SEDANG
-- [ ] **S1. IDOR dalam satu tenant pada GET /pembayaran/{id}**
-- [ ] **S2. Feature flag QRIS dinamis & hardening parser EMVCo**
+- [x] **S1. IDOR dalam satu tenant pada GET /pembayaran/{id}**
+  - [x] Batasi hak akses anggota hanya pada data pembayarannya sendiri (`pembayar_user_id` atau `anggota_id`).
+  - [x] Peran istimewa (`admin`, `pengurus`, `bendahara`, `ketua`, `operator`, `pengawas`) tetap dapat melihat seluruh pembayaran dalam koperasinya.
+  - [x] Verifikasi tes per-peran: Anggota B mendapat 404/403 saat mengakses pembayaran Anggota A, sedangkan Admin, Pengurus, dan Anggota A sendiri mendapat 200 OK (`TestS1_IDOR_PembayaranStatus_Reproduction` PASS).
+- [x] **S2. Feature flag QRIS dinamis & hardening parser EMVCo**
+  - [x] Feature flag `QRIS_DYNAMIC_ENABLED` (default false): saat non-aktif, kembalikan payload statis dengan nominal total & kode unik; saat aktif hasilkan dynamic QRIS auto-lock nominal.
+  - [x] Hardening parser EMVCo: validasi checksum CRC16 (Tag 63) masukan, wajibkan Tag 00 bernilai '01', tolak tag duplikat, dan bersihkan Tag 55-57 saat Tag 54 nominal tetap disematkan.
+  - [x] Fuzz test `FuzzParseTLV` dan round-trip test menjaga seluruh tag kustom/privat ASPI.
+  - [x] Migrasi `000006_rekening_qris_jenis_pemilik.up.sql`: menambahkan kolom `jenis_pemilik` ('badan_hukum_koperasi' / 'perorangan_pengurus') dan penolakan mode perorangan kecuali `ALLOW_PERSONAL_PAYMENT_PILOT=true`.
+  - [x] Dibuat checklist uji lapangan resmi di `docs/QRIS_UJI_LAPANGAN.md`.
 - [ ] **S3. Konfigurasi deployment & header hardening**
 
 ---

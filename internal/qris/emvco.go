@@ -30,9 +30,10 @@ type TLV struct {
 	Value string
 }
 
-// ParseTLV mem-parsing string EMVCo menjadi daftar TLV secara berurutan
+// ParseTLV mem-parsing string EMVCo menjadi daftar TLV secara berurutan dan menolak duplikasi tag
 func ParseTLV(payload string) ([]TLV, error) {
 	var result []TLV
+	seenTags := make(map[string]bool)
 	idx := 0
 	length := len(payload)
 
@@ -49,6 +50,9 @@ func ParseTLV(payload string) ([]TLV, error) {
 		if err != nil {
 			return nil, fmt.Errorf("panjang tag %s tidak valid: %w", tag, err)
 		}
+		if valLen < 0 {
+			return nil, fmt.Errorf("panjang tag %s tidak boleh negatif", tag)
+		}
 		idx += 2
 
 		if idx+valLen > length {
@@ -58,10 +62,48 @@ func ParseTLV(payload string) ([]TLV, error) {
 		val := payload[idx : idx+valLen]
 		idx += valLen
 
+		if seenTags[tag] {
+			return nil, fmt.Errorf("terdapat duplikasi tag %s pada payload EMVCo", tag)
+		}
+		seenTags[tag] = true
+
 		result = append(result, TLV{Tag: tag, Value: val})
 	}
 
 	return result, nil
+}
+
+// ValidateQRIS memvalidasi kelayakan EMVCo, Tag 00 ("01"), dan integritas checksum CRC16 (Tag 63)
+func ValidateQRIS(payload string) error {
+	payload = strings.TrimSpace(payload)
+	if len(payload) < 8 {
+		return fmt.Errorf("panjang payload QRIS terlalu pendek")
+	}
+
+	// 1. Verifikasi posisi Tag 63 (CRC) pada 8 karakter terakhir
+	crcTagIdx := strings.LastIndex(payload, "6304")
+	if crcTagIdx == -1 || crcTagIdx != len(payload)-8 {
+		return fmt.Errorf("tag 6304 (CRC) wajib berada pada 8 karakter terakhir payload")
+	}
+
+	expectedCRC := strings.ToUpper(payload[len(payload)-4:])
+	calculatedCRC := CalculateCRC16(payload[:len(payload)-4])
+	if expectedCRC != calculatedCRC {
+		return fmt.Errorf("checksum CRC16 tidak valid: tercatat %s, seharusnya %s", expectedCRC, calculatedCRC)
+	}
+
+	// 2. Parse TLV & verifikasi tidak ada tag duplikat
+	tlvs, err := ParseTLV(payload)
+	if err != nil {
+		return fmt.Errorf("struktur TLV tidak valid: %w", err)
+	}
+
+	// 3. Verifikasi Tag 00 (Payload Format Indicator) bernilai '01'
+	if len(tlvs) == 0 || tlvs[0].Tag != "00" || tlvs[0].Value != "01" {
+		return fmt.Errorf("tag 00 (Payload Format Indicator) wajib ada di awal dan bernilai '01'")
+	}
+
+	return nil
 }
 
 // FormatTLV mengonversi satu TLV menjadi string representasi EMVCo
@@ -77,6 +119,11 @@ func GenerateDynamicQRIS(staticPayload string, nominalTotalRp int64, noPembayara
 		return "", fmt.Errorf("payload QRIS statis kosong")
 	}
 
+	// Validasi kepatuhan EMVCo & integritas CRC payload statis masukan
+	if err := ValidateQRIS(staticPayload); err != nil {
+		return "", fmt.Errorf("validasi payload QRIS statis gagal: %w", err)
+	}
+
 	tlvs, err := ParseTLV(staticPayload)
 	if err != nil {
 		return "", fmt.Errorf("gagal mem-parsing payload QRIS statis: %w", err)
@@ -88,6 +135,10 @@ func GenerateDynamicQRIS(staticPayload string, nominalTotalRp int64, noPembayara
 	for _, t := range tlvs {
 		// Abaikan tag 63 (CRC lama) karena akan dihitung ulang secara dinamis
 		if t.Tag == "63" {
+			continue
+		}
+		// Hapus Tag 55, 56, 57 (Tip / Convenience Fee) saat Tag 54 (Nominal Tetap) dipasang
+		if t.Tag == "55" || t.Tag == "56" || t.Tag == "57" {
 			continue
 		}
 		if _, exists := tagMap[t.Tag]; !exists {
@@ -115,6 +166,12 @@ func GenerateDynamicQRIS(staticPayload string, nominalTotalRp int64, noPembayara
 	if !containsTag(tagOrder, "54") {
 		tagOrder = insertTagAfter(tagOrder, "53", "54")
 	}
+
+	// Bersihkan Tag 55, 56, 57 dari tagMap dan urutan tag
+	delete(tagMap, "55")
+	delete(tagMap, "56")
+	delete(tagMap, "57")
+	tagOrder = removeTags(tagOrder, "55", "56", "57")
 
 	// 4. Set Tag 58 (Country Code) ke 'ID' jika belum ada
 	if _, ok := tagMap["58"]; !ok {
@@ -212,4 +269,18 @@ func insertTagAfter(tags []string, target, newTag string) []string {
 		result = append(result, newTag)
 	}
 	return result
+}
+
+func removeTags(tags []string, targets ...string) []string {
+	targetMap := make(map[string]bool)
+	for _, t := range targets {
+		targetMap[t] = true
+	}
+	var res []string
+	for _, t := range tags {
+		if !targetMap[t] {
+			res = append(res, t)
+		}
+	}
+	return res
 }

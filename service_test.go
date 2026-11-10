@@ -775,3 +775,70 @@ func TestP1_3_AppendOnly_HashChain_Dan_ProteksiTRUNCATE(t *testing.T) {
 	})
 }
 
+func TestTask1_Concurrent_HashChain_AutoPopulated_By_Trigger(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	fix := seedFixture(t, pool, "HC50")
+	ctx := context.Background()
+
+	const concurrentWorkers = 50
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrentWorkers)
+
+	for i := 0; i < concurrentWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			// Lakukan insert normal tanpa menyediakan prev_hash atau row_hash
+			// (seperti halnya di produksi dan fn_setujui_pembayaran_qris)
+			conn, err := pool.Acquire(ctx)
+			if err != nil {
+				errCh <- fmt.Errorf("acquire failed: %w", err)
+				return
+			}
+			defer conn.Release()
+
+			_, _ = conn.Exec(ctx, "RESET ROLE;")
+			_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", fix.KoperasiID.String())
+
+			rowID := uuid.New()
+			payloadJSON := fmt.Sprintf(`{"worker_id": %d, "timestamp": "%s"}`, workerID, time.Now().Format(time.RFC3339Nano))
+
+			_, err = conn.Exec(ctx, `
+				INSERT INTO audit_log (
+					id, koperasi_id, user_id, nama_tabel, record_id, aksi,
+					data_baru, created_by
+				) VALUES ($1, $2, $3, 'test_tabel', $1, 'INSERT', $4::jsonb, $3);
+			`, rowID, fix.KoperasiID, fix.UserID, payloadJSON)
+
+			if err != nil {
+				errCh <- fmt.Errorf("worker %d insert failed: %w", workerID, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("Insert error during concurrent test: %v", err)
+		}
+	}
+
+	// Verifikasi apakah seluruh 50 baris terisi otomatis dan membentuk rantai tanpa cabang
+	valid, count, brokenID, err := kopdes.VerifyHashChain(ctx, pool, "audit_log", fix.KoperasiID)
+	if err != nil || !valid {
+		t.Fatalf("FAILED DEFECT 1: Hash chain tidak terisi otomatis atau rantai terputus: valid=%v, count=%d, brokenID=%v, err=%v",
+			valid, count, brokenID, err)
+	}
+
+	if count != concurrentWorkers {
+		t.Fatalf("Expected exactly %d chained rows, got %d", concurrentWorkers, count)
+	}
+	t.Logf("SUCCESS: 50 concurrent inserts auto-populated hash chain strictly serialized without branching!")
+}
+
+

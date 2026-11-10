@@ -79,30 +79,25 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 
 ### IV. KELENGKAPAN FUNGSI & LAPORAN
 - [x] **P1-1. Endpoint KYC, Pendaftaran Anggota, Bukti Bayar, Mutasi Kas**
-  - [x] Handler pendaftaran calon anggota baru dengan enkripsi PII (AES-256-GCM + AAD) dan blind index HKDF per tenant.
-  - [x] Cek duplikasi NIK aktif (HTTP 409 Conflict).
-  - [x] Unggah dokumen KYC multipart form dengan deteksi magic-bytes (hanya JPEG/PNG/PDF), batas 5MB, SHA-256 checksum.
-  - [x] Anti-IDOR pada `GET /api/v1/pendaftaran/{id}` (404 jika bukan miliknya/bukan admin) dengan masking NIK (`3201********0001`).
-  - [x] Maker-checker verifikasi: pemohon dilarang menyetujui formulirnya sendiri (403), admin menyetujui menghasilkan `no_anggota` atomik aman konkurensi.
-  - [x] Endpoint `GET /api/v1/kas/mutasi` untuk membaca mutasi kas ringan ber-RLS.
 - [x] **P1-2. Kapasitas & Metrik Slot Kode Unik**
-  - [x] Migrasi `000008_kode_unik_configurable_digits`: mendukung 3 digit (1..999) atau 4 digit (1..9999).
-  - [x] Metrik pemakaian slot (`GetSlotUsage`) dan peringatan otomatis jika pemakaian melebihi 70%.
-  - [x] Penanganan respons error ramah `409 Conflict` saat kapasitas slot penuh.
 - [x] **P1-3. Append-Only Hash Chaining & Perlindungan TRUNCATE**
-  - [x] Migrasi `000007_append_only_hash_chain`: kolom `prev_hash`, `row_hash`, `ip_address`, `user_agent`, `request_id`.
-  - [x] Trigger `BEFORE TRUNCATE` pada tabel append-only `kas_mutasi`, `audit_log`, `pembayaran_verifikasi_log` (`fn_prevent_truncate`).
-  - [x] Generator hash chain SHA-256 `ComputeHashChain` dan fungsi pemeriksa integritas `VerifyHashChain`.
 - [x] **P1-4. Operasional, Prometheus & Notifier**
-  - [x] Header `Idempotency-Key` pada `POST /api/v1/pembayaran/qris`.
-  - [x] Endpoint metrik Prometheus `GET /metrics` (`kopdes_uptime_seconds`, `kopdes_pembayaran_antrean_verifikasi`, `kopdes_pembayaran_slot_kode_unik_aktif`, `kopdes_job_gagal_total`, `kopdes_partisi_tersisa`).
-  - [x] Interface `Notifier` dan `OutboxWorker` dengan pola `FOR UPDATE SKIP LOCKED`.
-  - [x] Skrip backup snapshot dan uji restore PITR di `scripts/backup.sh` dan `scripts/restore_test.sh`.
 - [x] **P1-5. Rekonsiliasi Cakupan Skema**
-  - [x] Dokumen rekonsiliasi `docs/SCOPE_RECONCILIATION.md` mendokumentasikan 65 tabel dasar + 8 partisi bulanan.
 - [x] **Laporan Akhir: docs/AUDIT_REPORT.md & docs/FRONTEND_GUIDE.md**
-  - [x] Panduan frontend UI/UX mobile-first di `docs/FRONTEND_GUIDE.md`.
-  - [x] Laporan audit komprehensif beserta keputusan manusia di `docs/AUDIT_REPORT.md`.
+
+---
+
+### V. PERBAIKAN LANJUTAN TERVERIFIKASI (10 TUGAS)
+- [x] **1. Hash chain otomatis lewat trigger BEFORE INSERT DB (pgcrypto digest & advisory lock)**
+- [ ] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
+- [ ] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
+- [ ] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
+- [ ] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
+- [ ] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
+- [ ] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
+- [ ] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
+- [ ] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
+- [ ] **10. Sanitasi dokumen (hapus klaim berlebihan) & verifikasi go test -count=1 -race ./...**
 
 ---
 
@@ -258,3 +253,23 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestS3_Deployment_Hardening_And_CORS (0.96s)
   ok  	github.com/kopdes/merah-putih/internal/api	1.111s
   ```
+
+### [2026-11-10] Tugas 1: Hash Chain Otomatis BEFORE INSERT Trigger & Advisory Lock
+- **Reproduksi Gagal**: `TestTask1_Concurrent_HashChain_AutoPopulated_By_Trigger` membuktikan 50 insert paralel tanpa `prev_hash`/`row_hash` sebelumnya gagal dengan `row_hash kosong` karena kolom tidak terisi otomatis di tingkat database.
+- **Implementasi**:
+  - Migrasi `000010_auto_populate_hash_chain_trigger.up.sql`: Trigger `fn_maintain_hash_chain` dipasang `BEFORE INSERT` pada `audit_log`, `kas_mutasi`, dan `pembayaran_verifikasi_log`.
+  - Serialisasi konkuren transactional advisory lock per (tenant, base_table) menggunakan `pg_advisory_xact_lock`.
+  - Mengambil `row_hash` baris sebelumnya dan menghitung `row_hash` baru dengan `pgcrypto` digest SHA-256.
+  - Penanganan tabel berpartisi (`audit_log` dan `kas_mutasi`) mengacu pada tabel dasar induk secara konsisten.
+  - Otomatis mencakup semua jalur insert termasuk stored procedure `fn_setujui_pembayaran_qris`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask1_Concurrent_HashChain_AutoPopulated_By_Trigger
+      service_test.go:841: SUCCESS: 50 concurrent inserts auto-populated hash chain strictly serialized without branching!
+  --- PASS: TestTask1_Concurrent_HashChain_AutoPopulated_By_Trigger (3.26s)
+  === RUN   TestK3_ApprovalSuccessFlow_EndToEnd
+  --- PASS: TestK3_ApprovalSuccessFlow_EndToEnd (4.46s)
+  ok  	github.com/kopdes/merah-putih	3.591s
+  ok  	github.com/kopdes/merah-putih/internal/api	4.784s
+  ```
+

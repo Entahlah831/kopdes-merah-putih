@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -662,18 +665,20 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 	}
 
 	ctx := r.Context()
+	var isFirstApprovalOfDual bool
 
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
 		// 1. Kunci baris pembayaran untuk verifikasi konsistensi
 		var pembayarUserID uuid.UUID
 		var currentStatus string
 		var nominalTotal string
+		var persetujuanPertamaOleh *uuid.UUID
 		err := tx.QueryRow(ctx, `
-			SELECT pembayar_user_id, status, nominal_total::text
+			SELECT pembayar_user_id, status, nominal_total::text, persetujuan_pertama_oleh
 			FROM pembayaran
 			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
 			FOR UPDATE;
-		`, pembayaranID, claims.KoperasiID).Scan(&pembayarUserID, &currentStatus, &nominalTotal)
+		`, pembayaranID, claims.KoperasiID).Scan(&pembayarUserID, &currentStatus, &nominalTotal, &persetujuanPertamaOleh)
 		if err != nil {
 			return err
 		}
@@ -683,11 +688,71 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			return errors.New("MAKER_CHECKER_VIOLATION: Pembuat transaksi dilarang memverifikasi pembayarannya sendiri")
 		}
 
-		if currentStatus != "menunggu_verifikasi" {
+		if currentStatus != "menunggu_verifikasi" && currentStatus != "menunggu_persetujuan_kedua" {
 			return fmt.Errorf("transaksi tidak dalam status menunggu verifikasi (status saat ini: %s)", currentStatus)
 		}
 
 		if req.Disetujui {
+			// Periksa ambang batas persetujuan ganda dari konfigurasi_aturan
+			var ambangGanda int64 = 5000000
+			_ = tx.QueryRow(ctx, `
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+				FROM konfigurasi_aturan
+				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
+				  AND kunci_aturan = 'ambang_persetujuan_ganda_rp'
+				  AND status_aktif = true
+				  AND deleted_at IS NULL
+				ORDER BY koperasi_id NULLS LAST, versi DESC
+				LIMIT 1;
+			`, claims.KoperasiID).Scan(&ambangGanda)
+
+			nomTotalFloat, _ := strconv.ParseFloat(nominalTotal, 64)
+			nomTotalInt := int64(nomTotalFloat)
+
+			if nomTotalInt > ambangGanda {
+				// Transaksi di atas ambang memerlukan 2 pengurus berbeda
+				if persetujuanPertamaOleh == nil {
+					// Persetujuan Pertama
+					_, err = tx.Exec(ctx, `
+						UPDATE pembayaran
+						SET status = 'menunggu_persetujuan_kedua',
+						    persetujuan_pertama_oleh = $1,
+						    waktu_persetujuan_pertama = NOW(),
+						    updated_at = NOW()
+						WHERE id = $2 AND koperasi_id = $3;
+					`, claims.UserID, pembayaranID, claims.KoperasiID)
+					if err != nil {
+						return err
+					}
+
+					_, err = tx.Exec(ctx, `
+						INSERT INTO pembayaran_verifikasi_log (
+							koperasi_id, pembayaran_id, status_lama, status_baru, aksi, catatan, created_by
+						) VALUES (
+							$1, $2, 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'setujui', 'Persetujuan pertama dicatat. Menunggu persetujuan kedua karena nominal > ambang.', $3
+						);
+					`, claims.KoperasiID, pembayaranID, claims.UserID)
+					isFirstApprovalOfDual = true
+					return err
+				}
+
+				// Persetujuan Kedua
+				if *persetujuanPertamaOleh == claims.UserID {
+					return errors.New("DUAL_APPROVAL_VIOLATION: Persetujuan kedua wajib dilakukan oleh pengurus/pejabat yang berbeda dari penyetuju pertama")
+				}
+
+				_, err = tx.Exec(ctx, `
+					UPDATE pembayaran
+					SET persetujuan_kedua_oleh = $1,
+					    waktu_persetujuan_kedua = NOW(),
+					    updated_at = NOW()
+					WHERE id = $2 AND koperasi_id = $3;
+				`, claims.UserID, pembayaranID, claims.KoperasiID)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Cari atau buka periode kas aktif untuk koperasi ini
 			var periodeKasID uuid.UUID
 			err := tx.QueryRow(ctx, `
@@ -754,6 +819,10 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			response.Forbidden(w, "Pelanggaran Maker-Checker: Pembuat pembayaran dilarang memverifikasi pembayarannya sendiri.")
 			return
 		}
+		if strings.Contains(err.Error(), "DUAL_APPROVAL_VIOLATION") {
+			response.BadRequest(w, "DUAL_APPROVAL_VIOLATION: Persetujuan kedua wajib dilakukan oleh pengurus/pejabat yang berbeda dari penyetuju pertama.")
+			return
+		}
 		if strings.Contains(err.Error(), "tidak dalam status menunggu verifikasi") {
 			response.BadRequest(w, "Pembayaran belum mengajukan bukti klaim atau statusnya tidak valid untuk diverifikasi.")
 			return
@@ -762,7 +831,16 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			response.BadRequest(w, "Nominal pembayaran aktual kurang dari total tagihan.")
 			return
 		}
-		response.BadRequest(w, "Gagal memproses verifikasi pembayaran")
+		response.BadRequest(w, fmt.Sprintf("Gagal memproses verifikasi pembayaran: %v", err))
+		return
+	}
+
+	if isFirstApprovalOfDual {
+		response.JSON(w, http.StatusOK, map[string]interface{}{
+			"pembayaran_id": pembayaranID,
+			"status":        "menunggu_persetujuan_kedua",
+			"pesan":         "Persetujuan pertama berhasil dicatat. Menunggu persetujuan kedua oleh pengurus lain sebelum saldo dibukukan.",
+		})
 		return
 	}
 
@@ -1061,5 +1139,328 @@ func (h *QRISHandler) HandleAdminDeactivateRekeningQRIS(w http.ResponseWriter, r
 
 	response.JSON(w, http.StatusOK, map[string]string{
 		"pesan": "Rekening QRIS berhasil dinonaktifkan.",
+	})
+}
+
+// detectAnomalies memeriksa indikator anomali transaksi (di luar jam kerja, hash bukti ganda, transaksi beruntun)
+func (h *QRISHandler) detectAnomalies(ctx context.Context, tx pgx.Tx, pembayaranID, koperasiID, userID uuid.UUID, waktu time.Time) []string {
+	var indikator []string
+
+	// 1. Di luar jam operasional (22:00 - 05:00 WIB / UTC+7)
+	locWIB := time.FixedZone("WIB", 7*3600)
+	wibTime := waktu.In(locWIB)
+	hour := wibTime.Hour()
+	if hour < 5 || hour >= 22 {
+		indikator = append(indikator, "di_luar_jam_kerja")
+	}
+
+	// 2. Hash bukti ganda (file_hash_sha256 bukti pembayaran sama pada pembayaran berbeda)
+	var duplicateProofCount int
+	err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pembayaran_bukti pb1
+		JOIN pembayaran_bukti pb2 ON pb1.file_hash_sha256 = pb2.file_hash_sha256
+		WHERE pb1.pembayaran_id = $1 AND pb2.pembayaran_id <> $1;
+	`, pembayaranID).Scan(&duplicateProofCount)
+	if err == nil && duplicateProofCount > 0 {
+		indikator = append(indikator, "hash_bukti_ganda")
+	}
+
+	// 3. Transaksi beruntun (lebih dari 3 transaksi dalam 5 menit terakhir untuk user yang sama)
+	var burstCount int
+	err = tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pembayaran
+		WHERE pembayar_user_id = $1 AND koperasi_id = $2
+		  AND created_at >= (clock_timestamp() - INTERVAL '5 minutes');
+	`, userID, koperasiID).Scan(&burstCount)
+	if err == nil && burstCount > 3 {
+		indikator = append(indikator, "transaksi_beruntun")
+	}
+
+	return indikator
+}
+
+// HandleImporMutasiBank mengimpor rekening koran/settlement CSV dan mencocokkan otomatis nominal_total
+func (h *QRISHandler) HandleImporMutasiBank(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	var reader io.Reader
+	file, _, err := r.FormFile("file")
+	if err == nil {
+		defer file.Close()
+		reader = file
+	} else {
+		reader = r.Body
+	}
+
+	csvReader := csv.NewReader(reader)
+	records, err := csvReader.ReadAll()
+	if err != nil {
+		response.BadRequest(w, fmt.Sprintf("Format CSV tidak valid: %v", err))
+		return
+	}
+
+	if len(records) < 2 {
+		response.BadRequest(w, "File CSV kosong atau tidak memiliki baris data")
+		return
+	}
+
+	ctx := r.Context()
+	var totalBaris, tercocokkan, anomali, belumCocok int
+
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		var ambangGanda int64 = 5000000
+		_ = tx.QueryRow(ctx, `
+			SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+			FROM konfigurasi_aturan
+			WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
+			  AND kunci_aturan = 'ambang_persetujuan_ganda_rp'
+			  AND status_aktif = true
+			  AND deleted_at IS NULL
+			ORDER BY koperasi_id NULLS LAST, versi DESC
+			LIMIT 1;
+		`, claims.KoperasiID).Scan(&ambangGanda)
+
+		var periodeKasID uuid.UUID
+		_ = tx.QueryRow(ctx, `
+			SELECT id FROM periode_kas
+			WHERE koperasi_id = $1 AND status = 'buka'
+			ORDER BY created_at DESC LIMIT 1;
+		`, claims.KoperasiID).Scan(&periodeKasID)
+		if periodeKasID == uuid.Nil {
+			_ = tx.QueryRow(ctx, `
+				INSERT INTO periode_kas (koperasi_id, periode, saldo_awal, status, dibuka_oleh)
+				VALUES ($1, to_char(NOW(), 'YYYY-MM'), 0, 'buka', $2)
+				ON CONFLICT (koperasi_id, periode) DO UPDATE SET updated_at = NOW()
+				RETURNING id;
+			`, claims.KoperasiID, claims.UserID).Scan(&periodeKasID)
+		}
+
+		for i, row := range records {
+			if i == 0 {
+				continue // skip header
+			}
+			if len(row) < 4 {
+				continue
+			}
+
+			tglStr := strings.TrimSpace(row[0])
+			keterangan := strings.TrimSpace(row[1])
+			tipe := strings.ToUpper(strings.TrimSpace(row[2]))
+			nomStr := strings.TrimSpace(row[3])
+			noRek := ""
+			if len(row) >= 5 {
+				noRek = strings.TrimSpace(row[4])
+			}
+
+			nomStr = strings.ReplaceAll(nomStr, "Rp", "")
+			nomStr = strings.ReplaceAll(nomStr, " ", "")
+			nomStr = strings.ReplaceAll(nomStr, ",", "")
+
+			nomFloat, err := strconv.ParseFloat(nomStr, 64)
+			if err != nil || nomFloat <= 0 {
+				continue
+			}
+			totalBaris++
+
+			tglMutasi, err := time.Parse("2006-01-02 15:04:05", tglStr)
+			if err != nil {
+				tglMutasi, err = time.Parse(time.RFC3339, tglStr)
+				if err != nil {
+					tglMutasi, _ = time.Parse("2006-01-02", tglStr)
+				}
+			}
+			if tglMutasi.IsZero() {
+				tglMutasi = time.Now()
+			}
+
+			mutasiID := uuid.New()
+			nomInt := int64(nomFloat)
+
+			if tipe != "CR" {
+				_, _ = tx.Exec(ctx, `
+					INSERT INTO mutasi_bank_impor (
+						id, koperasi_id, no_rekening, tanggal_mutasi, keterangan, tipe, nominal,
+						status_rekonsiliasi, created_by
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, 'belum_cocok', $8);
+				`, mutasiID, claims.KoperasiID, noRek, tglMutasi, keterangan, tipe, nomFloat, claims.UserID)
+				belumCocok++
+				continue
+			}
+
+			// Cari pembayaran yang cocok pada nominal_total
+			var matchedPembayaranID uuid.UUID
+			var pembayarUserID uuid.UUID
+			var currentStatus string
+			err = tx.QueryRow(ctx, `
+				SELECT id, pembayar_user_id, status
+				FROM pembayaran
+				WHERE koperasi_id = $1
+				  AND nominal_total = $2
+				  AND status IN ('menunggu_verifikasi', 'menunggu_pembayaran')
+				  AND deleted_at IS NULL
+				ORDER BY created_at ASC
+				LIMIT 1
+				FOR UPDATE;
+			`, claims.KoperasiID, nomFloat).Scan(&matchedPembayaranID, &pembayarUserID, &currentStatus)
+
+			if err != nil {
+				_, _ = tx.Exec(ctx, `
+					INSERT INTO mutasi_bank_impor (
+						id, koperasi_id, no_rekening, tanggal_mutasi, keterangan, tipe, nominal,
+						status_rekonsiliasi, created_by
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, 'belum_cocok', $8);
+				`, mutasiID, claims.KoperasiID, noRek, tglMutasi, keterangan, tipe, nomFloat, claims.UserID)
+				belumCocok++
+				continue
+			}
+
+			anomalies := h.detectAnomalies(ctx, tx, matchedPembayaranID, claims.KoperasiID, pembayarUserID, tglMutasi)
+
+			if len(anomalies) > 0 {
+				anomali++
+				_, _ = tx.Exec(ctx, `
+					UPDATE pembayaran
+					SET is_anomali = true,
+						indikator_anomali = $1,
+						updated_at = NOW()
+					WHERE id = $2 AND koperasi_id = $3;
+				`, anomalies, matchedPembayaranID, claims.KoperasiID)
+
+				_, _ = tx.Exec(ctx, `
+					INSERT INTO mutasi_bank_impor (
+						id, koperasi_id, no_rekening, tanggal_mutasi, keterangan, tipe, nominal,
+						status_rekonsiliasi, pembayaran_id, catatan_rekonsiliasi, created_by
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, 'anomali', $8, $9, $10);
+				`, mutasiID, claims.KoperasiID, noRek, tglMutasi, keterangan, tipe, nomFloat, matchedPembayaranID,
+					fmt.Sprintf("Anomali terdeteksi: %s", strings.Join(anomalies, ", ")), claims.UserID)
+				continue
+			}
+
+			if nomInt > ambangGanda {
+				tercocokkan++
+				_, _ = tx.Exec(ctx, `
+					UPDATE pembayaran
+					SET status = 'menunggu_persetujuan_kedua',
+						persetujuan_pertama_oleh = $1,
+						waktu_persetujuan_pertama = NOW(),
+						updated_at = NOW()
+					WHERE id = $2 AND koperasi_id = $3;
+				`, claims.UserID, matchedPembayaranID, claims.KoperasiID)
+
+				_, _ = tx.Exec(ctx, `
+					INSERT INTO mutasi_bank_impor (
+						id, koperasi_id, no_rekening, tanggal_mutasi, keterangan, tipe, nominal,
+						status_rekonsiliasi, pembayaran_id, catatan_rekonsiliasi, created_by
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, 'tercocokkan', $8, 'Tercocokkan (Menunggu persetujuan ganda)', $9);
+				`, mutasiID, claims.KoperasiID, noRek, tglMutasi, keterangan, tipe, nomFloat, matchedPembayaranID, claims.UserID)
+				continue
+			}
+
+			// Auto approve pembayaran cocok
+			tercocokkan++
+			_, err = tx.Exec(ctx, `
+				SELECT fn_setujui_pembayaran_qris($1, $2, $3::numeric, $4, 'Pencocokan otomatis mutasi bank');
+			`, matchedPembayaranID, claims.UserID, nomFloat, periodeKasID)
+			if err != nil {
+				return fmt.Errorf("gagal auto-approve pembayaran %s: %w", matchedPembayaranID, err)
+			}
+
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO mutasi_bank_impor (
+					id, koperasi_id, no_rekening, tanggal_mutasi, keterangan, tipe, nominal,
+					status_rekonsiliasi, pembayaran_id, catatan_rekonsiliasi, created_by
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, 'tercocokkan', $8, 'Tercocokkan otomatis & disetujui sistem', $9);
+			`, mutasiID, claims.KoperasiID, noRek, tglMutasi, keterangan, tipe, nomFloat, matchedPembayaranID, claims.UserID)
+		}
+		return nil
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal memproses impor mutasi bank: %v", err))
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"total_baris": totalBaris,
+		"tercocokkan": tercocokkan,
+		"anomali":     anomali,
+		"belum_cocok": belumCocok,
+		"pesan":       "Impor dan pencocokan otomatis mutasi bank selesai.",
+	})
+}
+
+// HandleLaporanRekonsiliasiHarian menyajikan ringkasan rekonsiliasi harian mutasi bank dan pembukuan internal
+func (h *QRISHandler) HandleLaporanRekonsiliasiHarian(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	tgl := strings.TrimSpace(r.URL.Query().Get("tanggal"))
+	if tgl == "" {
+		tgl = time.Now().Format("2006-01-02")
+	}
+
+	ctx := r.Context()
+	var (
+		totalPembayaranSistemCount int
+		totalPembayaranSistemNom   float64
+		totalMutasiBankCRCount     int
+		totalMutasiBankCRNom       float64
+		totalTercocokkanCount      int
+		totalTercocokkanNom        float64
+	)
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, `
+			SELECT COUNT(*), COALESCE(SUM(nominal_total), 0)
+			FROM pembayaran
+			WHERE koperasi_id = $1 AND date_trunc('day', created_at) = $2::date AND status = 'disetujui' AND deleted_at IS NULL;
+		`, claims.KoperasiID, tgl).Scan(&totalPembayaranSistemCount, &totalPembayaranSistemNom)
+
+		_ = tx.QueryRow(ctx, `
+			SELECT COUNT(*), COALESCE(SUM(nominal), 0)
+			FROM mutasi_bank_impor
+			WHERE koperasi_id = $1 AND date_trunc('day', tanggal_mutasi) = $2::date AND tipe = 'CR';
+		`, claims.KoperasiID, tgl).Scan(&totalMutasiBankCRCount, &totalMutasiBankCRNom)
+
+		_ = tx.QueryRow(ctx, `
+			SELECT COUNT(*), COALESCE(SUM(nominal), 0)
+			FROM mutasi_bank_impor
+			WHERE koperasi_id = $1 AND date_trunc('day', tanggal_mutasi) = $2::date AND status_rekonsiliasi = 'tercocokkan';
+		`, claims.KoperasiID, tgl).Scan(&totalTercocokkanCount, &totalTercocokkanNom)
+
+		return nil
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal menyusun laporan rekonsiliasi: %v", err))
+		return
+	}
+
+	selisih := totalMutasiBankCRNom - totalPembayaranSistemNom
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"tanggal": tgl,
+		"total_pembayaran_sistem": map[string]interface{}{
+			"jumlah":  totalPembayaranSistemCount,
+			"nominal": totalPembayaranSistemNom,
+		},
+		"total_mutasi_bank_cr": map[string]interface{}{
+			"jumlah":  totalMutasiBankCRCount,
+			"nominal": totalMutasiBankCRNom,
+		},
+		"total_tercocokkan": map[string]interface{}{
+			"jumlah":  totalTercocokkanCount,
+			"nominal": totalTercocokkanNom,
+		},
+		"selisih_nominal": selisih,
 	})
 }

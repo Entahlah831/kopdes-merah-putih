@@ -2419,6 +2419,156 @@ func TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody(t *testing.T) {
 	t.Logf("Sukses: Idempotency database-backed dan deteksi beda body (422) terverifikasi!")
 }
 
+func TestTask5_PaymentVerification_Reconciliation_EndToEnd(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// --- 1. Uji CSV Bank Mutation Import & Auto Matching ---
+	billID := env.CreateBill(t, env.AnggotaID, 120000)
+	bodyPay, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID},
+	})
+
+	reqPay := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPay))
+	reqPay.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPay.Header.Set("Content-Type", "application/json")
+	recPay := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPay, reqPay)
+
+	if recPay.Code != http.StatusCreated {
+		t.Fatalf("Buat QRIS failed: %d: %s", recPay.Code, recPay.Body.String())
+	}
+	var resPay struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPay.Body.Bytes(), &resPay)
+
+	// Klaim bukti bayar
+	reqClaim := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/bukti", resPay.Data.PembayaranID), strings.NewReader(`{"referensi_rrn":"RRN-AUTO-MATCH"}`))
+	reqClaim.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqClaim.Header.Set("Content-Type", "application/json")
+	recClaim := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recClaim, reqClaim)
+	if recClaim.Code != http.StatusOK {
+		t.Fatalf("Claim bukti failed: %d: %s", recClaim.Code, recClaim.Body.String())
+	}
+
+	// Upload CSV mutasi bank dengan nominal_total yang persis sama
+	csvContent := fmt.Sprintf("tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-10 10:00:00,QRIS SETTLEMENT / CR,CR,%d.00,1234567890\n", resPay.Data.NominalTotalRp)
+	bodyCSV := &bytes.Buffer{}
+	writer := multipart.NewWriter(bodyCSV)
+	part, _ := writer.CreateFormFile("file", "mutasi.csv")
+	part.Write([]byte(csvContent))
+	writer.Close()
+
+	reqImport := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", bodyCSV)
+	reqImport.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqImport.Header.Set("Content-Type", writer.FormDataContentType())
+	recImport := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recImport, reqImport)
+
+	if recImport.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for CSV import, got %d: %s", recImport.Code, recImport.Body.String())
+	}
+
+	// Verifikasi pembayaran status berubah menjadi 'disetujui' secara otomatis karena matched
+	reqStatus := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", resPay.Data.PembayaranID), nil)
+	reqStatus.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recStatus := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recStatus, reqStatus)
+
+	var resStatus struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recStatus.Body.Bytes(), &resStatus)
+	if resStatus.Data.Status != "disetujui" {
+		t.Errorf("Expected status disetujui after auto-matching, got: %s", resStatus.Data.Status)
+	}
+
+	// --- 2. Uji Persetujuan Ganda di Atas Ambang Batas (Dual Approval) ---
+	// Buat tagihan bernilai tinggi Rp 6.000.000 (di atas default ambang Rp 5.000.000)
+	highBillID := env.CreateBill(t, env.AnggotaID, 6000000)
+	bodyHigh, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{highBillID},
+	})
+	reqHigh := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyHigh))
+	reqHigh.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqHigh.Header.Set("Content-Type", "application/json")
+	recHigh := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recHigh, reqHigh)
+	if recHigh.Code != http.StatusCreated {
+		t.Fatalf("Buat QRIS high value failed: %d: %s", recHigh.Code, recHigh.Body.String())
+	}
+	var resHigh struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recHigh.Body.Bytes(), &resHigh)
+
+	// Klaim bukti
+	reqClaimHigh := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/bukti", resHigh.Data.PembayaranID), strings.NewReader(`{"referensi_rrn":"RRN-HIGH"}`))
+	reqClaimHigh.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqClaimHigh.Header.Set("Content-Type", "application/json")
+	recClaimHigh := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recClaimHigh, reqClaimHigh)
+
+	// Persetujuan Pertama oleh Admin
+	reqApprove1 := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", resHigh.Data.PembayaranID), strings.NewReader(`{"disetujui":true,"catatan":"Approve 1 ok"}`))
+	reqApprove1.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqApprove1.Header.Set("Content-Type", "application/json")
+	recApprove1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApprove1, reqApprove1)
+
+	if recApprove1.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for first approval, got %d: %s", recApprove1.Code, recApprove1.Body.String())
+	}
+	if !strings.Contains(recApprove1.Body.String(), "menunggu_persetujuan_kedua") {
+		t.Errorf("Expected response indicating menunggu_persetujuan_kedua, got: %s", recApprove1.Body.String())
+	}
+
+	// Persetujuan Kedua oleh Admin yang SAMA -> HARUS DITOLAK (Maker-Checker / Dual approval violation)
+	reqApproveSelf := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", resHigh.Data.PembayaranID), strings.NewReader(`{"disetujui":true,"catatan":"Approve 2 self"}`))
+	reqApproveSelf.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqApproveSelf.Header.Set("Content-Type", "application/json")
+	recApproveSelf := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApproveSelf, reqApproveSelf)
+
+	if recApproveSelf.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for self-dual-approval, got %d: %s", recApproveSelf.Code, recApproveSelf.Body.String())
+	}
+
+	// Persetujuan Kedua oleh Pengurus Lain (pengurusToken) -> BERHASIL
+	pengurusToken, _ := env.createAndLoginUser(t, "pengurus")
+	reqApprove2 := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", resHigh.Data.PembayaranID), strings.NewReader(`{"disetujui":true,"catatan":"Approve 2 verified"}`))
+	reqApprove2.Header.Set("Authorization", "Bearer "+pengurusToken)
+	reqApprove2.Header.Set("Content-Type", "application/json")
+	recApprove2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApprove2, reqApprove2)
+
+	if recApprove2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for second approval, got %d: %s", recApprove2.Code, recApprove2.Body.String())
+	}
+
+	// --- 3. Uji Laporan Rekonsiliasi Harian ---
+	tglHariIni := time.Now().Format("2006-01-02")
+	reqReconcile := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/rekonsiliasi/harian?tanggal=%s", tglHariIni), nil)
+	reqReconcile.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recReconcile := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recReconcile, reqReconcile)
+
+	if recReconcile.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for reconciliation report, got %d: %s", recReconcile.Code, recReconcile.Body.String())
+	}
+	if !strings.Contains(recReconcile.Body.String(), "total_tercocokkan") {
+		t.Errorf("Reconciliation report missing total_tercocokkan: %s", recReconcile.Body.String())
+	}
+}
+
+
 
 
 

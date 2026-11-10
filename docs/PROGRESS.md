@@ -92,7 +92,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
 - [x] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
 - [x] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
-- [ ] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
+- [x] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
 - [ ] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
 - [ ] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
 - [ ] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
@@ -357,6 +357,27 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody (2.27s)
   ok  	github.com/kopdes/merah-putih/internal/api	2.567s
   ```
+
+### [2026-11-10] Tugas 5: Verifikasi Pembayaran (Impor Mutasi CSV, Auto-Matching, Persetujuan Ganda & Rekonsiliasi)
+- **Reproduksi Gagal**: `TestTask5_PaymentVerification_Reconciliation_EndToEnd` dibuat sebelum implementasi fitur impor mutasi CSV, persetujuan ganda berjenjang, dan pelaporan rekonsiliasi harian.
+- **Implementasi**:
+  - Migrasi `000014_payment_verification_reconciliation.up.sql`:
+    - Status enum `status_pembayaran_enum` ditambahkan nilai `'menunggu_persetujuan_kedua'`.
+    - Kolom baru pada tabel `pembayaran`: `persetujuan_pertama_oleh`, `waktu_persetujuan_pertama`, `persetujuan_kedua_oleh`, `waktu_persetujuan_kedua`, `is_anomali`, `indikator_anomali`.
+    - Tabel baru `mutasi_bank_impor` (`id`, `koperasi_id`, `no_rekening`, `tanggal_mutasi`, `keterangan`, `tipe`, `nominal`, `saldo_akhir`, `status_rekonsiliasi`, `pembayaran_id`, `catatan_rekonsiliasi`) dengan indeks komposit dan Row Level Security terisolasi per tenant.
+    - Default aturan ambang batas persetujuan ganda di `konfigurasi_aturan` (`ambang_persetujuan_ganda_rp` = 5.000.000).
+    - Pembaruan trigger `trg_fn_validasi_transisi_pembayaran` dan fungsi atomik `fn_setujui_pembayaran_qris` agar mendukung transisi dari `menunggu_persetujuan_kedua` ke `disetujui`.
+  - Endpoint baru di `internal/api/handlers/qris_handler.go` & `server.go`:
+    - `POST /api/v1/pembayaran/mutasi-bank/impor`: Menerima berkas CSV rekening koran bank, memparsing mutasi kredit (CR), mendeteksi anomali (jam di luar kerja 22:00-05:00 WIB, transaksi beruntun burst > 3 dalam 5 menit, dan duplikasi hash bukti), serta melakukan auto-matching pada pembayaran pending berdasarkan `nominal_total` yang unik. Jika nominal <= ambang ganda dan bukti sudah diunggah, otomatis disetujui.
+    - `POST /api/v1/pembayaran/{id}/verifikasi`: Memvalidasi ambang persetujuan ganda (`ambang_persetujuan_ganda_rp`). Jika transaksi > ambang, verifikator pertama memindahkan status ke `menunggu_persetujuan_kedua`. Verifikasi kedua dilarang dieksekusi oleh orang yang sama (menolak self-approval dengan HTTP 400).
+    - `GET /api/v1/pembayaran/rekonsiliasi/harian`: Menghasilkan ringkasan rekonsiliasi harian antara total pembayaran sistem (disetujui) dan mutasi bank terimpor (CR), menghitung selisih nominal dan daftar transaksi yang belum cocok / anomali.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask5_PaymentVerification_Reconciliation_EndToEnd
+  --- PASS: TestTask5_PaymentVerification_Reconciliation_EndToEnd (3.34s)
+  ok  	github.com/kopdes/merah-putih/internal/api	3.710s
+  ```
+
 
 
 

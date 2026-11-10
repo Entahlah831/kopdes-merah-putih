@@ -105,5 +105,5 @@ erDiagram
    - Algoritma pencarian kode unik (1..999) menggunakan HMAC-SHA256 deterministik + linear probing dengan PostgreSQL `SAVEPOINT`.
 3. **Integritas Keuangan & Audit Append-Only**:
    - Dilarang `UPDATE` / `DELETE` pada tabel audit dan jurnal transaksi: `kas_mutasi`, `stok_mutasi`, `pembayaran_verifikasi_log`, `anggota_status_log`, `pendaftaran_status_log`, dan `audit_log`.
-4. **Kepatuhan Perlindungan Data Pribadi (UU 27/2022 PDP)**:
-   - Data sensitif seperti NIK, nomor HP, email, alamat disimpan terenkripsi (`*_enkripsi`, AES-256-GCM) dengan indeks blind-index HMAC-SHA256 (`*_hash`).
+4. **Perlindungan Data Pribadi (Enkripsi AES-256-GCM)**:
+   - Data sensitif seperti NIK, nomor HP, email, alamat disimpan terenkripsi (`*_enkripsi`, AES-256-GCM + AAD) dengan indeks blind-index HKDF-SHA256 (`*_hash`). Evaluasi kepatuhan hukum formal memerlukan peninjauan ahli hukum secara berkala.

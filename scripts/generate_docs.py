@@ -249,7 +249,7 @@ html_content = """<!DOCTYPE html>
       <li><strong>Maker-Checker Guard:</strong> Pembuat transaksi/pembayaran dilarang memverifikasi pembayarannya sendiri (Pencegahan fraud internal pengurus).</li>
       <li><strong>Anti-Float Financial:</strong> Seluruh perhitungan nilai uang menggunakan tipe data SQL <code>NUMERIC(18,2)</code> dan <code>int64</code> di Go untuk mencegah selisih pembulatan sen.</li>
       <li><strong>Append-Only Audit Journal:</strong> Tabel mutasi kas, log verifikasi, dan status dilarang keras di-<code>UPDATE</code> atau di-<code>DELETE</code>. Koreksi saldo wajib melalui entri reversal akuntansi.</li>
-      <li><strong>Kepatuhan UU PDP (UU No. 27 Tahun 2022):</strong> NIK, Tanggal Lahir, dan Nomor HP dienkripsi menggunakan AES-256-GCM dengan Blind Index HMAC-SHA256 untuk fitur pencarian cepat tanpa membuka plaintext.</li>
+      <li><strong>Enkripsi Data Pribadi:</strong> NIK, Tanggal Lahir, dan Nomor HP dienkripsi menggunakan AES-256-GCM dengan Blind Index HKDF-SHA256 untuk fitur pencarian cepat tanpa membuka plaintext (rancangan proteksi PII, memerlukan audit hukum formal).</li>
     </ol>
   </div>
 
@@ -603,7 +603,7 @@ docker compose up -d --build</code></pre>
       <span class="auth-badge">Calon Anggota</span>
     </div>
     <div class="endpoint-body">
-      <p>Mengajukan formulir pendaftaran anggota baru. Data sensitif (NIK, Tanggal Lahir, Alamat) otomatis dienkripsi dengan AES-256-GCM + AAD, nomor registrasi dibuat secara atomik (REG/YYYY/XXXXX), dan duplikasi NIK dicegah via Blind Index HKDF-SHA256 (Kepatuhan UU 27/2022 PDP).</p>
+      <p>Mengajukan formulir pendaftaran anggota baru. Data sensitif (NIK, Tanggal Lahir, Alamat) otomatis dienkripsi dengan AES-256-GCM + AAD, nomor registrasi dibuat secara atomik (REG/YYYY/XXXXX), dan duplikasi NIK dicegah via Blind Index HKDF-SHA256.</p>
       <strong>Request Body:</strong>
       <pre><code>{
   "nik": "3201123456780001",
@@ -671,7 +671,7 @@ docker compose up -d --build</code></pre>
       <span class="auth-badge">Role: Admin / Pengurus (UU PDP)</span>
     </div>
     <div class="endpoint-body">
-      <p>Menjalankan prosedur pembersihan berkas fisik dan enkripsi PII bagi formulir pendaftaran yang ditolak lebih dari 30 hari (Kepatuhan UU 27/2022 PDP).</p>
+      <p>Menjalankan prosedur pembersihan berkas fisik dan enkripsi PII bagi formulir pendaftaran yang ditolak lebih dari masa retensi terkonfigurasi (default 30 hari; catatan: perlu verifikasi hukum formal).</p>
     </div>
   </div>
 
@@ -922,7 +922,7 @@ def create_docx(filename):
     <w:p><w:r><w:b/><w:t>15. GET /api/v1/pendaftaran/{id}</w:t></w:r><w:r><w:t> - Memeriksa status pendaftaran calon anggota dengan NIK tersamar (3201********0001).</w:t></w:r></w:p>
     <w:p><w:r><w:b/><w:t>16. POST /api/v1/pendaftaran/{id}/dokumen</w:t></w:r><w:r><w:t> - Mengunggah foto KTP KYC dengan validasi magic-bytes (hanya JPEG/PNG/PDF asli, max 5MB).</w:t></w:r></w:p>
     <w:p><w:r><w:b/><w:t>17. POST /api/v1/pendaftaran/{id}/verifikasi</w:t></w:r><w:r><w:t> - (Admin) Verifikasi penerimaan anggota dengan kontrol Maker-Checker &amp; nomor anggota atomik ANG/2026/XXXXX.</w:t></w:r></w:p>
-    <w:p><w:r><w:b/><w:t>18. POST /api/v1/pendaftaran/purge-ditolak</w:t></w:r><w:r><w:t> - (Admin) Pembersihan otomatis data pendaftaran ditolak &gt; 30 hari (Kepatuhan UU 27/2022 PDP).</w:t></w:r></w:p>
+    <w:p><w:r><w:b/><w:t>18. POST /api/v1/pendaftaran/purge-ditolak</w:t></w:r><w:r><w:t> - (Admin) Pembersihan otomatis data pendaftaran ditolak &gt; 30 hari (Perlu verifikasi hukum).</w:t></w:r></w:p>
     <w:p><w:r><w:b/><w:t>19. GET /api/v1/kas/mutasi</w:t></w:r><w:r><w:t> - Membaca buku mutasi kas ringan berantai hash SHA-256 append-only.</w:t></w:r></w:p>
     <w:p><w:r><w:b/><w:t>20. GET /metrics</w:t></w:r><w:r><w:t> - Metrik monitoring Prometheus sistem real-time.</w:t></w:r></w:p>
 

@@ -1,5 +1,5 @@
 # Panduan Integrasi Frontend: Koperasi Desa Merah Putih
-**Arsitektur Integrasi API, Panduan UI/UX Mobile-First, dan Standar Kepatuhan PDP**
+**Arsitektur Integrasi API, Panduan UI/UX Mobile-First, dan Rekomendasi Keamanan Data**
 
 ---
 
@@ -54,7 +54,7 @@ Hal ini menjamin apabila user menekan tombol bayar berkali-kali akibat sinyal la
 
 ---
 
-## 4. Unggah Bukti Bayar & Dokumen KYC (UU 27/2022 PDP)
+## 4. Unggah Bukti Bayar & Dokumen KYC (Enkripsi Data Pribadi)
 
 ### A. Kompresi Gambar di Sisi Klien (Client-Side Compression)
 Kamera smartphone modern menghasilkan foto berukuran 5MB - 12MB, sedangkan backend membatasi maksimal 5MB.
@@ -65,7 +65,7 @@ Kamera smartphone modern menghasilkan foto berukuran 5MB - 12MB, sedangkan backe
 ### B. Perlindungan Privasi Data Pribadi (PII Masking)
 - **NIK KTP**: API hanya mengembalikan NIK dalam format tersamar (masking): `3201********1234`.
 - Frontend **DILARANG** mencoba membuka sensor masking atau menyimpan plaintext NIK di local storage yang tidak terenkripsi.
-- Tampilkan tanda centang hijau *"Tersertifikasi Enkripsi UU PDP"* pada formulir pendaftaran untuk membangun kepercayaan warga desa.
+- Tampilkan indikator *"Data Pribadi Terenkripsi"* pada formulir pendaftaran untuk transparansi keamanan data warga desa.
 
 ---
 

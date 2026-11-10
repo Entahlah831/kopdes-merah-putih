@@ -93,7 +93,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
 - [x] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
 - [x] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
-- [ ] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
+- [x] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
 - [ ] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
 - [ ] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
 - [ ] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
@@ -377,6 +377,31 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestTask5_PaymentVerification_Reconciliation_EndToEnd (3.34s)
   ok  	github.com/kopdes/merah-putih/internal/api	3.710s
   ```
+
+### [2026-11-10] Tugas 6: Guardrails Pilot Rekening Pribadi (Batas Transaksi/Harian, Banner Peringatan & Audit Log)
+- **Reproduksi Gagal**: `TestTask6_PersonalAccountPilot_Limits_Banner_Audit` membuktikan bahwa sebelum implementasi, pembuatan pembayaran menggunakan rekening pilot perorangan pengurus di atas batas nominal lolos tanpa pembatasan dan respon admin tidak memuat banner peringatan segregasi dana.
+- **Implementasi**:
+  - Migrasi `000015_pilot_personal_account_guardrails.up.sql`:
+    - Menambahkan aturan konfigurasi bawaan di `konfigurasi_aturan`:
+      - `pilot_rekening_pribadi_max_per_transaksi` (default Rp 1.000.000).
+      - `pilot_rekening_pribadi_max_per_hari` (default Rp 5.000.000).
+  - Validasi ketat di `QRISHandler.HandleBuatQRIS`:
+    - Mengambil jenis pemilik rekening (`COALESCE(jenis_pemilik, 'badan_hukum_koperasi')`).
+    - Jika `perorangan_pengurus`:
+      - Memeriksa batas nominal per transaksi terhadap konfigurasi aturan koperasi.
+      - Menghitung akumulasi pembayaran hari ini (`SELECT COALESCE(SUM(nominal_total), 0) FROM pembayaran WHERE created_at >= CURRENT_DATE AND ...`) dan menolak jika total melampaui batas harian dengan error HTTP 400 informatif.
+      - Mencatat audit log khusus bertipe `'INSERT'` dengan penanda `PILOT_REKENING_PRIBADI` dan rincian peringatan kepatuhan segregasi dana.
+      - Menyertakan `warning_banner` dan `is_rekening_pribadi: true` pada DTO respons pembayaran `BuatQRISResponse`.
+  - Peringatan di `HandleGetPembayaranStatus`:
+    - Melakukan `LEFT JOIN rekening_qris_koperasi` untuk mendeteksi `jenis_pemilik`.
+    - Jika berasal dari rekening perorangan pengurus, secara eksplisit menyertakan banner peringatan risiko kepatuhan bagi admin/pengawas (`warning_banner: "PERINGATAN: Pembayaran ini menggunakan rekening perorangan pengurus (Pilot Mode). Risiko kepatuhan dan segregasi dana. Wajib dialihkan ke rekening badan hukum koperasi."`).
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask6_PersonalAccountPilot_Limits_Banner_Audit
+  --- PASS: TestTask6_PersonalAccountPilot_Limits_Banner_Audit (2.29s)
+  ok  	github.com/kopdes/merah-putih/internal/api	2.592s
+  ```
+
 
 
 

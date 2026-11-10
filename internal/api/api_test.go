@@ -2568,6 +2568,160 @@ func TestTask5_PaymentVerification_Reconciliation_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestTask6_PersonalAccountPilot_Limits_Banner_Audit(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	// 1. Setup Server dengan ALLOW_PERSONAL_PAYMENT_PILOT = true
+	cfgPilot := env.Config
+	cfgPilot.AllowPersonalPaymentPilot = true
+	serverPilot := api.NewServer(env.Pool, cfgPilot)
+
+	// Buat rekening QRIS perorangan pengurus
+	tag26Val := "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI"
+	tag26 := fmt.Sprintf("26%02d%s", len(tag26Val), tag26Val)
+	validPrefix := fmt.Sprintf("000201010211%s5204541153033605802ID5914Pilot Pengurus6007Jakarta6304", tag26)
+	validPayload := validPrefix + qris.CalculateCRC16(validPrefix)
+
+	bodyPilotRek, _ := json.Marshal(handlers.AdminDaftarRekeningQRISRequest{
+		NamaMerchant:         "Pilot Pengurus Budi",
+		NMID:                 fmt.Sprintf("ID%013d", time.Now().UnixNano()%10000000000000),
+		NamaBankPJP:          "Bank BRI",
+		NoRekeningSettlement: "5556667778",
+		NamaPemilikRekening:  "Budi Santoso Pengurus",
+		IsAtasNamaBadanHukum: false,
+		JenisPemilik:         "perorangan_pengurus",
+		QRISPayloadStatis:    validPayload,
+	})
+
+	reqDaftarRek := httptest.NewRequest("POST", "/api/v1/koperasi/rekening-qris", bytes.NewReader(bodyPilotRek))
+	reqDaftarRek.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqDaftarRek.Header.Set("Content-Type", "application/json")
+	recDaftarRek := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recDaftarRek, reqDaftarRek)
+
+	if recDaftarRek.Code != http.StatusCreated && recDaftarRek.Code != http.StatusOK {
+		t.Fatalf("Gagal mendaftarkan rekening pilot: %d: %s", recDaftarRek.Code, recDaftarRek.Body.String())
+	}
+
+	var resRek struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recDaftarRek.Body.Bytes(), &resRek)
+	pilotRekeningID, err := uuid.Parse(resRek.Data.ID)
+	if err != nil {
+		t.Fatalf("Parse rekening ID gagal: %v", err)
+	}
+
+	// 2. Batas Per Transaksi: Default limit Rp 1.000.000
+	// Buat tagihan Rp 1.500.000 (> limit per transaksi)
+	tagihanOverLimit := env.CreateBill(t, env.AnggotaID, 1500000)
+
+	bodyOver, _ := json.Marshal(handlers.BuatQRISRequest{
+		JenisTransaksi:  "iuran_bulanan",
+		TagihanIuranIDs: []uuid.UUID{tagihanOverLimit},
+		RekeningQRISID:  pilotRekeningID,
+	})
+	reqOver := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyOver))
+	reqOver.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqOver.Header.Set("Content-Type", "application/json")
+	recOver := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recOver, reqOver)
+
+	// Harusnya ditolak karena melebihi batas per transaksi rekening perorangan
+	if recOver.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 Bad Request for transaction exceeding per-transaction pilot limit, got %d: %s", recOver.Code, recOver.Body.String())
+	}
+	if !strings.Contains(recOver.Body.String(), "batas") && !strings.Contains(recOver.Body.String(), "maksimum per transaksi") {
+		t.Errorf("Expected limit error message, got: %s", recOver.Body.String())
+	}
+
+	// 3. Transaksi di bawah batas per transaksi: Rp 600.000 (< limit 1.000.000) -> SUKSES
+	tagihanUnder1 := env.CreateBill(t, env.AnggotaID, 600000)
+	bodyUnder1, _ := json.Marshal(handlers.BuatQRISRequest{
+		JenisTransaksi:  "iuran_bulanan",
+		TagihanIuranIDs: []uuid.UUID{tagihanUnder1},
+		RekeningQRISID:  pilotRekeningID,
+	})
+	reqUnder1 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyUnder1))
+	reqUnder1.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqUnder1.Header.Set("Content-Type", "application/json")
+	recUnder1 := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recUnder1, reqUnder1)
+
+	if recUnder1.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for transaction within limit, got %d: %s", recUnder1.Code, recUnder1.Body.String())
+	}
+
+	var resUnder1 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recUnder1.Body.Bytes(), &resUnder1)
+	pembayaranID1 := resUnder1.Data.PembayaranID
+
+	// 4. Banner Peringatan di Respons Admin
+	reqDetailAdmin := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", pembayaranID1), nil)
+	reqDetailAdmin.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recDetailAdmin := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recDetailAdmin, reqDetailAdmin)
+
+	if recDetailAdmin.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for admin payment detail, got %d: %s", recDetailAdmin.Code, recDetailAdmin.Body.String())
+	}
+
+	if !strings.Contains(recDetailAdmin.Body.String(), "warning_banner") || !strings.Contains(recDetailAdmin.Body.String(), "perorangan pengurus") {
+		t.Errorf("Expected warning banner for personal account in admin response, got: %s", recDetailAdmin.Body.String())
+	}
+
+	// 5. Verifikasi Audit Log untuk Pembayaran Rekening Pribadi
+	var auditCount int
+	err = env.Pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM audit_log
+		WHERE koperasi_id = $1 AND nama_tabel = 'pembayaran' AND record_id = $2
+		  AND (aksi = 'PILOT_REKENING_PRIBADI' OR data_baru::text LIKE '%perorangan_pengurus%');
+	`, env.KoperasiID, pembayaranID1).Scan(&auditCount)
+	if err != nil {
+		t.Fatalf("Query audit_log error: %v", err)
+	}
+	if auditCount == 0 {
+		t.Errorf("Expected audit_log entry recorded for pilot personal account payment, but found %d", auditCount)
+	}
+
+	// 6. Uji Batas Harian Rekening Pribadi:
+	// Set konfigurasi aturan batas harian menjadi Rp 1.000.000 untuk pengujian
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO konfigurasi_aturan (koperasi_id, kunci_aturan, versi, nilai_json, keterangan, berlaku_mulai, status_aktif)
+		VALUES ($1, 'pilot_rekening_pribadi_max_per_hari', 1, '{"nominal": 1000000}'::jsonb, 'Batas harian pilot test', NOW(), true)
+		ON CONFLICT (koperasi_id, kunci_aturan, versi) DO UPDATE SET nilai_json = '{"nominal": 1000000}'::jsonb;
+	`, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("Insert konfigurasi error: %v", err)
+	}
+
+	// Transaksi 2: Rp 600.000 (total akumulasi hari ini menjadi 600.000 + 600.000 = 1.200.000 > 1.000.000)
+	tagihanUnder2 := env.CreateBill(t, env.AnggotaID, 600000)
+	bodyUnder2, _ := json.Marshal(handlers.BuatQRISRequest{
+		JenisTransaksi:  "iuran_bulanan",
+		TagihanIuranIDs: []uuid.UUID{tagihanUnder2},
+		RekeningQRISID:  pilotRekeningID,
+	})
+	reqUnder2 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyUnder2))
+	reqUnder2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqUnder2.Header.Set("Content-Type", "application/json")
+	recUnder2 := httptest.NewRecorder()
+	serverPilot.Router().ServeHTTP(recUnder2, reqUnder2)
+
+	if recUnder2.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 Bad Request for transaction exceeding daily limit, got %d: %s", recUnder2.Code, recUnder2.Body.String())
+	}
+	if !strings.Contains(recUnder2.Body.String(), "batas harian") {
+		t.Errorf("Expected daily limit error message, got: %s", recUnder2.Body.String())
+	}
+}
+
+
 
 
 

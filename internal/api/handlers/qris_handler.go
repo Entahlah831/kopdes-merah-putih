@@ -92,6 +92,8 @@ type BuatQRISResponse struct {
 	NMID               string    `json:"nmid"`
 	BerlakuSampai      time.Time `json:"berlaku_sampai"`
 	SisaWaktuDetik     int64     `json:"sisa_waktu_detik"`
+	WarningBanner      string    `json:"warning_banner,omitempty"`
+	IsRekeningPribadi  bool      `json:"is_rekening_pribadi,omitempty"`
 }
 
 // HandleBuatQRIS menghasilkan alokasi transaksi QRIS statis 3-digit anti-tabrakan
@@ -178,6 +180,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		qrisPayload       string
 		namaMerchant      string
 		nmid              string
+		jenisPemilik      string
 		totalNominalDasar int64
 		alokasiList       []kopdes.AlokasiReq
 	)
@@ -214,20 +217,20 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		// Validasi rekening QRIS
 		if rekeningID == uuid.Nil {
 			err := tx.QueryRow(ctx, `
-				SELECT id, qris_payload_statis, nama_merchant, nmid
+				SELECT id, qris_payload_statis, nama_merchant, nmid, COALESCE(jenis_pemilik, 'badan_hukum_koperasi')
 				FROM rekening_qris_koperasi
 				WHERE koperasi_id = $1 AND status_aktif = true AND deleted_at IS NULL
 				LIMIT 1;
-			`, claims.KoperasiID).Scan(&rekeningID, &qrisPayload, &namaMerchant, &nmid)
+			`, claims.KoperasiID).Scan(&rekeningID, &qrisPayload, &namaMerchant, &nmid, &jenisPemilik)
 			if err != nil {
 				return fmt.Errorf("rekening QRIS aktif koperasi tidak ditemukan: %w", err)
 			}
 		} else {
 			err := tx.QueryRow(ctx, `
-				SELECT qris_payload_statis, nama_merchant, nmid
+				SELECT qris_payload_statis, nama_merchant, nmid, COALESCE(jenis_pemilik, 'badan_hukum_koperasi')
 				FROM rekening_qris_koperasi
 				WHERE id = $1 AND koperasi_id = $2 AND status_aktif = true AND deleted_at IS NULL;
-			`, rekeningID, claims.KoperasiID).Scan(&qrisPayload, &namaMerchant, &nmid)
+			`, rekeningID, claims.KoperasiID).Scan(&qrisPayload, &namaMerchant, &nmid, &jenisPemilik)
 			if err != nil {
 				return fmt.Errorf("rekening QRIS tidak valid: %w", err)
 			}
@@ -364,6 +367,55 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 			return errors.New("total nominal dasar tagihan/pesanan wajib lebih besar dari 0")
 		}
 
+		// Validasi batas pilot rekening pribadi perorangan pengurus (Task 6)
+		if jenisPemilik == "perorangan_pengurus" {
+			var maxPerTx int64 = 1000000
+			_ = tx.QueryRow(ctx, `
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, 1000000)
+				FROM konfigurasi_aturan
+				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
+				  AND kunci_aturan = 'pilot_rekening_pribadi_max_per_transaksi'
+				  AND status_aktif = true
+				  AND deleted_at IS NULL
+				ORDER BY koperasi_id NULLS LAST, versi DESC
+				LIMIT 1;
+			`, claims.KoperasiID).Scan(&maxPerTx)
+
+			if totalNominalDasar > maxPerTx {
+				return fmt.Errorf("nominal pembayaran (Rp %d) melebihi batas maksimum per transaksi untuk rekening pilot perorangan (maksimal Rp %d)", totalNominalDasar, maxPerTx)
+			}
+
+			var maxPerHari int64 = 5000000
+			_ = tx.QueryRow(ctx, `
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+				FROM konfigurasi_aturan
+				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
+				  AND kunci_aturan = 'pilot_rekening_pribadi_max_per_hari'
+				  AND status_aktif = true
+				  AND deleted_at IS NULL
+				ORDER BY koperasi_id NULLS LAST, versi DESC
+				LIMIT 1;
+			`, claims.KoperasiID).Scan(&maxPerHari)
+
+			var akumulasiHariIni int64
+			err := tx.QueryRow(ctx, `
+				SELECT COALESCE(SUM(nominal_total), 0)::bigint
+				FROM pembayaran
+				WHERE rekening_qris_id = $1
+				  AND koperasi_id = $2
+				  AND created_at >= CURRENT_DATE
+				  AND status NOT IN ('ditolak', 'dibatalkan', 'kedaluwarsa')
+				  AND deleted_at IS NULL;
+			`, rekeningID, claims.KoperasiID).Scan(&akumulasiHariIni)
+			if err != nil {
+				return fmt.Errorf("gagal memeriksa batas harian rekening pilot: %w", err)
+			}
+
+			if akumulasiHariIni+totalNominalDasar > maxPerHari {
+				return fmt.Errorf("akumulasi pembayaran hari ini telah mencapai batas harian rekening pilot perorangan (maksimal Rp %d per hari)", maxPerHari)
+			}
+		}
+
 		return nil
 	})
 
@@ -416,6 +468,29 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Catat audit log khusus untuk setiap pembayaran yang diproses via rekening pilot perorangan pengurus (Task 6)
+	if jenisPemilik == "perorangan_pengurus" {
+		pilotAudit, _ := json.Marshal(map[string]interface{}{
+			"aksi":            "PILOT_REKENING_PRIBADI",
+			"rekening_id":     rekeningID.String(),
+			"jenis_pemilik":   "perorangan_pengurus",
+			"pembayaran_id":   res.PembayaranID.String(),
+			"no_pembayaran":   noPembayaran,
+			"nominal_dasar":   totalNominalDasar,
+			"nominal_total":   res.NominalTotalRp,
+			"catatan":         "PERINGATAN: Pembayaran diproses melalui rekening pilot perorangan pengurus. Perlu pengalihan ke rekening badan hukum koperasi.",
+		})
+		_ = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `
+				INSERT INTO audit_log (
+					koperasi_id, user_id, nama_tabel, record_id, aksi,
+					data_baru, created_by
+				) VALUES ($1, $2, 'pembayaran', $3, 'INSERT', $4::jsonb, $2);
+			`, claims.KoperasiID, claims.UserID, res.PembayaranID, pilotAudit)
+			return err
+		})
+	}
+
 	sisaDetik := int64(time.Until(res.BerlakuSampai).Seconds())
 	if sisaDetik < 0 {
 		sisaDetik = 0
@@ -451,6 +526,11 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		SisaWaktuDetik:     sisaDetik,
 	}
 
+	if jenisPemilik == "perorangan_pengurus" {
+		resObj.IsRekeningPribadi = true
+		resObj.WarningBanner = "PERINGATAN: Pembayaran ini menggunakan rekening perorangan pengurus (Pilot Mode). Risiko kepatuhan dan segregasi dana. Wajib dialihkan ke rekening badan hukum koperasi."
+	}
+
 	if idempotencyKey != "" {
 		respBytes, _ := json.Marshal(map[string]interface{}{
 			"success": true,
@@ -484,6 +564,7 @@ func (h *QRISHandler) HandleGetPembayaranStatus(w http.ResponseWriter, r *http.R
 		nominalTotal   string
 		berlakuSampai  time.Time
 		referensiRRN   *string
+		jenisPemilik   string
 	)
 
 	// Roles pengurus/admin/pengawas yang berhak melihat semua pembayaran di koperasinya
@@ -501,21 +582,23 @@ func (h *QRISHandler) HandleGetPembayaranStatus(w http.ResponseWriter, r *http.R
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
 		if isPrivileged {
 			return tx.QueryRow(ctx, `
-				SELECT status, no_pembayaran, nominal_total::text, berlaku_sampai, referensi_rrn
-				FROM pembayaran
-				WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL;
-			`, pembayaranID, claims.KoperasiID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN)
+				SELECT p.status, p.no_pembayaran, p.nominal_total::text, p.berlaku_sampai, p.referensi_rrn, COALESCE(r.jenis_pemilik, 'badan_hukum_koperasi')
+				FROM pembayaran p
+				LEFT JOIN rekening_qris_koperasi r ON p.rekening_qris_id = r.id
+				WHERE p.id = $1 AND p.koperasi_id = $2 AND p.deleted_at IS NULL;
+			`, pembayaranID, claims.KoperasiID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN, &jenisPemilik)
 		}
 
 		// Anggota biasa: hanya boleh melihat data pembayaran miliknya sendiri (anti-IDOR OWASP API1:2023)
 		return tx.QueryRow(ctx, `
-			SELECT p.status, p.no_pembayaran, p.nominal_total::text, p.berlaku_sampai, p.referensi_rrn
+			SELECT p.status, p.no_pembayaran, p.nominal_total::text, p.berlaku_sampai, p.referensi_rrn, COALESCE(r.jenis_pemilik, 'badan_hukum_koperasi')
 			FROM pembayaran p
+			LEFT JOIN rekening_qris_koperasi r ON p.rekening_qris_id = r.id
 			WHERE p.id = $1 
 			  AND p.koperasi_id = $2 
 			  AND (p.pembayar_user_id = $3 OR p.anggota_id IN (SELECT a.id FROM anggota a WHERE a.user_id = $3))
 			  AND p.deleted_at IS NULL;
-		`, pembayaranID, claims.KoperasiID, claims.UserID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN)
+		`, pembayaranID, claims.KoperasiID, claims.UserID).Scan(&status, &noPembayaran, &nominalTotal, &berlakuSampai, &referensiRRN, &jenisPemilik)
 	})
 
 	if err != nil {
@@ -532,7 +615,7 @@ func (h *QRISHandler) HandleGetPembayaranStatus(w http.ResponseWriter, r *http.R
 		sisaDetik = 0
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
+	respData := map[string]interface{}{
 		"pembayaran_id":    pembayaranID,
 		"no_pembayaran":    noPembayaran,
 		"status":           status,
@@ -540,7 +623,14 @@ func (h *QRISHandler) HandleGetPembayaranStatus(w http.ResponseWriter, r *http.R
 		"berlaku_sampai":   berlakuSampai.Format(time.RFC3339),
 		"sisa_waktu_detik": sisaDetik,
 		"referensi_rrn":    referensiRRN,
-	})
+	}
+
+	if jenisPemilik == "perorangan_pengurus" {
+		respData["is_rekening_pribadi"] = true
+		respData["warning_banner"] = "PERINGATAN: Pembayaran ini menggunakan rekening perorangan pengurus (Pilot Mode). Risiko kepatuhan dan segregasi dana. Wajib dialihkan ke rekening badan hukum koperasi."
+	}
+
+	response.JSON(w, http.StatusOK, respData)
 }
 
 // HandleListAntreanVerifikasi mengambil antrean pembayaran QRIS yang menunggu verifikasi (Operator/Pengurus)

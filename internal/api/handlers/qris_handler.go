@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,18 +20,11 @@ import (
 	"github.com/kopdes/merah-putih/internal/qris"
 )
 
-type IdempotentEntry struct {
-	Response  BuatQRISResponse
-	CreatedAt time.Time
-}
-
 type QRISHandler struct {
 	pool                      *pgxpool.Pool
 	qrisSecret                []byte
 	dynamicQRISEnabled        bool
 	allowPersonalPaymentPilot bool
-	idempotencyMu             sync.RWMutex
-	idempotencyCache          map[string]IdempotentEntry
 }
 
 func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
@@ -44,7 +37,6 @@ func NewQRISHandlerWithConfig(pool *pgxpool.Pool, qrisSecret []byte, dynamicQRIS
 		qrisSecret:                qrisSecret,
 		dynamicQRISEnabled:        dynamicQRISEnabled,
 		allowPersonalPaymentPilot: allowPersonalPaymentPilot,
-		idempotencyCache:          make(map[string]IdempotentEntry),
 	}
 }
 
@@ -101,8 +93,14 @@ type BuatQRISResponse struct {
 
 // HandleBuatQRIS menghasilkan alokasi transaksi QRIS statis 3-digit anti-tabrakan
 func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		response.BadRequest(w, "Gagal membaca body request")
+		return
+	}
+
 	var req BuatQRISRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		response.BadRequest(w, "Format payload JSON tidak valid")
 		return
 	}
@@ -113,15 +111,27 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Idempotency-Key support (P1-4)
+	// Idempotency-Key support berbasis database (Task 4)
 	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	reqHash := db.HashPayload(rawBody)
+
 	if idempotencyKey != "" {
-		cacheKey := fmt.Sprintf("%s:%s", claims.UserID, idempotencyKey)
-		h.idempotencyMu.RLock()
-		cached, exists := h.idempotencyCache[cacheKey]
-		h.idempotencyMu.RUnlock()
-		if exists && time.Since(cached.CreatedAt) < 15*time.Minute {
-			response.JSON(w, http.StatusCreated, cached.Response)
+		cachedRec, err := db.CheckIdempotency(r.Context(), h.pool, claims.KoperasiID, claims.UserID, idempotencyKey, reqHash)
+		if err != nil {
+			if errors.Is(err, db.ErrIdempotencyConflict) {
+				response.JSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+					"success": false,
+					"error": map[string]interface{}{
+						"code":    "IDEMPOTENCY_CONFLICT",
+						"message": "Idempotency-Key telah digunakan dengan payload request yang berbeda.",
+					},
+				})
+				return
+			}
+		} else if cachedRec != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(cachedRec.ResponseCode)
+			_, _ = w.Write(cachedRec.ResponseBody)
 			return
 		}
 	}
@@ -169,7 +179,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		alokasiList       []kopdes.AlokasiReq
 	)
 
-	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
 		// Tentukan target AnggotaID: untuk peran anggota wajib murni dari identitas terautentikasi
 		if claims.Role == "anggota" {
 			err := tx.QueryRow(ctx, `
@@ -439,22 +449,11 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if idempotencyKey != "" {
-		cacheKey := fmt.Sprintf("%s:%s", claims.UserID, idempotencyKey)
-		h.idempotencyMu.Lock()
-		if h.idempotencyCache == nil {
-			h.idempotencyCache = make(map[string]IdempotentEntry)
-		}
-		if len(h.idempotencyCache) > 1000 {
-			for k := range h.idempotencyCache {
-				delete(h.idempotencyCache, k)
-				break
-			}
-		}
-		h.idempotencyCache[cacheKey] = IdempotentEntry{
-			Response:  resObj,
-			CreatedAt: time.Now(),
-		}
-		h.idempotencyMu.Unlock()
+		respBytes, _ := json.Marshal(map[string]interface{}{
+			"success": true,
+			"data":    resObj,
+		})
+		_ = db.SaveIdempotency(r.Context(), h.pool, claims.KoperasiID, claims.UserID, idempotencyKey, reqHash, http.StatusCreated, respBytes, 24*time.Hour)
 	}
 
 	response.JSON(w, http.StatusCreated, resObj)

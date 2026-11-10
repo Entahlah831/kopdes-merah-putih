@@ -2306,6 +2306,120 @@ func TestTask3_PDPPurge_AuditLog_WithoutPII_And_ConfigRetention(t *testing.T) {
 	t.Logf("Sukses: Audit log bersih tanpa PII: %s", auditDataBaru)
 }
 
+func TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	billID1 := env.CreateBill(t, env.AnggotaID, 50000)
+	billID2 := env.CreateBill(t, env.AnggotaID, 75000)
+
+	body1, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID1},
+	})
+
+	body2, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billID2},
+	})
+
+	idempKey := fmt.Sprintf("idemp-task4-%d", time.Now().UnixNano())
+
+	// 1. Request pertama dengan body1
+	req1 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(body1))
+	req1.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", idempKey)
+	rec1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for first request, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	var res1 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &res1); err != nil {
+		t.Fatalf("Parse response 1 failed: %v", err)
+	}
+
+	// 2. Verifikasi tabel database idempotency_keys memuat entri ini
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire conn failed: %v", err)
+	}
+	defer conn.Release()
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	var existsDB bool
+	var reqHashDB string
+	var respCodeDB int
+	err = conn.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM idempotency_keys WHERE kunci = $1),
+		       COALESCE((SELECT request_hash FROM idempotency_keys WHERE kunci = $1), ''),
+		       COALESCE((SELECT response_code FROM idempotency_keys WHERE kunci = $1), 0);
+	`, idempKey).Scan(&existsDB, &reqHashDB, &respCodeDB)
+	if err != nil {
+		t.Fatalf("Query idempotency_keys failed: %v", err)
+	}
+	if !existsDB {
+		t.Fatalf("IDEMPOTENCY FAILURE: Entri tidak tersimpan di tabel database idempotency_keys!")
+	}
+	if respCodeDB != http.StatusCreated {
+		t.Errorf("Expected response_code in DB 201, got %d", respCodeDB)
+	}
+
+	// 3. Request kedua dengan Idempotency-Key yang SAMA tetapi BODY BERBEDA -> WAJIB 422 Unprocessable Entity
+	req2 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(body2))
+	req2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", idempKey)
+	rec2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("IDEMPOTENCY CONFLICT VIOLATION: Kunci sama dengan body berbeda seharusnya mengembalikan 422 Unprocessable Entity, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// 4. Request ketiga dengan Idempotency-Key yang SAMA dan BODY PERSIS SAMA -> WAJIB 201 dengan cached response
+	req3 := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(body1))
+	req3.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("Idempotency-Key", idempKey)
+	rec3 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for identical retry, got %d: %s", rec3.Code, rec3.Body.String())
+	}
+
+	var res3 struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec3.Body.Bytes(), &res3); err != nil {
+		t.Fatalf("Parse response 3 failed: %v", err)
+	}
+
+	if res3.Data.PembayaranID != res1.Data.PembayaranID {
+		t.Errorf("Expected identical PembayaranID for replay: %s vs %s", res3.Data.PembayaranID, res1.Data.PembayaranID)
+	}
+	if res3.Data.NoPembayaran != res1.Data.NoPembayaran {
+		t.Errorf("Expected identical NoPembayaran for replay: %s vs %s", res3.Data.NoPembayaran, res1.Data.NoPembayaran)
+	}
+	if res3.Data.NominalTotalRp != res1.Data.NominalTotalRp {
+		t.Errorf("Expected identical NominalTotalRp for replay: %d vs %d", res3.Data.NominalTotalRp, res1.Data.NominalTotalRp)
+	}
+	t.Logf("Sukses: Idempotency database-backed dan deteksi beda body (422) terverifikasi!")
+}
+
+
 
 
 

@@ -91,7 +91,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **1. Hash chain otomatis lewat trigger BEFORE INSERT DB (pgcrypto digest & advisory lock)**
 - [x] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
 - [x] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
-- [ ] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
+- [x] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
 - [ ] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
 - [ ] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
 - [ ] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
@@ -333,6 +333,31 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestP1_1_PDP_30Day_Purge (2.30s)
   ok  	github.com/kopdes/merah-putih/internal/api	5.123s
   ```
+
+### [2026-11-10] Tugas 4: Idempotensi Berbasis Database & Deteksi Konflik Body (422)
+- **Reproduksi Gagal**: `TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody` awalnya gagal karena tabel `idempotency_keys` belum ada di basis data dan in-memory cache tidak mengecek perbedaan hash payload request.
+- **Implementasi**:
+  - Migrasi `000013_idempotency_keys.up.sql`:
+    - Membuat tabel `idempotency_keys` (`id`, `koperasi_id`, `user_id`, `kunci`, `request_hash`, `response_code`, `response_body`, `expires_at`, `created_at`).
+    - Unique constraint `(koperasi_id, user_id, kunci)`.
+    - Dilengkapi indeks komposit pencarian dan forced Row Level Security tenant isolation.
+  - Modul `internal/db/idempotency.go`:
+    - Fungsi `HashPayload`: kalkulasi SHA-256 string representatif dari byte body request mentah.
+    - Fungsi `CheckIdempotency`: lookup kunci dalam scope tenant RLS aktif; jika hash payload berbeda mengembalikan error sentinel `ErrIdempotencyConflict`.
+    - Fungsi `SaveIdempotency`: upsert kunci idempotensi dengan TTL 24 jam.
+  - Refaktor `QRISHandler.HandleBuatQRIS`:
+    - Membaca body mentah dan menghitung hash SHA-256.
+    - Jika kunci sama dikirimkan dengan body berbeda $\to$ mengembalikan **HTTP 422 Unprocessable Entity** (`IDEMPOTENCY_CONFLICT`).
+    - Jika kunci sama dikirimkan dengan body identik $\to$ mengembalikan status dan respons tersimpan dari basis data (cache hit).
+    - Menghapus in-memory map map[string]IdempotentEntry sehingga idempotensi bertahan lintas restart server dan multi-pod.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody
+      api_test.go:2419: Sukses: Idempotency database-backed dan deteksi beda body (422) terverifikasi!
+  --- PASS: TestTask4_DatabaseBacked_Idempotency_And_422OnDifferentBody (2.27s)
+  ok  	github.com/kopdes/merah-putih/internal/api	2.567s
+  ```
+
 
 
 

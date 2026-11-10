@@ -90,7 +90,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 ### V. PERBAIKAN LANJUTAN TERVERIFIKASI (10 TUGAS)
 - [x] **1. Hash chain otomatis lewat trigger BEFORE INSERT DB (pgcrypto digest & advisory lock)**
 - [x] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
-- [ ] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
+- [x] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
 - [ ] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
 - [ ] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
 - [ ] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
@@ -302,5 +302,37 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih/internal/db	0.695s
   ok  	github.com/kopdes/merah-putih/internal/api	2.504s
   ```
+
+### [2026-11-10] Tugas 3: Penguatan fn_purge_rejected_pendaftaran_pdp, Audit Tanpa PII & Pemulihan SIMKOPDES
+- **Reproduksi Gagal**:
+  - `TestTask3_PDPPurge_SecurityTenantValidation` membuktikan bahwa tanpa validasi session tenant ID, pemanggilan lintas tenant lolos tanpa penolakan.
+  - `TestTask3_SIMKOPDES_Table_And_Adapter_Restored` membuktikan ketiadaan tabel `sinkronisasi_simkopdes` pasca migrasi pembersihan awal.
+- **Implementasi**:
+  - Migrasi `000012_pdp_purge_hardening_and_restore_simkopdes.up.sql`:
+    - Pemulihan tabel `sinkronisasi_simkopdes` lengkap dengan RLS forced tenant isolation dan izin role `kopdes_app`.
+    - Disediakan implementasi adapter stub di `internal/simkopdes/adapter.go` (`ErrSIMKOPDESDeScoped`) untuk arsitektur satu cabang lokal.
+    - Pelepasan foreign key restrict dari `pendaftaran_status_log` ke `pendaftaran_anggota` sehingga penghapusan PII calon anggota ditolak dapat dilakukan tanpa merusak jejak log status append-only.
+    - Konfigurasi retensi PDP tersentralisasi pada tabel `konfigurasi_aturan` (`pdp_retensi_pendaftaran_ditolak_hari`) dengan catatan legal `"PERLU VERIFIKASI HUKUM"`.
+    - Prosedur `fn_purge_rejected_pendaftaran_pdp`:
+      - Wajib memvalidasi `p_koperasi_id` terhadap `app_current_koperasi_id()`; melempar `SQLSTATE 42501` jika terjadi ketidaksesuaian tenant.
+      - `REVOKE ALL FROM PUBLIC; GRANT EXECUTE TO kopdes_app;`.
+      - Pembersihan berantai dokumen fisik dan metadata tabel `pendaftaran_dokumen` dan `dokumen`.
+      - Pencatatan aksi `ANONYMIZE` pada `audit_log` tanpa PII (`record_id` disetel ke `p_koperasi_id`, rincian hanya memuat jumlah berkas dan masa retensi).
+  - Background worker terjadwal: `StartPDPPurgeWorker` di Go yang berjalan harian per tenant via wrapper `middleware.WithTenantTx`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask3_PDPPurge_SecurityTenantValidation
+      api_test.go:2155: Sukses: Pemanggilan lintas tenant berhasil ditolak: ERROR: AKSES DITOLAK: Tenant id ... tidak sesuai dengan konteks sesi terautentikasi (...) (SQLSTATE 42501)
+  --- PASS: TestTask3_PDPPurge_SecurityTenantValidation (2.19s)
+  === RUN   TestTask3_SIMKOPDES_Table_And_Adapter_Restored
+  --- PASS: TestTask3_SIMKOPDES_Table_And_Adapter_Restored (0.07s)
+  === RUN   TestTask3_PDPPurge_AuditLog_WithoutPII_And_ConfigRetention
+      api_test.go:2306: Sukses: Audit log bersih tanpa PII: {"catatan": "Pembersihan berkas pendaftaran ditolak (UU 27/2022 PDP). PERLU VERIFIKASI HUKUM.", "purged_count": 1, "retention_days": 30}
+  --- PASS: TestTask3_PDPPurge_AuditLog_WithoutPII_And_ConfigRetention (2.55s)
+  === RUN   TestP1_1_PDP_30Day_Purge
+  --- PASS: TestP1_1_PDP_30Day_Purge (2.30s)
+  ok  	github.com/kopdes/merah-putih/internal/api	5.123s
+  ```
+
 
 

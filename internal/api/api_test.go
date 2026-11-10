@@ -23,6 +23,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/qris"
 	"github.com/kopdes/merah-putih/internal/security"
+	"github.com/kopdes/merah-putih/internal/simkopdes"
 )
 
 func getTestPool(t testing.TB) *pgxpool.Pool {
@@ -2121,6 +2122,191 @@ func TestTask2_MetricsEndpoint_PartitionMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestTask3_PDPPurge_SecurityTenantValidation(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire conn failed: %v", err)
+	}
+	defer conn.Release()
+
+	// Set tenant context A
+	tenantA := env.KoperasiID
+	tenantB := uuid.New()
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", tenantA.String())
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false);")
+
+	// Panggil fn_purge_rejected_pendaftaran_pdp dengan tenant B (mismatch)
+	// Wajib ditolak dengan exception SQLSTATE 42501
+	var count int
+	err = conn.QueryRow(ctx, "SELECT fn_purge_rejected_pendaftaran_pdp($1, 30);", tenantB).Scan(&count)
+	if err == nil {
+		t.Fatalf("SECURITY VIOLATION: fn_purge_rejected_pendaftaran_pdp seharusnya menolak tenant mismatch (tenantA vs tenantB), tetapi lolos!")
+	}
+	if !strings.Contains(err.Error(), "42501") && !strings.Contains(strings.ToLower(err.Error()), "akses ditolak") {
+		t.Fatalf("Expected SQLSTATE 42501 or Akses Ditolak, got: %v", err)
+	}
+	t.Logf("Sukses: Pemanggilan lintas tenant berhasil ditolak: %v", err)
+}
+
+func TestTask3_SIMKOPDES_Table_And_Adapter_Restored(t *testing.T) {
+	ctx := context.Background()
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	// 1. Verifikasi tabel sinkronisasi_simkopdes ada di database
+	var tableExists bool
+	err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables 
+			WHERE table_name = 'sinkronisasi_simkopdes'
+		);
+	`).Scan(&tableExists)
+	if err != nil {
+		t.Fatalf("Gagal memeriksa keberadaan tabel sinkronisasi_simkopdes: %v", err)
+	}
+	if !tableExists {
+		t.Fatalf("Tabel sinkronisasi_simkopdes belum dipulihkan di database!")
+	}
+
+	// 2. Verifikasi adapter stub terpasang dan berfungsi
+	adapter := simkopdes.NewStubAdapter(pool)
+	_, err = adapter.EnqueueReport(ctx, uuid.New(), "rekap_anggota", map[string]interface{}{"total": 10})
+	if err != simkopdes.ErrSIMKOPDESDeScoped {
+		t.Errorf("Expected ErrSIMKOPDESDeScoped from stub adapter, got: %v", err)
+	}
+}
+
+func TestTask3_PDPPurge_AuditLog_WithoutPII_And_ConfigRetention(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	pool := getTestPool(t)
+	defer pool.Close()
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire conn failed: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, false);", env.KoperasiID.String())
+
+	// 1. Ambil wilayah default
+	var wilayahID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT wilayah_desa_id FROM koperasi WHERE id = $1", env.KoperasiID).Scan(&wilayahID)
+
+	pendaftaranID := uuid.New()
+	dokumenID := uuid.New()
+	tglLama := time.Now().Add(-35 * 24 * time.Hour)
+	nikHash := hashSHA256(fmt.Sprintf("3201%d", time.Now().UnixNano()))
+
+	// 2. Buat data pendaftaran ditolak
+	_, err = conn.Exec(ctx, `
+		INSERT INTO pendaftaran_anggota (
+			id, koperasi_id, user_id, no_registrasi,
+			nik_enkripsi, nik_hash, nama_lengkap, tempat_lahir,
+			tanggal_lahir_enkripsi, jenis_kelamin, alamat_ktp_enkripsi,
+			wilayah_desa_id, status, diajukan_oleh, alasan_ditolak, updated_at, created_by
+		) VALUES (
+			$1, $2, $3, 'REG-TASK3-PURGE',
+			'v1:k1:dummy', $4, 'Calon Ditolak Task3', 'Bandung',
+			'v1:k1:dummy', 'P', 'v1:k1:dummy',
+			$5, 'ditolak', $3, 'Syarat kurang lengkap', $6, $3
+		);
+	`, pendaftaranID, env.KoperasiID, env.AnggotaUserID, nikHash, wilayahID, tglLama)
+	if err != nil {
+		t.Fatalf("Seed pendaftaran failed: %v", err)
+	}
+
+	// 3. Buat dokumen KYC di tabel dokumen dan pendaftaran_dokumen
+	storageKey := fmt.Sprintf("pendaftaran/%s/%s/%s_ktp.jpg", env.KoperasiID, pendaftaranID, dokumenID)
+	_, err = conn.Exec(ctx, `
+		INSERT INTO dokumen (
+			id, koperasi_id, nama_file, mime_type, ukuran_byte, storage_key, checksum_sha256, klasifikasi_data, retensi_sampai, created_by
+		) VALUES (
+			$1, $2, 'ktp.jpg', 'image/jpeg', 1024, $3, 'dummychecksum', 'rahasia_pii', CURRENT_DATE + INTERVAL '1 year', $4
+		);
+	`, dokumenID, env.KoperasiID, storageKey, env.AnggotaUserID)
+	if err != nil {
+		t.Fatalf("Seed dokumen failed: %v", err)
+	}
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO pendaftaran_dokumen (
+			pendaftaran_id, dokumen_id, koperasi_id, jenis_dokumen, storage_key, checksum_sha256, created_by
+		) VALUES (
+			$1, $2, $3, 'ktp', $4, 'dummychecksum', $5
+		);
+	`, pendaftaranID, dokumenID, env.KoperasiID, storageKey, env.AnggotaUserID)
+	if err != nil {
+		t.Fatalf("Seed pendaftaran_dokumen failed: %v", err)
+	}
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO pendaftaran_status_log (
+			id, koperasi_id, pendaftaran_id, status_lama, status_baru, created_by
+		) VALUES (
+			$1, $2, $3, 'dalam_verifikasi', 'ditolak', $4
+		);
+	`, uuid.New(), env.KoperasiID, pendaftaranID, env.AnggotaUserID)
+	if err != nil {
+		t.Fatalf("Seed pendaftaran_status_log failed: %v", err)
+	}
+
+	// 4. Jalankan endpoint purge-ditolak
+	reqPurge := httptest.NewRequest("POST", "/api/v1/pendaftaran/purge-ditolak", nil)
+	reqPurge.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recPurge := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPurge, reqPurge)
+
+	if recPurge.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for purge-ditolak, got %d: %s", recPurge.Code, recPurge.Body.String())
+	}
+
+	// 5. Verifikasi pendaftaran dan dokumen terhapus
+	var existsPendaftaran, existsDokumen bool
+	_ = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pendaftaran_anggota WHERE id = $1);", pendaftaranID).Scan(&existsPendaftaran)
+	_ = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM dokumen WHERE id = $1);", dokumenID).Scan(&existsDokumen)
+
+	if existsPendaftaran {
+		t.Errorf("Pendaftaran harusnya terhapus setelah purge!")
+	}
+	if existsDokumen {
+		t.Errorf("Dokumen KYC harusnya terhapus setelah purge!")
+	}
+
+	// 6. Verifikasi audit log tercatat tanpa PII
+	var auditAksi string
+	var auditDataBaru string
+	err = conn.QueryRow(ctx, `
+		SELECT aksi, data_baru::text 
+		FROM audit_log 
+		WHERE koperasi_id = $1 AND nama_tabel = 'pendaftaran_anggota' AND aksi = 'ANONYMIZE'
+		ORDER BY created_at DESC LIMIT 1;
+	`, env.KoperasiID).Scan(&auditAksi, &auditDataBaru)
+	if err != nil {
+		t.Fatalf("Audit log untuk purge PDP tidak ditemukan: %v", err)
+	}
+
+	// Pastikan tidak ada PII di audit_log
+	if strings.Contains(auditDataBaru, "Calon Ditolak Task3") || strings.Contains(auditDataBaru, "Bandung") || strings.Contains(auditDataBaru, nikHash) {
+		t.Fatalf("SECURITY VIOLATION: Audit log memuat PII calon anggota: %s", auditDataBaru)
+	}
+	if !strings.Contains(auditDataBaru, "PERLU VERIFIKASI HUKUM") {
+		t.Errorf("Audit log harus memuat catatan PERLU VERIFIKASI HUKUM: %s", auditDataBaru)
+	}
+	t.Logf("Sukses: Audit log bersih tanpa PII: %s", auditDataBaru)
+}
+
+
 
 
 

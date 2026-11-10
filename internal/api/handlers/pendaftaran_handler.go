@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -626,9 +628,30 @@ func (h *PendaftaranHandler) HandlePurgeRejectedPendaftaran(w http.ResponseWrite
 
 	ctx := r.Context()
 	var purgedCount int
+	var storageKeys []string
 
 	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, "SELECT fn_purge_rejected_pendaftaran_pdp($1, 30);", claims.KoperasiID).Scan(&purgedCount)
+		// 1. Ambil daftar storage_key berkas KYC yang akan dihapus dari penyimpanan
+		rows, err := tx.Query(ctx, `
+			SELECT pd.storage_key
+			FROM pendaftaran_dokumen pd
+			JOIN pendaftaran_anggota pa ON pd.pendaftaran_id = pa.id
+			WHERE pa.koperasi_id = $1
+			  AND pa.status = 'ditolak'
+			  AND pd.storage_key IS NOT NULL;
+		`, claims.KoperasiID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var sk string
+				if err := rows.Scan(&sk); err == nil && sk != "" {
+					storageKeys = append(storageKeys, sk)
+				}
+			}
+		}
+
+		// 2. Jalankan fungsi SQL fn_purge_rejected_pendaftaran_pdp (retensi dari konfigurasi_aturan)
+		return tx.QueryRow(ctx, "SELECT fn_purge_rejected_pendaftaran_pdp($1, NULL);", claims.KoperasiID).Scan(&purgedCount)
 	})
 
 	if err != nil {
@@ -636,9 +659,19 @@ func (h *PendaftaranHandler) HandlePurgeRejectedPendaftaran(w http.ResponseWrite
 		return
 	}
 
+	// 3. Hapus berkas KYC fisik dari penyimpanan lokal jika ada
+	storageBase := os.Getenv("STORAGE_DIR")
+	if storageBase == "" {
+		storageBase = "storage"
+	}
+	for _, sk := range storageKeys {
+		filePath := filepath.Join(storageBase, sk)
+		_ = os.Remove(filePath)
+	}
+
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"jumlah_dibersihkan": purgedCount,
-		"masa_retensi_hari":  30,
+		"catatan":            "Retensi diatur via konfigurasi_aturan (PERLU VERIFIKASI HUKUM).",
 		"pesan":              fmt.Sprintf("Pembersihan data pribadi (UU 27/2022 PDP) selesai: %d berkas pendaftaran ditolak dihapus permanen.", purgedCount),
 	})
 }

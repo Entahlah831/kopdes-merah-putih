@@ -202,6 +202,7 @@ func main() {
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	db.StartPartitionMaintenanceJob(workerCtx, pool, 24*time.Hour, 3)
+	db.StartPDPPurgeWorker(workerCtx, pool, 24*time.Hour)
 
 	// Channel sinyal shutdown
 	stop := make(chan os.Signal, 1)

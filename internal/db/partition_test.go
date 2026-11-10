@@ -77,3 +77,66 @@ func TestK2_EnsurePartitionsAhead_Idempotent(t *testing.T) {
 		t.Fatalf("EnsurePartitionsAhead pemanggilan kedua gagal: %v", err)
 	}
 }
+
+func TestTask2_SQLFunction_EnsureFuturePartitions(t *testing.T) {
+	ctx := context.Background()
+	// Wajib dapat dijalankan oleh role kopdes_app non-superuser
+	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	defer pool.Close()
+
+	// 1. Eksekusi fungsi SQL idempoten fn_ensure_future_partitions(3)
+	var resultJSON string
+	err := pool.QueryRow(ctx, "SELECT fn_ensure_future_partitions(3)::text;").Scan(&resultJSON)
+	if err != nil {
+		t.Fatalf("Gagal memanggil fn_ensure_future_partitions sebagai kopdes_app: %v", err)
+	}
+	t.Logf("Hasil pemanggilan fn_ensure_future_partitions(3): %s", resultJSON)
+
+	// 2. Eksekusi ulang untuk verifikasi idempotensi
+	err = pool.QueryRow(ctx, "SELECT fn_ensure_future_partitions(3)::text;").Scan(&resultJSON)
+	if err != nil {
+		t.Fatalf("Pemanggilan kedua fn_ensure_future_partitions gagal (tidak idempoten): %v", err)
+	}
+
+	// 3. Pastikan partisi untuk 4 tabel tercover: audit_log, kas_mutasi, stok_mutasi, notifikasi
+	tables := []string{"audit_log", "kas_mutasi", "stok_mutasi", "notifikasi"}
+	for _, tbl := range tables {
+		var partCount int
+		err := pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM pg_inherits
+			WHERE inhparent = $1::regclass;
+		`, tbl).Scan(&partCount)
+		if err != nil {
+			t.Fatalf("Gagal memeriksa partisi untuk tabel %s: %v", tbl, err)
+		}
+		if partCount < 3 {
+			t.Errorf("Tabel %s hanya memiliki %d partisi, minimal 3", tbl, partCount)
+		}
+	}
+}
+
+func TestTask2_PartitionMetrics_And_Alert(t *testing.T) {
+	ctx := context.Background()
+	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	defer pool.Close()
+
+	// Verifikasi helper metrik kalkulasi partisi
+	metrics, err := internaldb.GetPartitionMetrics(ctx, pool)
+	if err != nil {
+		t.Fatalf("GetPartitionMetrics gagal: %v", err)
+	}
+
+	if metrics.AuditLogDefaultRows != 0 || metrics.KasMutasiDefaultRows != 0 ||
+		metrics.StokMutasiDefaultRows != 0 || metrics.NotifikasiDefaultRows != 0 {
+		t.Errorf("Partisi default harus memiliki 0 baris, didapat: %+v", metrics)
+	}
+
+	if metrics.MinMonthsRemaining < 3 {
+		t.Errorf("Bulan tersisa partisi minimal harus >= 3, didapat %d", metrics.MinMonthsRemaining)
+	}
+
+	if metrics.AlertActive {
+		t.Errorf("Peringatan partisi tidak boleh aktif dalam kondisi normal")
+	}
+}
+

@@ -199,6 +199,10 @@ func main() {
 
 	server := api.NewServer(pool, cfg)
 
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	db.StartPartitionMaintenanceJob(workerCtx, pool, 24*time.Hour, 3)
+
 	// Channel sinyal shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

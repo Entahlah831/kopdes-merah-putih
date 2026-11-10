@@ -2091,6 +2091,38 @@ func TestP1_1_PDP_30Day_Purge(t *testing.T) {
 	}
 }
 
+func TestTask2_MetricsEndpoint_PartitionMetrics(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /metrics, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	requiredSubstrings := []string{
+		`kopdes_partisi_bulan_tersisa{tabel="audit_log"}`,
+		`kopdes_partisi_bulan_tersisa{tabel="kas_mutasi"}`,
+		`kopdes_partisi_bulan_tersisa{tabel="stok_mutasi"}`,
+		`kopdes_partisi_bulan_tersisa{tabel="notifikasi"}`,
+		`kopdes_partisi_default_row_count{tabel="audit_log"} 0`,
+		`kopdes_partisi_default_row_count{tabel="kas_mutasi"} 0`,
+		`kopdes_partisi_default_row_count{tabel="stok_mutasi"} 0`,
+		`kopdes_partisi_default_row_count{tabel="notifikasi"} 0`,
+		`kopdes_partisi_peringatan 0`,
+	}
+
+	for _, sub := range requiredSubstrings {
+		if !strings.Contains(body, sub) {
+			t.Errorf("Metrics response missing expected substring: %q\nResponse body:\n%s", sub, body)
+		}
+	}
+}
+
+
 
 
 

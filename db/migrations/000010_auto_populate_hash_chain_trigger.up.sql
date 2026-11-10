@@ -28,11 +28,13 @@ BEGIN
     v_lock_key := ('x' || substr(md5(v_base_table || ':' || NEW.koperasi_id::text), 1, 16))::bit(64)::bigint;
     PERFORM pg_advisory_xact_lock(v_lock_key);
 
-    -- 2. Pastikan ID terisi dan tetapkan created_at monolitik sesuai urutan lock
+    -- 2. Pastikan ID terisi dan tetapkan created_at monolitik sesuai urutan lock jika mendekati waktu saat ini
     IF NEW.id IS NULL THEN
         NEW.id := uuid_generate_v7();
     END IF;
-    NEW.created_at := clock_timestamp();
+    IF NEW.created_at IS NULL OR abs(extract(epoch from (NEW.created_at - clock_timestamp()))) < 60 THEN
+        NEW.created_at := clock_timestamp();
+    END IF;
 
     -- 3. Cari row_hash terakhir untuk tenant ini pada tabel dasar yang sama
     EXECUTE format('

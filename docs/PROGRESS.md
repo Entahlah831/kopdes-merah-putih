@@ -89,7 +89,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 
 ### V. PERBAIKAN LANJUTAN TERVERIFIKASI (10 TUGAS)
 - [x] **1. Hash chain otomatis lewat trigger BEFORE INSERT DB (pgcrypto digest & advisory lock)**
-- [ ] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
+- [x] **2. Partisi SQL idempoten 3 bulan ke depan, job terjadwal & metrik partisi default**
 - [ ] **3. fn_purge_rejected_pendaftaran_pdp penguatan keamanan, audit tanpa PII, dan pulihkan sinkronisasi_simkopdes**
 - [ ] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
 - [ ] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
@@ -272,4 +272,35 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih	3.591s
   ok  	github.com/kopdes/merah-putih/internal/api	4.784s
   ```
+
+### [2026-11-10] Tugas 2: Partisi SQL Idempoten 3 Bulan ke Depan, Job Terjadwal & Metrik Partisi Default
+- **Reproduksi Gagal**: `TestTask2_SQLFunction_EnsureFuturePartitions` dan `TestTask2_PartitionMetrics_And_Alert` gagal pada tahap awal karena fungsi SQL `fn_ensure_future_partitions` dan endpoint metrik partisi default belum terpasang.
+- **Implementasi**:
+  - Migrasi `000011_idempotent_partition_creator.up.sql`: Dibuat fungsi SQL `fn_ensure_future_partitions(p_months_ahead int DEFAULT 3)` bertipe `SECURITY DEFINER` dengan izin eksekusi untuk `kopdes_app`.
+  - Secara idempoten membuat partisi bulanan ke depan untuk seluruh 4 tabel berpartisi (`audit_log`, `kas_mutasi`, `stok_mutasi`, `notifikasi`) lengkap dengan penyesuaian hak akses role aplikasi dan auditor.
+  - Integrasi terjadwal ganda:
+    - Di sisi database via ekstensi `pg_cron` (jika tersedia).
+    - Di sisi aplikasi Go via `StartPartitionMaintenanceJob` yang berjalan di background setiap 24 jam dengan eksekusi awal saat startup.
+  - Metrik Prometheus operasional di `/metrics`:
+    - `kopdes_partisi_bulan_tersisa{tabel="..."}`: Jumlah bulan partisi ke depan yang tersedia.
+    - `kopdes_partisi_default_row_count{tabel="..."}`: Jumlah baris data di partisi DEFAULT (harus bernilai 0).
+    - `kopdes_partisi_peringatan`: Indikator alarm (1 jika ada baris di partisi default atau sisa bulan < 2, 0 jika normal).
+  - Perbaikan trigger `fn_maintain_hash_chain` agar tidak memicu `SQLSTATE 0A000` (moving row to another partition) pada insert data dengan tanggal historis/masa depan terpartisi.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestK2_InsertOutsidePartition_SucceedsAfterMigration
+  --- PASS: TestK2_InsertOutsidePartition_SucceedsAfterMigration (0.18s)
+  === RUN   TestK2_EnsurePartitionsAhead_Idempotent
+  --- PASS: TestK2_EnsurePartitionsAhead_Idempotent (0.06s)
+  === RUN   TestTask2_SQLFunction_EnsureFuturePartitions
+      partition_test.go:93: Hasil pemanggilan fn_ensure_future_partitions(3): {"details": [], "months_ahead": 3, "created_count": 0}
+  --- PASS: TestTask2_SQLFunction_EnsureFuturePartitions (0.06s)
+  === RUN   TestTask2_PartitionMetrics_And_Alert
+  --- PASS: TestTask2_PartitionMetrics_And_Alert (0.08s)
+  === RUN   TestTask2_MetricsEndpoint_PartitionMetrics
+  --- PASS: TestTask2_MetricsEndpoint_PartitionMetrics (2.21s)
+  ok  	github.com/kopdes/merah-putih/internal/db	0.695s
+  ok  	github.com/kopdes/merah-putih/internal/api	2.504s
+  ```
+
 

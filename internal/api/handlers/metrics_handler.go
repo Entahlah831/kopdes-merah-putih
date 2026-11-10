@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kopdes/merah-putih/internal/db"
 )
 
 type MetricsHandler struct {
@@ -58,6 +59,14 @@ func (h *MetricsHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		WHERE inhparent = 'kas_mutasi'::regclass;
 	`).Scan(&partisiCount)
 
+	// 5. Metrik partisi bulanan & partisi default (Task 2)
+	partMetrics, _ := db.GetPartitionMetrics(ctx, h.pool)
+
+	alertVal := 0
+	if partMetrics.AlertActive {
+		alertVal = 1
+	}
+
 	uptimeSeconds := time.Since(h.startTime).Seconds()
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -82,5 +91,33 @@ kopdes_job_gagal_total %d
 # HELP kopdes_partisi_tersisa Jumlah partisi kas_mutasi aktif terkonfigurasi di database
 # TYPE kopdes_partisi_tersisa gauge
 kopdes_partisi_tersisa %d
-`, uptimeSeconds, antreanVerifikasi, slotAktif, jobGagal, partisiCount)
+
+# HELP kopdes_partisi_bulan_tersisa Jumlah bulan ke depan yang memiliki partisi terdaftar
+# TYPE kopdes_partisi_bulan_tersisa gauge
+kopdes_partisi_bulan_tersisa{tabel="audit_log"} %d
+kopdes_partisi_bulan_tersisa{tabel="kas_mutasi"} %d
+kopdes_partisi_bulan_tersisa{tabel="stok_mutasi"} %d
+kopdes_partisi_bulan_tersisa{tabel="notifikasi"} %d
+
+# HELP kopdes_partisi_default_row_count Jumlah baris data di partisi DEFAULT (harus 0)
+# TYPE kopdes_partisi_default_row_count gauge
+kopdes_partisi_default_row_count{tabel="audit_log"} %d
+kopdes_partisi_default_row_count{tabel="kas_mutasi"} %d
+kopdes_partisi_default_row_count{tabel="stok_mutasi"} %d
+kopdes_partisi_default_row_count{tabel="notifikasi"} %d
+
+# HELP kopdes_partisi_peringatan Status peringatan partisi (1 jika partisi default terisi atau bulan tersisa < 2, 0 jika normal)
+# TYPE kopdes_partisi_peringatan gauge
+kopdes_partisi_peringatan %d
+`, uptimeSeconds, antreanVerifikasi, slotAktif, jobGagal, partisiCount,
+		partMetrics.MonthsRemaining["audit_log"],
+		partMetrics.MonthsRemaining["kas_mutasi"],
+		partMetrics.MonthsRemaining["stok_mutasi"],
+		partMetrics.MonthsRemaining["notifikasi"],
+		partMetrics.AuditLogDefaultRows,
+		partMetrics.KasMutasiDefaultRows,
+		partMetrics.StokMutasiDefaultRows,
+		partMetrics.NotifikasiDefaultRows,
+		alertVal,
+	)
 }

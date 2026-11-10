@@ -113,6 +113,10 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	metricsH := handlers.NewMetricsHandler(pool, cfg.MetricsToken, trustedMatcher)
 	pendaftaranH := handlers.NewPendaftaranHandler(pool, keyProvider, []byte(cfg.BlindIndexSecret))
 	kasH := handlers.NewKasHandler(pool)
+	anggotaH := handlers.NewAnggotaHandler(pool)
+	tokoH := handlers.NewTokoHandler(pool)
+	laporanH := handlers.NewLaporanHandler(pool)
+	userMgmtH := handlers.NewUserManagementHandler(pool)
 
 	mux := http.NewServeMux()
 
@@ -134,6 +138,15 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("POST /api/v1/pembayaran/{id}/bukti", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleKlaimBuktiPembayaran)))
 	mux.Handle("GET /api/v1/katalog/stok", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleListStokGudang)))
 	mux.Handle("GET /api/v1/katalog/harga", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleGetHargaAnggota)))
+	mux.Handle("GET /api/v1/katalog/produk", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleListProduk)))
+	mux.Handle("GET /api/v1/katalog/promo", authMw.RequireAuth(http.HandlerFunc(katalogH.HandleListPromo)))
+	mux.Handle("GET /api/v1/iuran/jenis", authMw.RequireAuth(http.HandlerFunc(iuranH.HandleListJenisIuran)))
+	mux.Handle("GET /api/v1/iuran/tagihan/saya", authMw.RequireAuth(http.HandlerFunc(iuranH.HandleGetTagihanSaya)))
+	mux.Handle("GET /api/v1/toko/keranjang", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleGetKeranjang)))
+	mux.Handle("POST /api/v1/toko/keranjang", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleAddToCart)))
+	mux.Handle("DELETE /api/v1/toko/keranjang/{produk_id}", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleRemoveFromCart)))
+	mux.Handle("POST /api/v1/toko/checkout", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleCheckout)))
+	mux.Handle("GET /api/v1/toko/pesanan", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleListPesanan)))
 
 	// Pendaftaran & KYC Calon Anggota (P1-1)
 	mux.Handle("POST /api/v1/pendaftaran", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleAjukanPendaftaran)))
@@ -141,11 +154,59 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("POST /api/v1/pendaftaran/{id}/dokumen", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleUploadDokumenPendaftaran)))
 
 	// --- 3. Operator / Pengurus Endpoints (RBAC Guard) ---
-	// Pemisahan izin: pengawas & operator hanya read-only antrean/tunggakan, verifikasi & generate dibatasi
 	readOnlyAdminRoles := []string{"admin", "pengurus", "operator", "pengawas", "bendahara", "ketua"}
 	pembayaranVerifikasiRoles := []string{"admin", "pengurus", "bendahara", "ketua"}
 	iuranGenerateRoles := []string{"admin", "pengurus", "bendahara"}
 	pendaftaranVerifikasiRoles := []string{"admin", "pengurus", "ketua", "sekretaris"}
+
+	// Manajemen Anggota (Task 9)
+	mux.Handle("GET /api/v1/anggota", authMw.RequireAuth(
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(anggotaH.HandleListAnggota)),
+	))
+	mux.Handle("GET /api/v1/anggota/{id}", authMw.RequireAuth(
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(anggotaH.HandleGetAnggota)),
+	))
+	mux.Handle("PATCH /api/v1/anggota/{id}/status", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus", "ketua")(http.HandlerFunc(anggotaH.HandleUpdateStatusAnggota)),
+	))
+
+	// Manajemen Pengguna (Task 9)
+	mux.Handle("GET /api/v1/users", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus", "ketua")(http.HandlerFunc(userMgmtH.HandleListUsers)),
+	))
+	mux.Handle("GET /api/v1/users/{id}", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus", "ketua")(http.HandlerFunc(userMgmtH.HandleGetUserDetail)),
+	))
+	mux.Handle("PATCH /api/v1/users/{id}/role", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus", "ketua")(http.HandlerFunc(userMgmtH.HandleUpdateUserRole)),
+	))
+
+	// CRUD Iuran (Task 9)
+	mux.Handle("POST /api/v1/iuran/jenis", authMw.RequireAuth(
+		middleware.RequireRoles(iuranGenerateRoles...)(http.HandlerFunc(iuranH.HandleCreateJenisIuran)),
+	))
+
+	// CRUD Katalog & Promo (Task 9)
+	mux.Handle("POST /api/v1/katalog/produk", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(katalogH.HandleCreateProduk)),
+	))
+	mux.Handle("PUT /api/v1/katalog/produk/{id}", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(katalogH.HandleUpdateProduk)),
+	))
+	mux.Handle("DELETE /api/v1/katalog/produk/{id}", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(katalogH.HandleDeleteProduk)),
+	))
+	mux.Handle("POST /api/v1/katalog/promo", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(katalogH.HandleCreatePromo)),
+	))
+
+	// Laporan (Task 9)
+	mux.Handle("GET /api/v1/laporan/keuangan", authMw.RequireAuth(
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(laporanH.HandleLaporanKeuangan)),
+	))
+	mux.Handle("GET /api/v1/laporan/anggota", authMw.RequireAuth(
+		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(laporanH.HandleLaporanRekapAnggota)),
+	))
 
 	mux.Handle("POST /api/v1/pendaftaran/{id}/verifikasi", authMw.RequireAuth(
 		middleware.RequireRoles(pendaftaranVerifikasiRoles...)(http.HandlerFunc(pendaftaranH.HandleVerifikasiPendaftaran)),
@@ -175,7 +236,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		middleware.RequireRoles(readOnlyAdminRoles...)(http.HandlerFunc(kasH.HandleListKasMutasi)),
 	))
 
-	// --- 4. Admin Koperasi QRIS Management (PERLU VERIFIKASI) ---
+	// --- 4. Admin Koperasi QRIS Management ---
 	mux.Handle("POST /api/v1/koperasi/rekening-qris", authMw.RequireAuth(
 		middleware.RequireRoles("admin", "pengurus")(http.HandlerFunc(qrisH.HandleAdminDaftarRekeningQRIS)),
 	))

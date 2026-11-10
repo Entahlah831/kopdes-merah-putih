@@ -2936,6 +2936,238 @@ func TestTask8_RolePasswordFromEnv_NoProductionDefault(t *testing.T) {
 	}
 }
 
+func TestTask9_MissingCRUD_Endpoints_EndToEnd(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// --- 1. Manajemen Anggota ---
+	// 1a. List Anggota
+	reqListAnggota := httptest.NewRequest("GET", "/api/v1/anggota", nil)
+	reqListAnggota.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recListAnggota := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListAnggota, reqListAnggota)
+	if recListAnggota.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/anggota, got %d: %s", recListAnggota.Code, recListAnggota.Body.String())
+	}
+
+	// 1b. Detail Anggota
+	reqDetailAnggota := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/anggota/%s", env.AnggotaID), nil)
+	reqDetailAnggota.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recDetailAnggota := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recDetailAnggota, reqDetailAnggota)
+	if recDetailAnggota.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/anggota/{id}, got %d: %s", recDetailAnggota.Code, recDetailAnggota.Body.String())
+	}
+
+	// 1c. Update Status Anggota (misal nonaktifkan)
+	bodyStatus, _ := json.Marshal(map[string]string{
+		"status":  "nonaktif",
+		"alasan":  "Pengujian status anggota",
+		"catatan": "Catatan pengurus",
+	})
+	reqUpdateStatus := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/anggota/%s/status", env.AnggotaID), bytes.NewReader(bodyStatus))
+	reqUpdateStatus.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqUpdateStatus.Header.Set("Content-Type", "application/json")
+	recUpdateStatus := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recUpdateStatus, reqUpdateStatus)
+	if recUpdateStatus.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for PATCH /api/v1/anggota/{id}/status, got %d: %s", recUpdateStatus.Code, recUpdateStatus.Body.String())
+	}
+
+	// --- 2. CRUD Iuran ---
+	// 2a. Buat Jenis Iuran Baru
+	bodyJenisIuran, _ := json.Marshal(map[string]interface{}{
+		"kode":           fmt.Sprintf("IUR-%s", uuid.New().String()[:6]),
+		"nama":           "Iuran Dana Sosial",
+		"tipe":           "sukarela",
+		"nominal_standar": 25000,
+	})
+	reqBuatJenis := httptest.NewRequest("POST", "/api/v1/iuran/jenis", bytes.NewReader(bodyJenisIuran))
+	reqBuatJenis.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqBuatJenis.Header.Set("Content-Type", "application/json")
+	recBuatJenis := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recBuatJenis, reqBuatJenis)
+	if recBuatJenis.Code != http.StatusCreated && recBuatJenis.Code != http.StatusOK {
+		t.Fatalf("Expected 201/200 for POST /api/v1/iuran/jenis, got %d: %s", recBuatJenis.Code, recBuatJenis.Body.String())
+	}
+
+	// 2b. List Jenis Iuran
+	reqListJenis := httptest.NewRequest("GET", "/api/v1/iuran/jenis", nil)
+	reqListJenis.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recListJenis := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListJenis, reqListJenis)
+	if recListJenis.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/iuran/jenis, got %d", recListJenis.Code)
+	}
+
+	// 2c. List Tagihan Saya (Anggota)
+	reqTagihanSaya := httptest.NewRequest("GET", "/api/v1/iuran/tagihan/saya", nil)
+	reqTagihanSaya.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recTagihanSaya := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recTagihanSaya, reqTagihanSaya)
+	if recTagihanSaya.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/iuran/tagihan/saya, got %d: %s", recTagihanSaya.Code, recTagihanSaya.Body.String())
+	}
+
+	// --- 3. CRUD Katalog + Promo ---
+	// 3a. Buat Produk Baru + Harga
+	bodyProduk, _ := json.Marshal(map[string]interface{}{
+		"nama":          "Beras Premium Desa 5kg",
+		"sku":           fmt.Sprintf("BRS-%s", uuid.New().String()[:6]),
+		"harga_umum":    75000,
+		"harga_anggota": 70000,
+		"stok_awal":     100,
+	})
+	reqBuatProduk := httptest.NewRequest("POST", "/api/v1/katalog/produk", bytes.NewReader(bodyProduk))
+	reqBuatProduk.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqBuatProduk.Header.Set("Content-Type", "application/json")
+	recBuatProduk := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recBuatProduk, reqBuatProduk)
+	if recBuatProduk.Code != http.StatusCreated && recBuatProduk.Code != http.StatusOK {
+		t.Fatalf("Expected 201/200 for POST /api/v1/katalog/produk, got %d: %s", recBuatProduk.Code, recBuatProduk.Body.String())
+	}
+	var resProduk struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recBuatProduk.Body.Bytes(), &resProduk)
+	produkID := resProduk.Data.ID
+
+	// 3b. List Produk
+	reqListProduk := httptest.NewRequest("GET", "/api/v1/katalog/produk", nil)
+	reqListProduk.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recListProduk := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListProduk, reqListProduk)
+	if recListProduk.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/katalog/produk, got %d", recListProduk.Code)
+	}
+
+	// 3c. Buat Promo
+	bodyPromo, _ := json.Marshal(map[string]interface{}{
+		"kode":             fmt.Sprintf("PROMO-%s", uuid.New().String()[:6]),
+		"nama":             "Promo Panen Raya",
+		"tipe_promo":       "nominal_tetap",
+		"nilai_diskon":     5000,
+		"minimal_belanja":  50000,
+		"durasi_hari":      7,
+	})
+	reqBuatPromo := httptest.NewRequest("POST", "/api/v1/katalog/promo", bytes.NewReader(bodyPromo))
+	reqBuatPromo.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqBuatPromo.Header.Set("Content-Type", "application/json")
+	recBuatPromo := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recBuatPromo, reqBuatPromo)
+	if recBuatPromo.Code != http.StatusCreated && recBuatPromo.Code != http.StatusOK {
+		t.Fatalf("Expected 201/200 for POST /api/v1/katalog/promo, got %d: %s", recBuatPromo.Code, recBuatPromo.Body.String())
+	}
+
+	// 3d. List Promo
+	reqListPromo := httptest.NewRequest("GET", "/api/v1/katalog/promo", nil)
+	reqListPromo.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recListPromo := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListPromo, reqListPromo)
+	if recListPromo.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/katalog/promo, got %d", recListPromo.Code)
+	}
+
+	// --- 4. Keranjang / Pesanan / Checkout ---
+	// 4a. Tambah Item ke Keranjang
+	bodyCart, _ := json.Marshal(map[string]interface{}{
+		"produk_id": produkID,
+		"qty":       2,
+	})
+	reqAddCart := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyCart))
+	reqAddCart.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqAddCart.Header.Set("Content-Type", "application/json")
+	recAddCart := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAddCart, reqAddCart)
+	if recAddCart.Code != http.StatusOK && recAddCart.Code != http.StatusCreated {
+		t.Fatalf("Expected 200/201 for POST /api/v1/toko/keranjang, got %d: %s", recAddCart.Code, recAddCart.Body.String())
+	}
+
+	// 4b. Lihat Keranjang
+	reqGetCart := httptest.NewRequest("GET", "/api/v1/toko/keranjang", nil)
+	reqGetCart.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recGetCart := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recGetCart, reqGetCart)
+	if recGetCart.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/toko/keranjang, got %d", recGetCart.Code)
+	}
+
+	// 4c. Checkout Keranjang -> Pesanan
+	bodyCheckout, _ := json.Marshal(map[string]interface{}{
+		"metode_serah_terima": "ambil_di_koperasi",
+		"catatan":             "Siapkan paket beras",
+	})
+	reqCheckout := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckout))
+	reqCheckout.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqCheckout.Header.Set("Content-Type", "application/json")
+	recCheckout := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckout, reqCheckout)
+	if recCheckout.Code != http.StatusCreated && recCheckout.Code != http.StatusOK {
+		t.Fatalf("Expected 201/200 for POST /api/v1/toko/checkout, got %d: %s", recCheckout.Code, recCheckout.Body.String())
+	}
+
+	// 4d. List Pesanan
+	reqListPesanan := httptest.NewRequest("GET", "/api/v1/toko/pesanan", nil)
+	reqListPesanan.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recListPesanan := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListPesanan, reqListPesanan)
+	if recListPesanan.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/toko/pesanan, got %d", recListPesanan.Code)
+	}
+
+	// --- 5. Laporan ---
+	// 5a. Laporan Keuangan
+	reqLapKeu := httptest.NewRequest("GET", "/api/v1/laporan/keuangan", nil)
+	reqLapKeu.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recLapKeu := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLapKeu, reqLapKeu)
+	if recLapKeu.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/laporan/keuangan, got %d", recLapKeu.Code)
+	}
+
+	// 5b. Laporan Rekap Anggota
+	reqLapAnggota := httptest.NewRequest("GET", "/api/v1/laporan/anggota", nil)
+	reqLapAnggota.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recLapAnggota := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLapAnggota, reqLapAnggota)
+	if recLapAnggota.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/laporan/anggota, got %d", recLapAnggota.Code)
+	}
+
+	// --- 6. Manajemen Pengguna ---
+	// 6a. List Users
+	reqListUsers := httptest.NewRequest("GET", "/api/v1/users", nil)
+	reqListUsers.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recListUsers := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recListUsers, reqListUsers)
+	if recListUsers.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/users, got %d", recListUsers.Code)
+	}
+
+	// 6b. Detail User
+	reqDetailUser := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/users/%s", env.AnggotaUserID), nil)
+	reqDetailUser.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recDetailUser := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recDetailUser, reqDetailUser)
+	if recDetailUser.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for GET /api/v1/users/{id}, got %d", recDetailUser.Code)
+	}
+
+	// 6c. Update Role User (misal jadikan operator)
+	bodyRole, _ := json.Marshal(map[string]string{
+		"role": "operator",
+	})
+	reqUpdateRole := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/users/%s/role", env.AnggotaUserID), bytes.NewReader(bodyRole))
+	reqUpdateRole.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqUpdateRole.Header.Set("Content-Type", "application/json")
+	recUpdateRole := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recUpdateRole, reqUpdateRole)
+	if recUpdateRole.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for PATCH /api/v1/users/{id}/role, got %d: %s", recUpdateRole.Code, recUpdateRole.Body.String())
+	}
+}
+
 
 
 

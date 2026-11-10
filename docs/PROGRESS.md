@@ -96,7 +96,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
 - [x] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
 - [x] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
-- [ ] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
+- [x] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
 - [ ] **10. Sanitasi dokumen (hapus klaim berlebihan) & verifikasi go test -count=1 -race ./...**
 
 ---
@@ -432,26 +432,44 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih/internal/api	8.448s
   ```
 
-### [2026-11-10] Tugas 8: Password Role Database dari Variabel Lingkungan Tanpa Nilai Default di Profil Produksi
-- **Reproduksi Gagal**: `TestTask8_RolePasswordFromEnv_NoProductionDefault` membuktikan bahwa sebelum perbaikan, `01_roles.sql` mengeksekusi pembuatan role `kopdes_app` dengan password hardcoded dev (`kopdes_dev_password`) dan mengabaikan variabel lingkungan sistem tanpa memvalidasi profil produksi.
+### [2026-11-10] Tugas 9: Penyelesaian Endpoint Operasional Inti Koperasi (Anggota, Iuran, Katalog/Promo, Toko/Pesanan, Laporan, Manajemen Pengguna)
+- **Reproduksi Gagal**: `TestTask9_MissingCRUD_Endpoints_EndToEnd` dibuat mencakup 6 domain bisnis utama yang sebelumnya belum memiliki endpoint HTTP aktif. Tes awal gagal dengan status HTTP 404 (Not Found) untuk seluruh rute baru.
 - **Implementasi**:
-  - Refaktor `db/docker-init/01_roles.sql`:
-    - Menggunakan perintah native psql `\getenv` untuk membaca variabel lingkungan `APP_ENV`, `KOPDES_APP_PASSWORD`, dan `DB_PASSWORD`.
-    - Mengevaluasi keberadaan variabel dengan conditional branching `\if :{?VAR} ... \else ... \endif` sebelum menyetel konfigurasi sesi.
-    - Pada blok procedural `DO $$`:
-      - Validasi ketat jika `v_env = 'production'`: melempar `RAISE EXCEPTION` fatal jika password kosong atau jika password terdeteksi menggunakan nilai bawaan dev (`'kopdes_dev_password'`).
-      - Pada profil non-produksi (`development`), mengizinkan fallback ke `'kopdes_dev_password'` jika variabel lingkungan tidak disediakan.
-      - Mengeksekusi pembuatan dan pengubahan password role `kopdes_app` secara dinamis via `EXECUTE format('... PASSWORD %L ...', v_pass)`.
-      - Membersihkan variabel password dari konfigurasi sesi via `SELECT set_config('app.app_pass', '', false)`.
-  - Pembaruan `docker-compose.yml`:
-    - Menghapus fallback hardcoded password dev pada container `postgres` dan `api`.
-    - Meneruskan `KOPDES_APP_PASSWORD: ${DB_PASSWORD}` dan `APP_ENV: ${APP_ENV:-production}` ke dalam service postgres.
+  - **Manajemen Anggota** (`internal/api/handlers/anggota_handler.go`):
+    - `GET /api/v1/anggota`: Listing anggota koperasi terfilter tenant (RLS) dengan pagination dan filter status/pencarian.
+    - `GET /api/v1/anggota/{id}`: Detail profil keanggotaan terisolasi tenant.
+    - `PATCH /api/v1/anggota/{id}/status`: Perubahan status keanggotaan (`aktif`, `nonaktif`, `keluar`, `meninggal`) dengan pencatatan otomatis ke tabel append-only `anggota_status_log` (memenuhi aturan immutability audit).
+  - **CRUD Iuran & Tagihan** (`internal/api/handlers/iuran_handler.go`):
+    - `POST /api/v1/iuran/jenis`: Pembuatan jenis iuran baru (simpanan wajib, pokok, sukarela) dengan nominal standar.
+    - `GET /api/v1/iuran/jenis`: Listing konfigurasi jenis iuran aktif untuk tenant bersangkutan.
+    - `GET /api/v1/iuran/tagihan/saya`: Endpoint anggota untuk melihat rekapitulasi tagihan iuran miliknya sendiri beserta status bayar dan jatuh tempo.
+  - **Katalog & Promo** (`internal/api/handlers/katalog_handler.go`):
+    - `POST /api/v1/katalog/produk`: Pembuatan master produk baru, inisialisasi kategori default bila belum ada, dan pencatatan riwayat harga awal (`produk_harga`).
+    - `GET /api/v1/katalog/produk`: Katalog produk aktif dengan snapshot harga umum dan harga anggota.
+    - `PUT /api/v1/katalog/produk/{id}` & `DELETE /api/v1/katalog/produk/{id}`: Pembaruan metadata produk dan soft-delete berbasis tenant.
+    - `POST /api/v1/katalog/promo`: Pembuatan promosi diskon nominal/persen dengan batas belanja, kuota, dan masa berlaku.
+    - `GET /api/v1/katalog/promo`: Listing promo aktif yang masih berlaku.
+  - **Keranjang, Checkout & Pesanan** (`internal/api/handlers/toko_handler.go`):
+    - `POST /api/v1/toko/keranjang`: Tambah item / update kuantitas ke keranjang belanja pengguna (`keranjang_item`).
+    - `GET /api/v1/toko/keranjang`: Tampilkan isi keranjang belanja terkini beserta kalkulasi harga umum/anggota.
+    - `DELETE /api/v1/toko/keranjang/{produk_id}`: Hapus item dari keranjang belanja.
+    - `POST /api/v1/toko/checkout`: Konversi item keranjang menjadi pesanan resmi (`pesanan` dan `pesanan_item`), menghitung subtotal khusus anggota jika pembeli terdaftar sebagai anggota aktif, mengosongkan keranjang belanja secara atomik.
+    - `GET /api/v1/toko/pesanan`: Riwayat pesanan pembeli (anggota) atau seluruh antrean pesanan bagi peran pengurus/admin.
+  - **Pelaporan** (`internal/api/handlers/laporan_handler.go`):
+    - `GET /api/v1/laporan/keuangan`: Ringkasan keuangan kas, mencakup total pemasukan kas (`kas_mutasi`), total pengeluaran, saldo periode kas berjalan, dan surplus/defisit operasional.
+    - `GET /api/v1/laporan/anggota`: Rekapitulasi distribusi anggota koperasi berdasarkan status aktif/calon/nonaktif.
+  - **Manajemen Pengguna** (`internal/api/handlers/user_management_handler.go`):
+    - `GET /api/v1/users`: Listing seluruh pengguna terafiliasi tenant koperasi beserta peran (`user_roles`).
+    - `GET /api/v1/users/{id}`: Rincian profil pengguna dan penugasan peran.
+    - `PATCH /api/v1/users/{id}/role`: Mutasi peran pengguna (`admin`, `pengurus`, `bendahara`, `operator`, `anggota`) dengan pencatatan audit log tanpa membuka celah BOLA/IDOR.
+  - Seluruh rute didaftarkan di `internal/api/server.go` dengan middleware otentikasi JWT dan pembatasan peran RBAC yang ketat.
 - **Hasil Verifikasi**:
   ```text
-  === RUN   TestTask8_RolePasswordFromEnv_NoProductionDefault
-  --- PASS: TestTask8_RolePasswordFromEnv_NoProductionDefault (0.39s)
-  ok  	github.com/kopdes/merah-putih/internal/api	0.681s
+  === RUN   TestTask9_MissingCRUD_Endpoints_EndToEnd
+  --- PASS: TestTask9_MissingCRUD_Endpoints_EndToEnd (2.59s)
+  ok  	github.com/kopdes/merah-putih/internal/api	2.888s
   ```
+
 
 
 

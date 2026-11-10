@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -112,3 +114,190 @@ func (h *IuranHandler) HandleListMenunggak(w http.ResponseWriter, r *http.Reques
 		"filter_min":    minBulan,
 	})
 }
+
+type CreateJenisIuranRequest struct {
+	Kode           string `json:"kode"`
+	Nama           string `json:"nama"`
+	Tipe           string `json:"tipe"` // 'pokok' | 'wajib' | 'sukarela'
+	NominalStandar int64  `json:"nominal_standar"`
+	Nominal        int64  `json:"nominal"`
+}
+
+// HandleCreateJenisIuran membuat jenis iuran baru
+func (h *IuranHandler) HandleCreateJenisIuran(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	var req CreateJenisIuranRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "Format payload JSON tidak valid")
+		return
+	}
+
+	if req.Kode == "" || req.Nama == "" {
+		response.BadRequest(w, "Kode dan nama iuran wajib diisi")
+		return
+	}
+
+	nominal := req.Nominal
+	if nominal <= 0 {
+		nominal = req.NominalStandar
+	}
+	if nominal <= 0 {
+		nominal = 10000
+	}
+
+	ctx := r.Context()
+	var newID uuid.UUID
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			INSERT INTO jenis_iuran (
+				koperasi_id, kode, nama, nominal, berlaku_mulai, created_by
+			) VALUES ($1, $2, $3, $4, CURRENT_DATE, $5)
+			RETURNING id;
+		`, claims.KoperasiID, req.Kode, req.Nama, nominal, claims.UserID).Scan(&newID)
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal membuat jenis iuran: %v", err))
+		return
+	}
+
+	response.JSON(w, http.StatusCreated, map[string]interface{}{
+		"id":      newID,
+		"message": "Jenis iuran berhasil dibuat",
+	})
+}
+
+// HandleListJenisIuran menampilkan daftar jenis iuran aktif
+func (h *IuranHandler) HandleListJenisIuran(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	var list []map[string]interface{}
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, kode, nama, nominal::bigint, periode_tagih, status_aktif
+			FROM jenis_iuran
+			WHERE koperasi_id = $1 AND deleted_at IS NULL
+			ORDER BY created_at ASC;
+		`, claims.KoperasiID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				id           uuid.UUID
+				kode, nama   string
+				nominal      int64
+				periodeTagih string
+				statusAktif  bool
+			)
+			if err := rows.Scan(&id, &kode, &nama, &nominal, &periodeTagih, &statusAktif); err != nil {
+				return err
+			}
+			list = append(list, map[string]interface{}{
+				"id":              id,
+				"kode":            kode,
+				"nama":            nama,
+				"tipe":            periodeTagih,
+				"nominal_standar": nominal,
+				"status_aktif":    statusAktif,
+			})
+		}
+		return rows.Err()
+	})
+
+	if err != nil {
+		response.InternalServerError(w, "Gagal mengambil daftar jenis iuran")
+		return
+	}
+
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+
+	response.JSON(w, http.StatusOK, list)
+}
+
+// HandleGetTagihanSaya menampilkan daftar tagihan iuran milik anggota yang sedang login
+func (h *IuranHandler) HandleGetTagihanSaya(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	var tagihanList []map[string]interface{}
+
+	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		// Cari anggota_id dari user_id login
+		var anggotaID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT id FROM anggota WHERE user_id = $1 AND koperasi_id = $2 AND deleted_at IS NULL LIMIT 1;
+		`, claims.UserID, claims.KoperasiID).Scan(&anggotaID)
+		if err != nil {
+			return errors.New("pengguna tidak terdaftar sebagai anggota koperasi")
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT t.id, t.periode, j.nama, t.nominal_tagihan::bigint, t.nominal_terbayar::bigint, t.status::text, t.jatuh_tempo
+			FROM tagihan_iuran t
+			JOIN jenis_iuran j ON j.id = t.jenis_iuran_id
+			WHERE t.anggota_id = $1 AND t.koperasi_id = $2 AND t.deleted_at IS NULL
+			ORDER BY t.periode DESC;
+		`, anggotaID, claims.KoperasiID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				tID            uuid.UUID
+				periode, jNama string
+				nomTag, nomTer int64
+				status         string
+				jatuhTempo     *time.Time
+			)
+			if err := rows.Scan(&tID, &periode, &jNama, &nomTag, &nomTer, &status, &jatuhTempo); err != nil {
+				return err
+			}
+			tagihanList = append(tagihanList, map[string]interface{}{
+				"id":                tID,
+				"periode":           periode,
+				"jenis_iuran_nama":  jNama,
+				"nominal_tagihan":   nomTag,
+				"nominal_terbayar":  nomTer,
+				"status":            status,
+				"jatuh_tempo":       jatuhTempo,
+				"batas_waktu_bayar": jatuhTempo,
+			})
+		}
+		return rows.Err()
+	})
+
+	if err != nil {
+		response.InternalServerError(w, fmt.Sprintf("Gagal mengambil tagihan anggota: %v", err))
+		return
+	}
+
+	if tagihanList == nil {
+		tagihanList = []map[string]interface{}{}
+	}
+
+	response.JSON(w, http.StatusOK, tagihanList)
+}
+

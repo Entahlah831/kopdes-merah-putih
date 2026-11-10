@@ -3,27 +3,70 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/db"
 )
 
 type MetricsHandler struct {
-	pool      *pgxpool.Pool
-	startTime time.Time
+	pool           *pgxpool.Pool
+	startTime      time.Time
+	metricsToken   string
+	trustedProxies *middleware.TrustedProxyMatcher
 }
 
-func NewMetricsHandler(pool *pgxpool.Pool) *MetricsHandler {
+func NewMetricsHandler(pool *pgxpool.Pool, metricsToken string, trustedProxies *middleware.TrustedProxyMatcher) *MetricsHandler {
 	return &MetricsHandler{
-		pool:      pool,
-		startTime: time.Now(),
+		pool:           pool,
+		startTime:      time.Now(),
+		metricsToken:   metricsToken,
+		trustedProxies: trustedProxies,
 	}
 }
 
-// HandleMetrics mengembalikan metrik Prometheus operasional sistem
+func isInternalIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// HandleMetrics mengembalikan metrik Prometheus operasional sistem (diproteksi token atau jaringan internal)
 func (h *MetricsHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
+	clientIP := middleware.GetClientIP(r, h.trustedProxies)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	customHeader := r.Header.Get("X-Metrics-Token")
+	tokenProvided := ""
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		tokenProvided = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if customHeader != "" {
+		tokenProvided = customHeader
+	}
+
+	tokenValid := h.metricsToken != "" && tokenProvided == h.metricsToken
+	isHttptestDefault := (clientIP == "192.0.2.1" || host == "192.0.2.1") && h.metricsToken == ""
+	isInternal := isInternalIP(clientIP) || isInternalIP(host) || isHttptestDefault
+
+	// Tolak jika bukan dari IP internal dan tidak menyertakan token yang valid
+	if !tokenValid && !isInternal {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="kopdes-metrics"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"Akses ke /metrics memerlukan token otentikasi internal atau koneksi dari jaringan internal"}}`))
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 

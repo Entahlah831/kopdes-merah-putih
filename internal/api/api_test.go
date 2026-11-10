@@ -2721,6 +2721,177 @@ func TestTask6_PersonalAccountPilot_Limits_Banner_Audit(t *testing.T) {
 	}
 }
 
+func TestTask7_ProtectedMetrics_And_MFA_TOTP(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// ==========================================
+	// BAGIAN A: Uji Proteksi /metrics (Token & Jaringan Internal)
+	// ==========================================
+	metricsToken := "secret-metrics-token-12345"
+	cfgMetrics := env.Config
+	cfgMetrics.MetricsToken = metricsToken
+	serverMetrics := api.NewServer(env.Pool, cfgMetrics)
+
+	// 1. Akses dari IP Publik/Eksternal tanpa token -> HARUS DITOLAK (401 Unauthorized)
+	reqExtNoToken := httptest.NewRequest("GET", "/metrics", nil)
+	reqExtNoToken.RemoteAddr = "198.51.100.55:4321" // IP publik (TEST-NET-2)
+	recExtNoToken := httptest.NewRecorder()
+	serverMetrics.Router().ServeHTTP(recExtNoToken, reqExtNoToken)
+
+	if recExtNoToken.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for external /metrics without token, got %d", recExtNoToken.Code)
+	}
+
+	// 2. Akses dari IP Publik dengan Bearer Token yang Benar -> HARUS DIIZINKAN (200 OK)
+	reqExtWithToken := httptest.NewRequest("GET", "/metrics", nil)
+	reqExtWithToken.RemoteAddr = "198.51.100.55:4321"
+	reqExtWithToken.Header.Set("Authorization", "Bearer "+metricsToken)
+	recExtWithToken := httptest.NewRecorder()
+	serverMetrics.Router().ServeHTTP(recExtWithToken, reqExtWithToken)
+
+	if recExtWithToken.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for external /metrics with valid token, got %d", recExtWithToken.Code)
+	}
+
+	// 3. Akses dari Jaringan Internal (Loopback 127.0.0.1) tanpa token -> HARUS DIIZINKAN (200 OK)
+	reqInternal := httptest.NewRequest("GET", "/metrics", nil)
+	reqInternal.RemoteAddr = "127.0.0.1:54321"
+	recInternal := httptest.NewRecorder()
+	serverMetrics.Router().ServeHTTP(recInternal, reqInternal)
+
+	if recInternal.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for internal IP access to /metrics without token, got %d", recInternal.Code)
+	}
+
+	// ==========================================
+	// BAGIAN B: Uji MFA TOTP (Admin, Bendahara, Ketua)
+	// ==========================================
+	// 1. Setup user baru dengan role bendahara
+	loginResBendahara, bendaharaEmail, bendaharaPwd, _ := env.createAndLoginUserFull(t, "bendahara")
+	bendaharaToken := loginResBendahara.AccessToken
+
+	// 2. Setup MFA TOTP (/api/v1/auth/mfa/setup)
+	reqSetup := httptest.NewRequest("POST", "/api/v1/auth/mfa/setup", nil)
+	reqSetup.Header.Set("Authorization", "Bearer "+bendaharaToken)
+	recSetup := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSetup, reqSetup)
+
+	if recSetup.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/auth/mfa/setup, got %d: %s", recSetup.Code, recSetup.Body.String())
+	}
+
+	var resSetup struct {
+		Data struct {
+			Secret string `json:"secret"`
+			QRURI  string `json:"qr_uri"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recSetup.Body.Bytes(), &resSetup)
+	if resSetup.Data.Secret == "" || !strings.HasPrefix(resSetup.Data.QRURI, "otpauth://totp/") {
+		t.Fatalf("MFA setup response invalid: %+v", resSetup)
+	}
+
+	totpSecret := resSetup.Data.Secret
+
+	// 3. Coba aktifkan dengan kode TOTP salah -> 400 Bad Request
+	bodyEnableWrong, _ := json.Marshal(map[string]string{
+		"secret":    totpSecret,
+		"totp_code": "000000",
+	})
+	reqEnableWrong := httptest.NewRequest("POST", "/api/v1/auth/mfa/enable", bytes.NewReader(bodyEnableWrong))
+	reqEnableWrong.Header.Set("Authorization", "Bearer "+bendaharaToken)
+	reqEnableWrong.Header.Set("Content-Type", "application/json")
+	recEnableWrong := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recEnableWrong, reqEnableWrong)
+
+	if recEnableWrong.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 Bad Request for invalid TOTP code during enable, got %d", recEnableWrong.Code)
+	}
+
+	// 4. Aktifkan dengan kode TOTP valid
+	validCode, err := security.GenerateTOTPCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode failed: %v", err)
+	}
+
+	bodyEnableOk, _ := json.Marshal(map[string]string{
+		"secret":    totpSecret,
+		"totp_code": validCode,
+	})
+	reqEnableOk := httptest.NewRequest("POST", "/api/v1/auth/mfa/enable", bytes.NewReader(bodyEnableOk))
+	reqEnableOk.Header.Set("Authorization", "Bearer "+bendaharaToken)
+	reqEnableOk.Header.Set("Content-Type", "application/json")
+	recEnableOk := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recEnableOk, reqEnableOk)
+
+	if recEnableOk.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for valid MFA enable, got %d: %s", recEnableOk.Code, recEnableOk.Body.String())
+	}
+
+	// 5. Login ulang akun bendahara setelah MFA aktif -> HARUS mereturn mfa_required = true & mfa_session_token
+	bodyLoginMFA, _ := json.Marshal(handlers.LoginRequest{
+		Email:    bendaharaEmail,
+		Password: bendaharaPwd,
+	})
+	reqLoginMFA := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLoginMFA))
+	recLoginMFA := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLoginMFA, reqLoginMFA)
+
+	if recLoginMFA.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for MFA step 1 login, got %d: %s", recLoginMFA.Code, recLoginMFA.Body.String())
+	}
+
+	var resLoginMFA struct {
+		Data struct {
+			MFARequired     bool   `json:"mfa_required"`
+			MFASessionToken string `json:"mfa_session_token"`
+			AccessToken     string `json:"access_token"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recLoginMFA.Body.Bytes(), &resLoginMFA)
+	if !resLoginMFA.Data.MFARequired || resLoginMFA.Data.MFASessionToken == "" {
+		t.Fatalf("Expected mfa_required=true and session token, got: %+v", resLoginMFA.Data)
+	}
+	if resLoginMFA.Data.AccessToken != "" {
+		t.Fatalf("Access token must NOT be returned before MFA verification")
+	}
+
+	// 6. Verifikasi Login MFA dengan kode salah -> 401 Unauthorized
+	bodyVerifyWrong, _ := json.Marshal(map[string]string{
+		"mfa_session_token": resLoginMFA.Data.MFASessionToken,
+		"totp_code":          "999999",
+	})
+	reqVerifyWrong := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyVerifyWrong))
+	recVerifyWrong := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifyWrong, reqVerifyWrong)
+
+	if recVerifyWrong.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for wrong TOTP code on login, got %d", recVerifyWrong.Code)
+	}
+
+	// 7. Verifikasi Login MFA dengan kode yang benar -> 200 OK dan Access Token diberikan!
+	correctCode, _ := security.GenerateTOTPCode(totpSecret, time.Now())
+	bodyVerifyOk, _ := json.Marshal(map[string]string{
+		"mfa_session_token": resLoginMFA.Data.MFASessionToken,
+		"totp_code":          correctCode,
+	})
+	reqVerifyOk := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyVerifyOk))
+	recVerifyOk := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifyOk, reqVerifyOk)
+
+	if recVerifyOk.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for valid MFA verify, got %d: %s", recVerifyOk.Code, recVerifyOk.Body.String())
+	}
+
+	var resFinalLogin struct {
+		Data handlers.LoginResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recVerifyOk.Body.Bytes(), &resFinalLogin)
+	if resFinalLogin.Data.AccessToken == "" || resFinalLogin.Data.RefreshToken == "" {
+		t.Fatalf("Expected full LoginResponse with tokens, got: %+v", resFinalLogin.Data)
+	}
+}
+
 
 
 

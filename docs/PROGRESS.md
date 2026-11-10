@@ -94,7 +94,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **4. Idempotency berbasis tabel database (kunci, user, hash request, respons, TTL) & 422 pada beda body**
 - [x] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
 - [x] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
-- [ ] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
+- [x] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
 - [ ] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
 - [ ] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
 - [ ] **10. Sanitasi dokumen (hapus klaim berlebihan) & verifikasi go test -count=1 -race ./...**
@@ -401,6 +401,37 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestTask6_PersonalAccountPilot_Limits_Banner_Audit (2.29s)
   ok  	github.com/kopdes/merah-putih/internal/api	2.592s
   ```
+
+### [2026-11-10] Tugas 7: Proteksi Endpoint /metrics & Autentikasi Dua Faktor (MFA TOTP)
+- **Reproduksi Gagal**: `TestTask7_ProtectedMetrics_And_MFA_TOTP` dibuat untuk menguji: (1) penolakan akses `/metrics` dari jaringan eksternal tanpa token otentikasi internal (401 Unauthorized), dan (2) siklus penuh aktivasi dan verifikasi MFA TOTP (RFC 6238) untuk akun bendahara/admin/ketua.
+- **Implementasi**:
+  - Proteksi `/metrics` di `internal/api/handlers/metrics_handler.go`:
+    - Evaluasi IP klien (`middleware.GetClientIP`) dan IP jaringan internal (loopback `127.0.0.1`, RFC 1918 private network `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`).
+    - Validasi token internal melalui header `Authorization: Bearer <METRICS_TOKEN>` atau `X-Metrics-Token: <METRICS_TOKEN>`.
+    - Akses dari luar jaringan internal tanpa token yang sah ditolak dengan HTTP 401 Unauthorized.
+  - Implementasi TOTP RFC 6238 di `internal/security/totp.go`:
+    - Pembuatan secret Base32 160-bit (`GenerateTOTPSecret`) dan validasi kode 6 digit berbasis waktu dengan toleransi clock-drift $\pm 30$ detik (`ValidateTOTPCode`).
+    - Penghasil URL authenticator standar `otpauth://totp/...` (`GenerateTOTPURI`).
+  - Migrasi `000016_metrics_protection_and_mfa_totp.up.sql`:
+    - Menambahkan kolom `mfa_enabled` dan `totp_secret_enkripsi` pada tabel `users`.
+    - Membuat tabel `mfa_login_sessions` untuk menampung sesi login sementara ber-TTL 5 menit.
+    - Fungsi `SECURITY DEFINER` terkunci: `fn_get_user_mfa` dan `fn_set_user_mfa` (dengan hak eksekusi hanya untuk role `kopdes_app`).
+  - Alur Autentikasi Dua-Faktor di `internal/api/handlers/auth_handler.go` & `server.go`:
+    - `POST /api/v1/auth/mfa/setup`: Menghasilkan secret baru & URL authenticator.
+    - `POST /api/v1/auth/mfa/enable`: Memvalidasi kode awal pengguna, mengenkripsi secret dengan AES-256-GCM AAD, dan mengaktifkan `mfa_enabled = true`.
+    - `POST /api/v1/auth/login`: Jika akun memiliki `mfa_enabled = true`, login tahap 1 menahan penerbitan JWT final dan mengembalikan `mfa_required: true` beserta `mfa_session_token`.
+    - `POST /api/v1/auth/mfa/verify`: Memvalidasi `mfa_session_token` dan kode TOTP 6-digit; jika valid, sesi dihapus (one-time use) dan JWT Access Token + Refresh Token diterbitkan.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestP1_4_Operasional_Metrics_And_Idempotency
+  --- PASS: TestP1_4_Operasional_Metrics_And_Idempotency (2.26s)
+  === RUN   TestTask2_MetricsEndpoint_PartitionMetrics
+  --- PASS: TestTask2_MetricsEndpoint_PartitionMetrics (2.16s)
+  === RUN   TestTask7_ProtectedMetrics_And_MFA_TOTP
+  --- PASS: TestTask7_ProtectedMetrics_And_MFA_TOTP (3.73s)
+  ok  	github.com/kopdes/merah-putih/internal/api	8.448s
+  ```
+
 
 
 

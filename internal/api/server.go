@@ -28,6 +28,7 @@ type Config struct {
 	MaxRateLimitClients       int
 	QRISDynamicEnabled        bool
 	AllowPersonalPaymentPilot bool
+	MetricsToken              string
 }
 
 func decodeSecretBytes(secret string) []byte {
@@ -104,12 +105,12 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	}
 
 	// Inisialisasi Handlers
-	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher)
+	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher, keyProvider)
 	qrisH := handlers.NewQRISHandlerWithConfig(pool, []byte(cfg.QRISSecret), cfg.QRISDynamicEnabled, cfg.AllowPersonalPaymentPilot)
 	iuranH := handlers.NewIuranHandler(pool)
 	katalogH := handlers.NewKatalogHandler(pool)
 	healthH := handlers.NewHealthHandler(pool)
-	metricsH := handlers.NewMetricsHandler(pool)
+	metricsH := handlers.NewMetricsHandler(pool, cfg.MetricsToken, trustedMatcher)
 	pendaftaranH := handlers.NewPendaftaranHandler(pool, keyProvider, []byte(cfg.BlindIndexSecret))
 	kasH := handlers.NewKasHandler(pool)
 
@@ -120,11 +121,14 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.HandleFunc("GET /readyz", healthH.HandleReadyz)
 	mux.HandleFunc("GET /metrics", metricsH.HandleMetrics)
 	mux.HandleFunc("POST /api/v1/auth/login", authH.HandleLogin)
+	mux.HandleFunc("POST /api/v1/auth/mfa/verify", authH.HandleMFAVerify)
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.HandleRefreshToken)
 	mux.HandleFunc("POST /api/v1/auth/revoke", authH.HandleRevokeToken)
 
 	// --- 2. Authenticated Endpoints (Semua Anggota/User) ---
 	mux.Handle("GET /api/v1/auth/me", authMw.RequireAuth(http.HandlerFunc(authH.HandleGetProfile)))
+	mux.Handle("POST /api/v1/auth/mfa/setup", authMw.RequireAuth(http.HandlerFunc(authH.HandleMFASetup)))
+	mux.Handle("POST /api/v1/auth/mfa/enable", authMw.RequireAuth(http.HandlerFunc(authH.HandleMFAEnable)))
 	mux.Handle("POST /api/v1/pembayaran/qris", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleBuatQRIS)))
 	mux.Handle("GET /api/v1/pembayaran/{id}", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleGetPembayaranStatus)))
 	mux.Handle("POST /api/v1/pembayaran/{id}/bukti", authMw.RequireAuth(http.HandlerFunc(qrisH.HandleKlaimBuktiPembayaran)))

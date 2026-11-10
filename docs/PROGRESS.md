@@ -95,7 +95,7 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - [x] **5. Verifikasi pembayaran: impor mutasi CSV, pencocokan nominal_total, persetujuan ganda, deteksi anomali**
 - [x] **6. Pilot rekening pribadi: batas nominal transaksi/harian, banner peringatan admin, audit log**
 - [x] **7. Proteksi /metrics (token/internal) & MFA TOTP peran pengurus/admin**
-- [ ] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
+- [x] **8. Password role db/docker-init/01_roles.sql wajib variabel lingkungan tanpa default produksi**
 - [ ] **9. Kelengkapan endpoint CRUD anggota, iuran, katalog, keranjang/pesanan/checkout, laporan**
 - [ ] **10. Sanitasi dokumen (hapus klaim berlebihan) & verifikasi go test -count=1 -race ./...**
 
@@ -431,6 +431,28 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   --- PASS: TestTask7_ProtectedMetrics_And_MFA_TOTP (3.73s)
   ok  	github.com/kopdes/merah-putih/internal/api	8.448s
   ```
+
+### [2026-11-10] Tugas 8: Password Role Database dari Variabel Lingkungan Tanpa Nilai Default di Profil Produksi
+- **Reproduksi Gagal**: `TestTask8_RolePasswordFromEnv_NoProductionDefault` membuktikan bahwa sebelum perbaikan, `01_roles.sql` mengeksekusi pembuatan role `kopdes_app` dengan password hardcoded dev (`kopdes_dev_password`) dan mengabaikan variabel lingkungan sistem tanpa memvalidasi profil produksi.
+- **Implementasi**:
+  - Refaktor `db/docker-init/01_roles.sql`:
+    - Menggunakan perintah native psql `\getenv` untuk membaca variabel lingkungan `APP_ENV`, `KOPDES_APP_PASSWORD`, dan `DB_PASSWORD`.
+    - Mengevaluasi keberadaan variabel dengan conditional branching `\if :{?VAR} ... \else ... \endif` sebelum menyetel konfigurasi sesi.
+    - Pada blok procedural `DO $$`:
+      - Validasi ketat jika `v_env = 'production'`: melempar `RAISE EXCEPTION` fatal jika password kosong atau jika password terdeteksi menggunakan nilai bawaan dev (`'kopdes_dev_password'`).
+      - Pada profil non-produksi (`development`), mengizinkan fallback ke `'kopdes_dev_password'` jika variabel lingkungan tidak disediakan.
+      - Mengeksekusi pembuatan dan pengubahan password role `kopdes_app` secara dinamis via `EXECUTE format('... PASSWORD %L ...', v_pass)`.
+      - Membersihkan variabel password dari konfigurasi sesi via `SELECT set_config('app.app_pass', '', false)`.
+  - Pembaruan `docker-compose.yml`:
+    - Menghapus fallback hardcoded password dev pada container `postgres` dan `api`.
+    - Meneruskan `KOPDES_APP_PASSWORD: ${DB_PASSWORD}` dan `APP_ENV: ${APP_ENV:-production}` ke dalam service postgres.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestTask8_RolePasswordFromEnv_NoProductionDefault
+  --- PASS: TestTask8_RolePasswordFromEnv_NoProductionDefault (0.39s)
+  ok  	github.com/kopdes/merah-putih/internal/api	0.681s
+  ```
+
 
 
 

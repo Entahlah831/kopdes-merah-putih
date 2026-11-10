@@ -10,7 +10,9 @@ services:
       POSTGRES_DB: ${DB_NAME:-kopdes_db}
       # Inisialisasi awal menggunakan user administratif sementara (bukan user aplikasi)
       POSTGRES_USER: ${POSTGRES_INIT_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_INIT_PASSWORD:-postgres_dev_init_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_INIT_PASSWORD}
+      KOPDES_APP_PASSWORD: ${DB_PASSWORD}
+      APP_ENV: ${APP_ENV:-production}
     ports:
       # K1: Batasi port PostgreSQL pada host ke 127.0.0.1 (mencegah akses terbuka dari luar)
       - "127.0.0.1:${DB_PORT:-5432}:5432"
@@ -44,10 +46,10 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: ${DB_USER:-kopdes_app}
-      DB_PASSWORD: ${DB_PASSWORD:-kopdes_dev_password}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-kopdes_db}
       DB_SSLMODE: disable
-      DATABASE_URL: postgres://${DB_USER:-kopdes_app}:${DB_PASSWORD:-kopdes_dev_password}@postgres:5432/${DB_NAME:-kopdes_db}?sslmode=disable
+      DATABASE_URL: postgres://${DB_USER:-kopdes_app}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-kopdes_db}?sslmode=disable
       # Kunci kriptografi dari file .env
       JWT_SECRET: ${JWT_SECRET}
       BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET}

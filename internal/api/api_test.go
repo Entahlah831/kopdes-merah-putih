@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -2889,6 +2890,49 @@ func TestTask7_ProtectedMetrics_And_MFA_TOTP(t *testing.T) {
 	_ = json.Unmarshal(recVerifyOk.Body.Bytes(), &resFinalLogin)
 	if resFinalLogin.Data.AccessToken == "" || resFinalLogin.Data.RefreshToken == "" {
 		t.Fatalf("Expected full LoginResponse with tokens, got: %+v", resFinalLogin.Data)
+	}
+}
+
+func TestTask8_RolePasswordFromEnv_NoProductionDefault(t *testing.T) {
+	psqlPath := `C:\Users\12\pgsql\bin\psql.exe`
+	rolesSqlPath := `../../db/docker-init/01_roles.sql`
+
+	// 1. Kasus 1: APP_ENV=production tanpa password -> HARUS GAGAL
+	cmdFailNoPass := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", "5433", "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdFailNoPass.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=", "DB_PASSWORD=")
+	outFailNoPass, err := cmdFailNoPass.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Expected 01_roles.sql to fail in production without password, but it succeeded! Output: %s", string(outFailNoPass))
+	}
+	if !strings.Contains(string(outFailNoPass), "KOPDES_APP_PASSWORD") && !strings.Contains(string(outFailNoPass), "produksi") {
+		t.Errorf("Expected error message to mention KOPDES_APP_PASSWORD in production, got: %s", string(outFailNoPass))
+	}
+
+	// 2. Kasus 2: APP_ENV=production dengan password default dev -> HARUS DITOLAK
+	cmdFailDevPass := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", "5433", "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdFailDevPass.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=kopdes_dev_password")
+	outFailDevPass, err := cmdFailDevPass.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Expected 01_roles.sql to fail in production with dev password default, but it succeeded! Output: %s", string(outFailDevPass))
+	}
+	if !strings.Contains(string(outFailDevPass), "default") {
+		t.Errorf("Expected error message to mention default password, got: %s", string(outFailDevPass))
+	}
+
+	// 3. Kasus 3: APP_ENV=production dengan password kuat -> HARUS SUKSES
+	cmdSuccessProd := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", "5433", "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdSuccessProd.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=P@ssw0rdProdKopdes2026!")
+	outSuccessProd, err := cmdSuccessProd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Expected 01_roles.sql to succeed in production with strong password, got error: %v, output: %s", err, string(outSuccessProd))
+	}
+
+	// 4. Kembalikan password ke dev agar tes lain tetap berjalan lancar
+	cmdResetDev := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", "5433", "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdResetDev.Env = append(os.Environ(), "APP_ENV=development", "KOPDES_APP_PASSWORD=kopdes_dev_password")
+	outReset, err := cmdResetDev.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Reset password dev failed: %v, output: %s", err, string(outReset))
 	}
 }
 

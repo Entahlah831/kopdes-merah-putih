@@ -32,3 +32,10 @@ pgdata/
 storage/
 internal/api/storage/
 
+# Backups and restore drills
+backups/
+*.dump
+*.dump.sha256
+*.dump.log
+
+

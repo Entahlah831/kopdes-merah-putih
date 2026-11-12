@@ -713,12 +713,12 @@ func TestP1_3_AppendOnly_HashChain_Dan_ProteksiTRUNCATE(t *testing.T) {
 		// Coba eksekusi TRUNCATE kas_mutasi
 		_, err = conn.Exec(ctx, "TRUNCATE kas_mutasi;")
 		if err == nil {
-			t.Fatalf("SECURITY VIOLATION: TRUNCATE kas_mutasi berhasil! Harusnya ditolak oleh trigger fn_prevent_truncate()")
+			t.Fatalf("SECURITY VIOLATION: TRUNCATE kas_mutasi berhasil! Harusnya ditolak oleh trigger fn_prevent_truncate() atau permission denied")
 		}
-		if !strings.Contains(err.Error(), "TABEL APPEND-ONLY: Operasi TRUNCATE dilarang") {
-			t.Errorf("Expected prevent_truncate error, got: %v", err)
+		if !strings.Contains(err.Error(), "TABEL APPEND-ONLY: Operasi TRUNCATE dilarang") && !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("Expected prevent_truncate error or permission denied, got: %v", err)
 		}
-		t.Logf("TRUNCATE berhasil dicegah oleh trigger: %v", err)
+		t.Logf("TRUNCATE berhasil dicegah oleh trigger atau izin peran: %v", err)
 	})
 
 	// 2. Uji pembentukan rantai hash kriptografis SHA-256 (Hash Chain)

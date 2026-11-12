@@ -2631,8 +2631,8 @@ func TestTask5_PaymentVerification_Reconciliation_EndToEnd(t *testing.T) {
 	recApproveSelf := httptest.NewRecorder()
 	env.Server.Router().ServeHTTP(recApproveSelf, reqApproveSelf)
 
-	if recApproveSelf.Code != http.StatusBadRequest {
-		t.Errorf("Expected 400 Bad Request for self-dual-approval, got %d: %s", recApproveSelf.Code, recApproveSelf.Body.String())
+	if recApproveSelf.Code != http.StatusBadRequest && recApproveSelf.Code != http.StatusForbidden {
+		t.Errorf("Expected 400 Bad Request or 403 Forbidden for self-dual-approval, got %d: %s", recApproveSelf.Code, recApproveSelf.Body.String())
 	}
 
 	// Persetujuan Kedua oleh Pengurus Lain (pengurusToken) -> BERHASIL

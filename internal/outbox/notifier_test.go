@@ -144,6 +144,10 @@ func TestWhatsAppSMSNotifier_IntegratedWithOutboxWorker(t *testing.T) {
 		t.Fatalf("Seed koperasi failed: %v", err)
 	}
 
+	// Bersihkan antrean event lama yang belum diproses dari test sebelumnya
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'true', false);")
+	_, _ = conn.Exec(ctx, "UPDATE outbox_event SET status = 'selesai' WHERE status = 'menunggu';")
+
 	// 2. Enqueue Notifikasi WhatsApp ke outbox_event dalam transaksi bisnis
 	gw := &MockGateway{FailWhatsApp: false}
 	notifier := outbox.NewWhatsAppSMSNotifier(gw)

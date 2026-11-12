@@ -52,18 +52,26 @@ func GenerateTOTPCode(secretBase32 string, t time.Time) (string, error) {
 
 // ValidateTOTPCode memverifikasi kode 6-digit dengan toleransi drift waktu +/- 30 detik
 func ValidateTOTPCode(secretBase32 string, code string, t time.Time) bool {
+	valid, _ := ValidateTOTPCodeWithStep(secretBase32, code, t)
+	return valid
+}
+
+// ValidateTOTPCodeWithStep memverifikasi kode 6-digit dan mengembalikan step waktu yang cocok jika valid
+func ValidateTOTPCodeWithStep(secretBase32 string, code string, t time.Time) (bool, int64) {
 	code = strings.TrimSpace(code)
 	if len(code) != 6 {
-		return false
+		return false, 0
 	}
 
-	for _, delta := range []int64{-30, 0, 30} {
-		candidate, err := GenerateTOTPCode(secretBase32, t.Add(time.Duration(delta)*time.Second))
+	for _, delta := range []int64{0, -30, 30} {
+		targetTime := t.Add(time.Duration(delta) * time.Second)
+		candidate, err := GenerateTOTPCode(secretBase32, targetTime)
 		if err == nil && candidate == code {
-			return true
+			matchedStep := targetTime.Unix() / 30
+			return true, matchedStep
 		}
 	}
-	return false
+	return false, 0
 }
 
 // GenerateTOTPURI menghasilkan tautan URI otpauth untuk aplikasi authenticator (Google Auth dsb)

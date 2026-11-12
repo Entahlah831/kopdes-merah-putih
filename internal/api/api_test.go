@@ -25,6 +25,7 @@ import (
 	kopdes "github.com/kopdes/merah-putih"
 	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/api/handlers"
+	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/auth"
 	"github.com/kopdes/merah-putih/internal/qris"
 	"github.com/kopdes/merah-putih/internal/security"
@@ -4509,6 +4510,792 @@ func TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree(t *testing.T) {
 
 	t.Logf("Sukses: Batas pilot Asia/Jakarta valid, berkas KYC fisik terhapus permanen saat purge, dan log status bebas PII!")
 }
+
+// TestMFA_Enrollment_PrivilegedAccount_RestrictedToken_And_HashedRecoveryCodes memvalidasi:
+// 1. Akun istimewa (bendahara/admin/ketua) yang belum mengaktifkan MFA ditolak saat login (HTTP 403) dan diberi setup_token terbatas.
+// 2. Token setup_token dibatasi secara ketat hanya untuk alur enrollment (/api/v1/auth/mfa/*), dan ditolak jika mengakses endpoint lain.
+// 3. Alur enrollment via POST /api/v1/auth/mfa/enable menyimpan secret dan HASH kode pemulihan terenkripsi (bukan plaintext di database).
+// 4. Setelah enrollment, login berhasil melalui verifikasi kode TOTP atau recovery code sekali pakai.
+func TestMFA_Enrollment_PrivilegedAccount_RestrictedToken_And_HashedRecoveryCodes(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	// 1. Buat akun peran istimewa 'bendahara' tanpa MFA aktif
+	bendaharaUserID := uuid.New()
+	emailBendahara := fmt.Sprintf("bendahara_%s@koperasi.id", uuid.New().String()[:8])
+	emailHash := security.HashBlindIndex(emailBendahara, []byte(env.Config.BlindIndexSecret))
+	pwdPlain := "BendaharaPassword123!"
+	pwdHash, _ := security.HashPassword(pwdPlain)
+
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire connection failed: %v", err)
+	}
+	defer conn.Release()
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap, status_aktif, mfa_enabled)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Bendahara Utama', true, false);
+	`, bendaharaUserID, []byte("enkripsi"), emailHash, pwdHash)
+	if err != nil {
+		t.Fatalf("Seed bendahara user failed: %v", err)
+	}
+
+	var roleBendaharaID uuid.UUID
+	_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'bendahara' LIMIT 1;").Scan(&roleBendaharaID)
+	if roleBendaharaID != uuid.Nil {
+		_, _ = conn.Exec(ctx, `
+			INSERT INTO user_roles (user_id, role_id, koperasi_id)
+			VALUES ($1, $2, $3);
+		`, bendaharaUserID, roleBendaharaID, env.KoperasiID)
+	}
+
+	// 2. Login bendahara belum punya MFA -> Wajib 403 Forbidden dengan setup_token
+	bodyLogin, _ := json.Marshal(handlers.LoginRequest{
+		Email:    emailBendahara,
+		Password: pwdPlain,
+	})
+	reqLogin := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
+	recLogin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin, reqLogin)
+
+	if recLogin.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden for privileged login without MFA, got %d: %s", recLogin.Code, recLogin.Body.String())
+	}
+
+	var resLogin struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		Data struct {
+			MFAEnrollmentRequired bool   `json:"mfa_setup_required"`
+			SetupToken            string `json:"setup_token"`
+			Role                  string `json:"role"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recLogin.Body.Bytes(), &resLogin)
+	if resLogin.Error.Code != "MFA_MANDATORY_SETUP_REQUIRED" || !resLogin.Data.MFAEnrollmentRequired {
+		t.Fatalf("Expected code MFA_MANDATORY_SETUP_REQUIRED, got: %+v", resLogin)
+	}
+	setupToken := resLogin.Data.SetupToken
+	if setupToken == "" {
+		t.Fatalf("setup_token tidak boleh kosong")
+	}
+
+	// 3. Uji token terbatas: coba panggil endpoint profil (/api/v1/auth/me) dengan setup_token -> Wajib 403 Forbidden
+	reqProfile := httptest.NewRequest("GET", "/api/v1/auth/me", nil)
+	reqProfile.Header.Set("Authorization", "Bearer "+setupToken)
+	recProfile := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recProfile, reqProfile)
+
+	if recProfile.Code != http.StatusForbidden {
+		t.Fatalf("SECURITY VIOLATION: setup_token enrollment-only harus ditolak saat akses endpoint profil, got %d: %s", recProfile.Code, recProfile.Body.String())
+	}
+	if !strings.Contains(recProfile.Body.String(), "hanya berlaku untuk proses enrollment MFA") {
+		t.Fatalf("Pesan penolakan harus menegaskan pembatasan token enrollment: %s", recProfile.Body.String())
+	}
+
+	// 4. Ambil Secret TOTP Baru via POST /api/v1/auth/mfa/setup menggunakan setup_token -> 200 OK
+	reqSetup := httptest.NewRequest("POST", "/api/v1/auth/mfa/setup", nil)
+	reqSetup.Header.Set("Authorization", "Bearer "+setupToken)
+	recSetup := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSetup, reqSetup)
+
+	if recSetup.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/auth/mfa/setup with setup_token, got %d: %s", recSetup.Code, recSetup.Body.String())
+	}
+	var resSetup struct {
+		Data struct {
+			Secret string `json:"secret"`
+			QRURI  string `json:"qr_uri"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recSetup.Body.Bytes(), &resSetup)
+	totpSecret := resSetup.Data.Secret
+	if totpSecret == "" || !strings.Contains(resSetup.Data.QRURI, "otpauth://totp/") {
+		t.Fatalf("Secret atau QR URI tidak valid: %+v", resSetup)
+	}
+
+	// 5. Generate kode TOTP valid dan selesaikan enrollment via POST /api/v1/auth/mfa/enable
+	totpCode, err := security.GenerateTOTPCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode failed: %v", err)
+	}
+
+	bodyEnable, _ := json.Marshal(handlers.MFAEnableRequest{
+		Secret:   totpSecret,
+		TOTPCode: totpCode,
+	})
+	reqEnable := httptest.NewRequest("POST", "/api/v1/auth/mfa/enable", bytes.NewReader(bodyEnable))
+	reqEnable.Header.Set("Authorization", "Bearer "+setupToken)
+	reqEnable.Header.Set("Content-Type", "application/json")
+	recEnable := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recEnable, reqEnable)
+
+	if recEnable.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/auth/mfa/enable, got %d: %s", recEnable.Code, recEnable.Body.String())
+	}
+
+	var resEnable struct {
+		Data struct {
+			RecoveryCodes []string `json:"recovery_codes"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recEnable.Body.Bytes(), &resEnable)
+	recoveryCodes := resEnable.Data.RecoveryCodes
+	if len(recoveryCodes) != 8 {
+		t.Fatalf("Expected 8 recovery codes returned to user, got %d", len(recoveryCodes))
+	}
+
+	// 6. Verifikasi Integritas Penyimpanan Database:
+	// - mfa_enabled = true
+	// - Kode pemulihan MENTAH TIDAK DISIMPAN di database; yang disimpan adalah ciphertext dari HASH SHA-256
+	var (
+		dbMfaEnabled     bool
+		dbRecoveryCipher []byte
+	)
+	err = conn.QueryRow(ctx, "SELECT mfa_enabled, mfa_recovery_codes FROM users WHERE id = $1;", bendaharaUserID).Scan(&dbMfaEnabled, &dbRecoveryCipher)
+	if err != nil {
+		t.Fatalf("Query user MFA status failed: %v", err)
+	}
+	if !dbMfaEnabled {
+		t.Fatalf("mfa_enabled harus bernilai true setelah enrollment")
+	}
+
+	// Pastikan string plaintext kode pemulihan tidak pernah tersimpan di database
+	for _, code := range recoveryCodes {
+		if bytes.Contains(dbRecoveryCipher, []byte(code)) {
+			t.Fatalf("PELANGGARAN KEAMANAN: Kode pemulihan mentah %s ditemukan tersimpan dalam database!", code)
+		}
+	}
+
+	// Dekripsi recovery codes ciphertext dan pastikan memuat hash SHA-256
+	kp, err := security.NewMasterKeyProvider("v1", "k1", []byte(env.Config.AESMasterKey)[:32])
+	if err != nil {
+		t.Fatalf("NewMasterKeyProvider failed: %v", err)
+	}
+	recAAD := []byte(fmt.Sprintf("users:recovery:%s", bendaharaUserID))
+	decryptedJSON, err := kp.DecryptWithAAD(dbRecoveryCipher, recAAD)
+	if err != nil {
+		t.Fatalf("Decrypt recovery codes failed: %v", err)
+	}
+	var storedHashes []string
+	if err := json.Unmarshal(decryptedJSON, &storedHashes); err != nil {
+		t.Fatalf("Unmarshal stored hashes failed: %v", err)
+	}
+	if len(storedHashes) != 8 {
+		t.Fatalf("Expected 8 stored hashes, got %d", len(storedHashes))
+	}
+	for i, c := range recoveryCodes {
+		expectedHash := security.HashRecoveryCode(c)
+		if storedHashes[i] != expectedHash {
+			t.Fatalf("Hash mismatch pada index %d: expected %s, got %s", i, expectedHash, storedHashes[i])
+		}
+	}
+
+	// 7. Login bendahara pasca enrollment:
+	// Tahap 1: POST /api/v1/auth/login -> 200 OK with mfa_required & mfa_session_token
+	reqLogin2 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
+	recLogin2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin2, reqLogin2)
+
+	if recLogin2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for login post-MFA, got %d: %s", recLogin2.Code, recLogin2.Body.String())
+	}
+	var resLogin2 struct {
+		Data struct {
+			MFARequired     bool   `json:"mfa_required"`
+			MFASessionToken string `json:"mfa_session_token"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recLogin2.Body.Bytes(), &resLogin2)
+	if !resLogin2.Data.MFARequired || resLogin2.Data.MFASessionToken == "" {
+		t.Fatalf("Expected mfa_required=true and valid mfa_session_token: %+v", resLogin2)
+	}
+
+	// Tahap 2: Gunakan kode pemulihan pertama untuk login
+	usedRecoveryCode := recoveryCodes[0]
+	bodyVerify, _ := json.Marshal(handlers.MFAVerifyRequest{
+		MFASessionToken: resLogin2.Data.MFASessionToken,
+		RecoveryCode:    usedRecoveryCode,
+	})
+	reqVerify := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyVerify))
+	reqVerify.Header.Set("Content-Type", "application/json")
+	recVerify := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerify, reqVerify)
+
+	if recVerify.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for MFA verify with recovery code, got %d: %s", recVerify.Code, recVerify.Body.String())
+	}
+	var resVerify struct {
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recVerify.Body.Bytes(), &resVerify)
+	if resVerify.Data.AccessToken == "" {
+		t.Fatalf("Expected non-empty AccessToken upon successful verify")
+	}
+
+	// Verifikasi bahwa Access Token ini sekarang dapat membuka /api/v1/auth/me
+	reqProfileAuth := httptest.NewRequest("GET", "/api/v1/auth/me", nil)
+	reqProfileAuth.Header.Set("Authorization", "Bearer "+resVerify.Data.AccessToken)
+	recProfileAuth := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recProfileAuth, reqProfileAuth)
+
+	if recProfileAuth.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for profile access with authenticated access token, got %d: %s", recProfileAuth.Code, recProfileAuth.Body.String())
+	}
+
+	// 8. Pastikan kode pemulihan yang sudah digunakan HANGUS (One-Time Burn)
+	// Login kembali untuk mendapatkan session token baru
+	recLogin3 := httptest.NewRecorder()
+	reqLogin3 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
+	env.Server.Router().ServeHTTP(recLogin3, reqLogin3)
+	_ = json.Unmarshal(recLogin3.Body.Bytes(), &resLogin2)
+
+	bodyVerifyBurned, _ := json.Marshal(handlers.MFAVerifyRequest{
+		MFASessionToken: resLogin2.Data.MFASessionToken,
+		RecoveryCode:    usedRecoveryCode, // Pakai kode yang sama
+	})
+	reqVerifyBurned := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyVerifyBurned))
+	reqVerifyBurned.Header.Set("Content-Type", "application/json")
+	recVerifyBurned := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifyBurned, reqVerifyBurned)
+
+	if recVerifyBurned.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for burned recovery code, got %d: %s", recVerifyBurned.Code, recVerifyBurned.Body.String())
+	}
+
+	t.Logf("Sukses: Alur enrollment akun istimewa dengan setup_token terbatas, penyimpanan hash kode pemulihan, dan login terverifikasi penuh!")
+}
+
+// TestItem3_BankMutation_DefaultNoAutoApprove_SecondConfirmation_ImporterCannotApprove memvalidasi:
+// 1. Impor mutasi bank memiliki auto-approve NON-AKTIF secara default (status masuk ke 'menunggu_persetujuan_kedua').
+// 2. Butuh konfirmasi orang kedua: pengimpor mutasi dilarang menyetujui pembayarannya sendiri (pengimpor = penyetuju DITOLAK).
+// 3. Persetujuan oleh pengurus kedua berhasil mengubah status ke 'disetujui' dan membukukan transaksi.
+func TestItem3_BankMutation_DefaultNoAutoApprove_SecondConfirmation_ImporterCannotApprove(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	// 1. Buat pembayaran QRIS aktif yang menunggu pembayaran
+	var tagihanID uuid.UUID
+	err := env.Pool.QueryRow(ctx, `
+		INSERT INTO jenis_iuran (
+			koperasi_id, kode, nama, versi, nominal, periode_tagih, hari_jatuh_tempo,
+			denda_tipe, denda_nilai, klasifikasi_akuntansi, berlaku_mulai, status_aktif
+		) VALUES (
+			$1, 'MUTASI_TEST', 'Iuran Mutasi Test', 1, 150000, 'bulanan', 10,
+			'tidak_ada', 0, 'perlu_keputusan', CURRENT_DATE, true
+		) RETURNING id;
+	`, env.KoperasiID).Scan(&tagihanID)
+	if err != nil {
+		t.Fatalf("Insert jenis_iuran failed: %v", err)
+	}
+
+	var tagihanIuranID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO tagihan_iuran (koperasi_id, anggota_id, jenis_iuran_id, periode, nominal_pokok, jatuh_tempo)
+		VALUES ($1, $2, $3, '2026-11', 150000, CURRENT_DATE + 5)
+		RETURNING id;
+	`, env.KoperasiID, env.AnggotaID, tagihanID).Scan(&tagihanIuranID)
+	if err != nil {
+		t.Fatalf("Insert tagihan_iuran failed: %v", err)
+	}
+
+	bodyQRIS, _ := json.Marshal(map[string]interface{}{
+		"jenis_transaksi":  "iuran_bulanan",
+		"tagihan_iuran_id": []string{tagihanIuranID.String()},
+		"rekening_qris_id": env.RekeningID,
+	})
+	reqQRIS := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyQRIS))
+	reqQRIS.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqQRIS.Header.Set("Content-Type", "application/json")
+	recQRIS := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recQRIS, reqQRIS)
+
+	if recQRIS.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for buat QRIS, got %d: %s", recQRIS.Code, recQRIS.Body.String())
+	}
+	var resQRIS struct {
+		Data struct {
+			PembayaranID uuid.UUID `json:"pembayaran_id"`
+			NominalTotal int64     `json:"nominal_total"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recQRIS.Body.Bytes(), &resQRIS)
+	pembayaranID := resQRIS.Data.PembayaranID
+	nominalTotal := resQRIS.Data.NominalTotal
+
+	// 2. Pengurus 1 (AdminUserID) mengimpor mutasi bank CSV yang cocok dengan nominal_total
+	csvContent := fmt.Sprintf("Tanggal,Keterangan,Tipe,Nominal,NoRekening\n2026-11-12 10:00:00,Transfer Iuran Anggota,CR,%d,1112223334\n", nominalTotal)
+	var b bytes.Buffer
+	wMulti := multipart.NewWriter(&b)
+	part, _ := wMulti.CreateFormFile("file", "mutasi.csv")
+	_, _ = part.Write([]byte(csvContent))
+	wMulti.Close()
+
+	reqImpor := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", &b)
+	reqImpor.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqImpor.Header.Set("Content-Type", wMulti.FormDataContentType())
+	recImpor := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recImpor, reqImpor)
+
+	if recImpor.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for impor mutasi, got %d: %s", recImpor.Code, recImpor.Body.String())
+	}
+
+	// 3. Verifikasi: Auto-approve NONAKTIF secara default -> status transaksi menjadi 'menunggu_persetujuan_kedua'
+	var statusPembayaran string
+	var persetujuan1Oleh *uuid.UUID
+	err = env.Pool.QueryRow(ctx, "SELECT status, persetujuan_pertama_oleh FROM pembayaran WHERE id = $1;", pembayaranID).Scan(&statusPembayaran, &persetujuan1Oleh)
+	if err != nil {
+		t.Fatalf("Query pembayaran status failed: %v", err)
+	}
+	if statusPembayaran != "menunggu_persetujuan_kedua" {
+		t.Fatalf("Auto-approve harus nonaktif secara default! Expected status 'menunggu_persetujuan_kedua', got '%s'", statusPembayaran)
+	}
+	if persetujuan1Oleh == nil || *persetujuan1Oleh != env.AdminUserID {
+		t.Fatalf("Persetujuan pertama harus mencatat pengimpor: %v", persetujuan1Oleh)
+	}
+
+	// 4. Pengurus 1 (pengimpor mutasi) mencoba MENYETUJUI pembayarannya sendiri -> Wajib 403 Forbidden (pengimpor = penyetuju ditolak)
+	bodyApproveSelf, _ := json.Marshal(handlers.VerifikasiRequest{
+		Disetujui: true,
+		Catatan:   "Saya sendiri yang impor dan mau setujui",
+	})
+	reqApproveSelf := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", pembayaranID), bytes.NewReader(bodyApproveSelf))
+	reqApproveSelf.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqApproveSelf.Header.Set("Content-Type", "application/json")
+	recApproveSelf := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApproveSelf, reqApproveSelf)
+
+	if recApproveSelf.Code != http.StatusForbidden {
+		t.Fatalf("SECURITY VIOLATION: Pengimpor mutasi dilarang menyetujui pembayaran terkait! Expected 403, got %d: %s", recApproveSelf.Code, recApproveSelf.Body.String())
+	}
+	if !strings.Contains(recApproveSelf.Body.String(), "dilarang") {
+		t.Fatalf("Pesan penolakan harus menegaskan larangan pengimpor menyetujui: %s", recApproveSelf.Body.String())
+	}
+
+	// 5. Buat akun Pengurus 2 yang berbeda (ketua)
+	pengurus2ID := uuid.New()
+	emailP2 := fmt.Sprintf("ketua2_%s@koperasi.id", uuid.New().String()[:8])
+	emailP2Hash := security.HashBlindIndex(emailP2, []byte(env.Config.BlindIndexSecret))
+	pwdP2Hash, _ := security.HashPassword("KetuaPassword123!")
+
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap, status_aktif, mfa_enabled)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Ketua Verifikator Kedua', true, true);
+	`, pengurus2ID, []byte("enkripsi"), emailP2Hash, pwdP2Hash)
+	if err != nil {
+		t.Fatalf("Seed pengurus 2 failed: %v", err)
+	}
+
+	var roleKetuaID uuid.UUID
+	_ = env.Pool.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'ketua' LIMIT 1;").Scan(&roleKetuaID)
+	if roleKetuaID != uuid.Nil {
+		_, _ = env.Pool.Exec(ctx, `
+			INSERT INTO user_roles (user_id, role_id, koperasi_id)
+			VALUES ($1, $2, $3);
+		`, pengurus2ID, roleKetuaID, env.KoperasiID)
+	}
+
+	tm := auth.NewTokenManager(env.Config.JWTSecret, "kopdes-merah-putih-api")
+	tokenP2, _ := tm.GenerateToken(pengurus2ID, env.KoperasiID, "ketua", false, 15*time.Minute)
+
+	// 6. Pengurus 2 (orang kedua yang berbeda) MENYETUJUI pembayaran -> Wajib 200 OK
+	bodyApproveP2, _ := json.Marshal(handlers.VerifikasiRequest{
+		Disetujui: true,
+		Catatan:   "Konfirmasi orang kedua valid setelah verifikasi rekening koran",
+	})
+	reqApproveP2 := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", pembayaranID), bytes.NewReader(bodyApproveP2))
+	reqApproveP2.Header.Set("Authorization", "Bearer "+tokenP2)
+	reqApproveP2.Header.Set("Content-Type", "application/json")
+	recApproveP2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApproveP2, reqApproveP2)
+
+	if recApproveP2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for second person approval, got %d: %s", recApproveP2.Code, recApproveP2.Body.String())
+	}
+
+	// Pastikan status di database kini 'disetujui' dan persetujuan_kedua_oleh tercatat
+	var finalStatus string
+	var p2Oleh *uuid.UUID
+	_ = env.Pool.QueryRow(ctx, "SELECT status, persetujuan_kedua_oleh FROM pembayaran WHERE id = $1;", pembayaranID).Scan(&finalStatus, &p2Oleh)
+	if finalStatus != "disetujui" || p2Oleh == nil || *p2Oleh != pengurus2ID {
+		t.Fatalf("Pembayaran harus berstatus 'disetujui' dengan persetujuan kedua oleh pengurus 2: status=%s, p2=%v", finalStatus, p2Oleh)
+	}
+
+	t.Logf("Sukses: Impor mutasi auto-approve nonaktif default, pengimpor = penyetuju ditolak, dan orang kedua berhasil konfirmasi!")
+}
+
+func TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+	tm := auth.NewTokenManager(env.Config.JWTSecret, "kopdes-merah-putih-api")
+
+	// 1. Setup Unit Usaha & Gudang
+	unitUsahaID := uuid.New()
+	_, _ = env.Pool.Exec(ctx, `
+		INSERT INTO unit_usaha (id, koperasi_id, kode_unit, nama, kode_kbli, jenis_unit)
+		VALUES ($1, $2, 'UNIT-CONCUR', 'Unit Usaha Retail Uji', '47111', 'gerai_sembako')
+		ON CONFLICT DO NOTHING;
+	`, unitUsahaID, env.KoperasiID)
+
+	gudangID := uuid.New()
+	_, _ = env.Pool.Exec(ctx, `
+		INSERT INTO gudang (id, koperasi_id, unit_usaha_id, kode, nama)
+		VALUES ($1, $2, $3, 'GD-CONCUR', 'Gudang Uji Konkurensi')
+		ON CONFLICT DO NOTHING;
+	`, gudangID, env.KoperasiID, unitUsahaID)
+
+	var katID uuid.UUID
+	err := env.Pool.QueryRow(ctx, `
+		INSERT INTO kategori_produk (id, koperasi_id, kode, nama, slug)
+		VALUES (uuid_generate_v7(), $1, 'KAT-CONCUR', 'Sembako Concur', 'sembako-concur')
+		ON CONFLICT (koperasi_id, slug) DO UPDATE SET nama = EXCLUDED.nama
+		RETURNING id;
+	`, env.KoperasiID).Scan(&katID)
+	if err != nil {
+		t.Fatalf("Seed kategori gagal: %v", err)
+	}
+
+	// 2. Setup Produk dengan Stok Awal = 2
+	produkID := uuid.New()
+	sku := fmt.Sprintf("SKU-CONCUR-%s", uuid.New().String()[:6])
+	slug := fmt.Sprintf("beras-concur-%s", uuid.New().String()[:6])
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO produk (id, koperasi_id, unit_usaha_id, kategori_id, sku, nama, slug, satuan, status)
+		VALUES ($1, $2, $3, $4, $5, 'Beras Super Terbatas', $6, 'pack', 'aktif');
+	`, produkID, env.KoperasiID, unitUsahaID, katID, sku, slug)
+	if err != nil {
+		t.Fatalf("Seed produk gagal: %v", err)
+	}
+
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO produk_harga (id, koperasi_id, produk_id, harga_umum, harga_anggota, berlaku_mulai, created_by)
+		VALUES (uuid_generate_v7(), $1, $2, 50000, 45000, CURRENT_DATE, $3);
+	`, env.KoperasiID, produkID, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("Seed produk harga gagal: %v", err)
+	}
+
+	// Stok awal = 2 di gudang
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO stok_saldo (id, koperasi_id, gudang_id, produk_id, qty_tersedia, qty_dipesan)
+		VALUES (uuid_generate_v7(), $1, $2, $3, 2, 0);
+	`, env.KoperasiID, gudangID, produkID)
+	if err != nil {
+		t.Fatalf("Seed stok_saldo gagal: %v", err)
+	}
+
+	// =========================================================================
+	// BAGIAN A: Uji Pembelian Bersamaan (5 Goroutines Bersaing Membeli Stok = 2)
+	// =========================================================================
+	const numBuyers = 5
+	type buyerInfo struct {
+		userID uuid.UUID
+		token  string
+	}
+	buyers := make([]buyerInfo, numBuyers)
+
+	for i := 0; i < numBuyers; i++ {
+		bID := uuid.New()
+		email := fmt.Sprintf("buyer_race_%d_%s@koperasi.id", i, uuid.New().String()[:6])
+		emailHash := security.HashBlindIndex(email, []byte(env.Config.BlindIndexSecret))
+		pwdHash, _ := security.HashPassword("BuyerPassword123!")
+
+		_, err := env.Pool.Exec(ctx, `
+			INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap, status_aktif)
+			VALUES ($1, $2, $3, $2, $3, $4, $5, true);
+		`, bID, []byte("enkripsi"), emailHash, pwdHash, fmt.Sprintf("Pembeli Race %d", i))
+		if err != nil {
+			t.Fatalf("Seed user %d gagal: %v", i, err)
+		}
+
+		nikBytes := []byte(fmt.Sprintf("320101010101%04d", i))
+		nikHash := security.HashBlindIndex(string(nikBytes), []byte(env.Config.BlindIndexSecret))
+		_, err = env.Pool.Exec(ctx, `
+			INSERT INTO anggota (id, koperasi_id, user_id, no_anggota, nik_enkripsi, nik_hash, nama_lengkap, tempat_lahir, tanggal_lahir_enkripsi, jenis_kelamin, status, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'Bogor', $5, 'L', 'aktif', $8);
+		`, uuid.New(), env.KoperasiID, bID, fmt.Sprintf("ANG-%04d", i), []byte("enkripsi"), nikHash, fmt.Sprintf("Pembeli Race %d", i), env.AdminUserID)
+		if err != nil {
+			t.Fatalf("Seed anggota %d gagal: %v", i, err)
+		}
+
+		tok, _ := tm.GenerateToken(bID, env.KoperasiID, "anggota", false, 15*time.Minute)
+		buyers[i] = buyerInfo{userID: bID, token: tok}
+
+		// Tambahkan 1 item ke keranjang masing-masing pembeli
+		bodyCart, _ := json.Marshal(map[string]interface{}{
+			"produk_id": produkID,
+			"qty":       1,
+		})
+		reqCart := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyCart))
+		reqCart.Header.Set("Authorization", "Bearer "+tok)
+		reqCart.Header.Set("Content-Type", "application/json")
+		recCart := httptest.NewRecorder()
+		env.Server.Router().ServeHTTP(recCart, reqCart)
+		if recCart.Code != http.StatusOK {
+			t.Fatalf("Buyer %d gagal menambah keranjang: %d %s", i, recCart.Code, recCart.Body.String())
+		}
+	}
+
+	// Mulai 5 goroutine checkout serentak
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	results := make([]int, numBuyers)
+
+	for i := 0; i < numBuyers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-startCh // Tunggu sinyal mulai serentak
+
+			bodyCheckout, _ := json.Marshal(map[string]interface{}{
+				"metode_serah_terima": "ambil_di_koperasi",
+				"catatan":             fmt.Sprintf("Checkout serentak dari buyer %d", idx),
+			})
+			req := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckout))
+			req.Header.Set("Authorization", "Bearer "+buyers[idx].token)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			env.Server.Router().ServeHTTP(rec, req)
+			results[idx] = rec.Code
+		}(i)
+	}
+
+	// Picu eksekusi paralel serentak
+	close(startCh)
+	wg.Wait()
+
+	successCount := 0
+	oversellRejectedCount := 0
+	for _, code := range results {
+		if code == http.StatusCreated {
+			successCount++
+		} else if code == http.StatusBadRequest {
+			oversellRejectedCount++
+		}
+	}
+
+	if successCount != 2 {
+		t.Fatalf("NO OVERSELL VIOLATION: Seharusnya tepat 2 pembeli yang berhasil membeli stok 2, namun didapat %d sukses (hasil: %v)", successCount, results)
+	}
+	if oversellRejectedCount != 3 {
+		t.Fatalf("Seharusnya tepat 3 pembeli ditolak dengan 400 Bad Request karena kehabisan stok, didapat: %d", oversellRejectedCount)
+	}
+
+	runInTenant := func(fn func(tx pgx.Tx) error) {
+		t.Helper()
+		if err := middleware.WithTenantTx(ctx, env.Pool, env.KoperasiID, false, fn); err != nil {
+			t.Fatalf("Tenant query error: %v", err)
+		}
+	}
+
+	// Verifikasi saldo stok terkini di database: wajib 0 dan DILARANG MINUS
+	var finalQty float64
+	runInTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&finalQty)
+	})
+	if finalQty != 0 {
+		t.Fatalf("Sisa stok harus tepat 0, didapat: %v", finalQty)
+	}
+
+	t.Logf("Verifikasi A Berhasil: 5 checkout bersamaan ditangani atomik, 2 sukses, 3 ditolak, saldo akhir = 0 (bebas oversell).")
+
+	// =========================================================================
+	// BAGIAN B: Pelepasan Stok dan Kuota Promo saat Pesanan DIBATALKAN
+	// =========================================================================
+	// 1. Tambah stok produk menjadi 5 & Buat Promo dengan Kuota Total = 1
+	promoID := uuid.New()
+	runInTenant(func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE stok_saldo SET qty_tersedia = 5 WHERE produk_id = $1;`, produkID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO promo (
+				id, koperasi_id, kode, nama, tipe_promo, nilai_diskon, cakupan,
+				berlaku_mulai, berlaku_sampai, kuota_total, kuota_terpakai, minimal_belanja
+			) VALUES (
+				$1, $2, 'PROMO-BATAL-TEST', 'Promo Batal 10 Ribu', 'nominal', 10000, 'seluruh_katalog',
+				NOW() - INTERVAL '1 hour', NOW() + INTERVAL '1 hour', 1, 0, 10000
+			);
+		`, promoID, env.KoperasiID)
+		return err
+	})
+
+	// Pembeli 0 isi keranjang lagi
+	bodyCartB, _ := json.Marshal(map[string]interface{}{
+		"produk_id": produkID,
+		"qty":       2,
+	})
+	reqCartB := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyCartB))
+	reqCartB.Header.Set("Authorization", "Bearer "+buyers[0].token)
+	reqCartB.Header.Set("Content-Type", "application/json")
+	recCartB := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCartB, reqCartB)
+
+	// Checkout dengan promo 'PROMO-BATAL-TEST'
+	bodyCheckoutB, _ := json.Marshal(map[string]interface{}{
+		"metode_serah_terima": "ambil_di_koperasi",
+		"kode_promo":          "PROMO-BATAL-TEST",
+		"catatan":             "Uji pembatalan pesanan",
+	})
+	reqCheckoutB := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckoutB))
+	reqCheckoutB.Header.Set("Authorization", "Bearer "+buyers[0].token)
+	reqCheckoutB.Header.Set("Content-Type", "application/json")
+	recCheckoutB := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckoutB, reqCheckoutB)
+	if recCheckoutB.Code != http.StatusCreated {
+		t.Fatalf("Checkout pesanan B gagal: %d %s", recCheckoutB.Code, recCheckoutB.Body.String())
+	}
+
+	var resPesananB struct {
+		Data struct {
+			PesananID uuid.UUID `json:"pesanan_id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recCheckoutB.Body.Bytes(), &resPesananB)
+	pesananIDB := resPesananB.Data.PesananID
+
+	// Cek bahwa stok berkurang menjadi 3 (5 - 2) dan kuota promo terpakai = 1
+	var qtyAfterCheckout float64
+	var kuotaPromoTerpakai int
+	runInTenant(func(tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&qtyAfterCheckout)
+		_ = tx.QueryRow(ctx, "SELECT kuota_terpakai FROM promo WHERE id = $1;", promoID).Scan(&kuotaPromoTerpakai)
+		return nil
+	})
+	if qtyAfterCheckout != 3 || kuotaPromoTerpakai != 1 {
+		t.Fatalf("Kondisi paska checkout salah: sisa stok=%v (harus 3), kuota promo=%d (harus 1)", qtyAfterCheckout, kuotaPromoTerpakai)
+	}
+
+	// Pembeli 1 mencoba membatalkan pesanan Pembeli 0 -> Wajib 403 Forbidden (Anti-IDOR)
+	reqCancelIDOR := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/toko/pesanan/%s/batal", pesananIDB), nil)
+	reqCancelIDOR.Header.Set("Authorization", "Bearer "+buyers[1].token)
+	recCancelIDOR := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCancelIDOR, reqCancelIDOR)
+	if recCancelIDOR.Code != http.StatusForbidden {
+		t.Fatalf("IDOR VIOLATION: Pembeli lain tidak boleh membatalkan pesanan orang lain! Expected 403, got %d: %s", recCancelIDOR.Code, recCancelIDOR.Body.String())
+	}
+
+	// Pembeli 0 membatalkan pesanannya sendiri -> Wajib 200 OK
+	reqCancelOwner := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/toko/pesanan/%s/batal", pesananIDB), nil)
+	reqCancelOwner.Header.Set("Authorization", "Bearer "+buyers[0].token)
+	recCancelOwner := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCancelOwner, reqCancelOwner)
+	if recCancelOwner.Code != http.StatusOK {
+		t.Fatalf("Pembeli pemilik gagal membatalkan pesanan: %d %s", recCancelOwner.Code, recCancelOwner.Body.String())
+	}
+
+	// Verifikasi Pelepasan Stok & Pemulihan Kuota Promo di DB
+	var qtyRestored float64
+	var kuotaRestored int
+	var statusPesanan string
+	var statusPromoPenggunaan string
+	var countRetur int
+	var qtyRetur float64
+	runInTenant(func(tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&qtyRestored)
+		_ = tx.QueryRow(ctx, "SELECT kuota_terpakai FROM promo WHERE id = $1;", promoID).Scan(&kuotaRestored)
+		_ = tx.QueryRow(ctx, "SELECT status::text FROM pesanan WHERE id = $1;", pesananIDB).Scan(&statusPesanan)
+		_ = tx.QueryRow(ctx, "SELECT status FROM promo_penggunaan WHERE pesanan_id = $1;", pesananIDB).Scan(&statusPromoPenggunaan)
+		_ = tx.QueryRow(ctx, "SELECT count(*), COALESCE(SUM(qty_perubahan), 0) FROM stok_mutasi WHERE referensi_id = $1 AND jenis_mutasi = 'retur_penjualan';", pesananIDB).Scan(&countRetur, &qtyRetur)
+		return nil
+	})
+
+	if statusPesanan != "batal" {
+		t.Fatalf("Status pesanan harus 'batal', got: %s", statusPesanan)
+	}
+	if qtyRestored != 5 {
+		t.Fatalf("Stok barang harus dipulihkan kembali ke 5 setelah dibatalkan, didapat: %v", qtyRestored)
+	}
+	if kuotaRestored != 0 {
+		t.Fatalf("Kuota promo harus dipulihkan kembali ke 0 setelah dibatalkan, didapat: %d", kuotaRestored)
+	}
+	if statusPromoPenggunaan != "dibatalkan" {
+		t.Fatalf("Status promo_penggunaan harus 'dibatalkan', got: %s", statusPromoPenggunaan)
+	}
+	if countRetur == 0 || qtyRetur != 2 {
+		t.Fatalf("Mutasi retur_penjualan harus tercatat di ledger stok_mutasi dengan qty 2: count=%d, qty=%v", countRetur, qtyRetur)
+	}
+
+	t.Logf("Verifikasi B Berhasil: Pembatalan pesanan berhasil memulihkan stok (+2) dan kuota promo (-1) secara konsisten.")
+
+	// =========================================================================
+	// BAGIAN C: Pelepasan Stok dan Kuota Promo saat Pesanan KEDALUWARSA
+	// =========================================================================
+	// Pembeli 1 isi keranjang lagi (1 item)
+	bodyCartC, _ := json.Marshal(map[string]interface{}{
+		"produk_id": produkID,
+		"qty":       1,
+	})
+	reqCartC := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyCartC))
+	reqCartC.Header.Set("Authorization", "Bearer "+buyers[1].token)
+	reqCartC.Header.Set("Content-Type", "application/json")
+	recCartC := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCartC, reqCartC)
+
+	// Checkout dengan promo yang sama (bisa dipakai karena kuota sudah dipulihkan di Bagian B!)
+	bodyCheckoutC, _ := json.Marshal(map[string]interface{}{
+		"metode_serah_terima": "ambil_di_koperasi",
+		"kode_promo":          "PROMO-BATAL-TEST",
+		"catatan":             "Uji kedaluwarsa pesanan",
+	})
+	reqCheckoutC := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckoutC))
+	reqCheckoutC.Header.Set("Authorization", "Bearer "+buyers[1].token)
+	reqCheckoutC.Header.Set("Content-Type", "application/json")
+	recCheckoutC := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckoutC, reqCheckoutC)
+	if recCheckoutC.Code != http.StatusCreated {
+		t.Fatalf("Checkout pesanan C gagal: %d %s", recCheckoutC.Code, recCheckoutC.Body.String())
+	}
+
+	var resPesananC struct {
+		Data struct {
+			PesananID uuid.UUID `json:"pesanan_id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recCheckoutC.Body.Bytes(), &resPesananC)
+	pesananIDC := resPesananC.Data.PesananID
+
+	// Proses kedaluwarsa via endpoint /expire
+	reqExpire := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/toko/pesanan/%s/expire", pesananIDC), nil)
+	reqExpire.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recExpire := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recExpire, reqExpire)
+	if recExpire.Code != http.StatusOK {
+		t.Fatalf("Proses kedaluwarsa pesanan gagal: %d %s", recExpire.Code, recExpire.Body.String())
+	}
+
+	// Verifikasi Pelepasan Stok & Pemulihan Kuota Promo saat Kedaluwarsa
+	var qtyRestoredC float64
+	var kuotaRestoredC int
+	var statusPesananC string
+	runInTenant(func(tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&qtyRestoredC)
+		_ = tx.QueryRow(ctx, "SELECT kuota_terpakai FROM promo WHERE id = $1;", promoID).Scan(&kuotaRestoredC)
+		_ = tx.QueryRow(ctx, "SELECT status::text FROM pesanan WHERE id = $1;", pesananIDC).Scan(&statusPesananC)
+		return nil
+	})
+
+	if statusPesananC != "kedaluwarsa" {
+		t.Fatalf("Status pesanan harus 'kedaluwarsa', got: %s", statusPesananC)
+	}
+	if qtyRestoredC != 5 {
+		t.Fatalf("Stok barang harus dipulihkan kembali ke 5 saat kedaluwarsa, didapat: %v", qtyRestoredC)
+	}
+	if kuotaRestoredC != 0 {
+		t.Fatalf("Kuota promo harus dipulihkan kembali ke 0 saat kedaluwarsa, didapat: %d", kuotaRestoredC)
+	}
+
+	t.Logf("Verifikasi C Berhasil: Pesanan kedaluwarsa melepaskan stok dan kuota promo kembali ke saldo tersedia.")
+}
+
+
 
 
 

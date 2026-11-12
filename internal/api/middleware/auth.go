@@ -46,6 +46,15 @@ func (am *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Token setup MFA strictly limited to enrollment endpoints only
+		if claims.Role == "mfa_setup" {
+			path := r.URL.Path
+			if path != "/api/v1/auth/mfa/enable" && path != "/api/v1/auth/mfa/setup" {
+				response.Forbidden(w, "Token setup MFA hanya berlaku untuk proses enrollment MFA (akses ditolak)")
+				return
+			}
+		}
+
 		// Simpan claims ke dalam request context
 		ctx := context.WithValue(r.Context(), ContextKeyUserClaims, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))

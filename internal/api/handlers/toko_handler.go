@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -362,6 +364,9 @@ func (h *TokoHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
 			if float64(totalAkhir) < minBelanja {
 				return fmt.Errorf("minimal belanja untuk promo ini adalah Rp %.0f", minBelanja)
 			}
+			if !isAnggota || anggotaID == nil {
+				return errors.New("kode promo hanya dapat digunakan oleh anggota aktif koperasi")
+			}
 
 			if tipePromo == "persen" {
 				promoPotongan = int64(float64(totalAkhir) * (nilaiDiskon / 100.0))
@@ -553,3 +558,210 @@ func (h *TokoHandler) HandleListPesanan(w http.ResponseWriter, r *http.Request) 
 
 	response.JSON(w, http.StatusOK, pesananList)
 }
+
+// ReleasePesananStockAndPromoTx melepaskan alokasi stok dan kuota promo ke database
+func ReleasePesananStockAndPromoTx(ctx context.Context, tx pgx.Tx, koperasiID uuid.UUID, pesananID uuid.UUID, newStatus string, catatanMutasi string, actorUserID uuid.UUID) error {
+	// 1. Update status pesanan
+	_, err := tx.Exec(ctx, `
+		UPDATE pesanan
+		SET status = $1::status_pesanan_enum, updated_at = NOW()
+		WHERE id = $2 AND koperasi_id = $3;
+	`, newStatus, pesananID, koperasiID)
+	if err != nil {
+		return fmt.Errorf("gagal mengupdate status pesanan menjadi %s: %w", newStatus, err)
+	}
+
+	// 2. Ambil item pesanan dan kembalikan stok melalui stok_mutasi ('retur_penjualan')
+	type orderItem struct {
+		ProdukID uuid.UUID
+		Qty      float64
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT produk_id, qty
+		FROM pesanan_item
+		WHERE pesanan_id = $1 AND koperasi_id = $2;
+	`, pesananID, koperasiID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var itemsToReturn []orderItem
+	for rows.Next() {
+		var oi orderItem
+		if err := rows.Scan(&oi.ProdukID, &oi.Qty); err != nil {
+			return err
+		}
+		itemsToReturn = append(itemsToReturn, oi)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, it := range itemsToReturn {
+		var gudangID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT gudang_id FROM stok_mutasi
+			WHERE referensi_id = $1 AND produk_id = $2 AND jenis_mutasi = 'keluar_penjualan'
+			ORDER BY created_at DESC LIMIT 1;
+		`, pesananID, it.ProdukID).Scan(&gudangID)
+		if err != nil {
+			_ = tx.QueryRow(ctx, `SELECT id FROM gudang WHERE koperasi_id = $1 LIMIT 1;`, koperasiID).Scan(&gudangID)
+		}
+
+		var currentStock float64
+		_ = tx.QueryRow(ctx, `SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1 AND gudang_id = $2;`, it.ProdukID, gudangID).Scan(&currentStock)
+
+		newSaldo := currentStock + it.Qty
+		_, err = tx.Exec(ctx, `
+			INSERT INTO stok_mutasi (
+				id, koperasi_id, gudang_id, produk_id, jenis_mutasi,
+				qty_perubahan, qty_saldo_setelah, referensi_tipe, referensi_id,
+				catatan, created_by, created_at
+			) VALUES (
+				uuid_generate_v7(), $1, $2, $3, 'retur_penjualan',
+				$4, $5, 'pesanan', $6,
+				$7, $8, clock_timestamp()
+			);
+		`, koperasiID, gudangID, it.ProdukID, it.Qty, newSaldo, pesananID, catatanMutasi, actorUserID)
+		if err != nil {
+			return fmt.Errorf("gagal mengembalikan stok mutasi: %w", err)
+		}
+	}
+
+	// 3. Lepaskan kuota promo jika promo digunakan
+	var promoID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT promo_id FROM promo_penggunaan
+		WHERE pesanan_id = $1 AND koperasi_id = $2 AND status = 'dipesan'
+		LIMIT 1;
+	`, pesananID, koperasiID).Scan(&promoID)
+	if err == nil && promoID != uuid.Nil {
+		_, _ = tx.Exec(ctx, `
+			UPDATE promo
+			SET kuota_terpakai = GREATEST(kuota_terpakai - 1, 0), updated_at = NOW()
+			WHERE id = $1 AND koperasi_id = $2;
+		`, promoID, koperasiID)
+
+		_, _ = tx.Exec(ctx, `
+			UPDATE promo_penggunaan
+			SET status = 'dibatalkan', updated_at = NOW()
+			WHERE pesanan_id = $1 AND koperasi_id = $2;
+		`, pesananID, koperasiID)
+	}
+
+	return nil
+}
+
+// HandleBatalPesanan membatalkan pesanan, mengembalikan stok ke gudang melalui stok_mutasi, dan melepaskan kuota promo
+func (h *TokoHandler) HandleBatalPesanan(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	pesananID, err := uuid.Parse(idStr)
+	if err != nil {
+		response.BadRequest(w, "ID pesanan tidak valid")
+		return
+	}
+
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		var pembeliUserID uuid.UUID
+		var currentStatus string
+		err := tx.QueryRow(ctx, `
+			SELECT pembeli_user_id, status::text
+			FROM pesanan
+			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+			FOR UPDATE;
+		`, pesananID, claims.KoperasiID).Scan(&pembeliUserID, &currentStatus)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errors.New("pesanan tidak ditemukan")
+			}
+			return err
+		}
+
+		// Anggota biasa hanya boleh membatalkan pesanannya sendiri
+		if claims.Role == "anggota" && pembeliUserID != claims.UserID {
+			return errors.New("AKSES_DITOLAK: Anda hanya berhak membatalkan pesanan milik Anda sendiri")
+		}
+
+		if currentStatus == "batal" || currentStatus == "kedaluwarsa" || currentStatus == "selesai" || currentStatus == "dikirim" {
+			return fmt.Errorf("pesanan tidak dapat dibatalkan (status saat ini: %s)", currentStatus)
+		}
+
+		return ReleasePesananStockAndPromoTx(ctx, tx, claims.KoperasiID, pesananID, "batal", "Pelepasan stok pembatalan pesanan", claims.UserID)
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "AKSES_DITOLAK") {
+			response.Forbidden(w, err.Error())
+			return
+		}
+		response.BadRequest(w, fmt.Sprintf("Gagal membatalkan pesanan: %v", err))
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"pesanan_id": pesananID,
+		"status":     "batal",
+		"message":    "Pesanan berhasil dibatalkan, kuota promo dan stok barang telah dikembalikan",
+	})
+}
+
+// HandleExpirePesanan mengubah pesanan yang melewati batas waktu menjadi 'kedaluwarsa' dan melepaskan stok/promo
+func (h *TokoHandler) HandleExpirePesanan(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	pesananID, err := uuid.Parse(idStr)
+	if err != nil {
+		response.BadRequest(w, "ID pesanan tidak valid")
+		return
+	}
+
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok || claims.KoperasiID == uuid.Nil {
+		response.Unauthorized(w, "Autentikasi diperlukan")
+		return
+	}
+
+	ctx := r.Context()
+	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
+		var pembeliUserID uuid.UUID
+		var currentStatus string
+		var batasWaktu *time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT pembeli_user_id, status::text, batas_waktu_bayar
+			FROM pesanan
+			WHERE id = $1 AND koperasi_id = $2 AND deleted_at IS NULL
+			FOR UPDATE;
+		`, pesananID, claims.KoperasiID).Scan(&pembeliUserID, &currentStatus, &batasWaktu)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errors.New("pesanan tidak ditemukan")
+			}
+			return err
+		}
+
+		if currentStatus == "batal" || currentStatus == "kedaluwarsa" || currentStatus == "selesai" || currentStatus == "dikirim" {
+			return fmt.Errorf("pesanan tidak dapat dikedaluwarsakan (status saat ini: %s)", currentStatus)
+		}
+
+		return ReleasePesananStockAndPromoTx(ctx, tx, claims.KoperasiID, pesananID, "kedaluwarsa", "Pelepasan stok pesanan kedaluwarsa", claims.UserID)
+	})
+
+	if err != nil {
+		response.BadRequest(w, fmt.Sprintf("Gagal memproses kedaluwarsa pesanan: %v", err))
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"pesanan_id": pesananID,
+		"status":     "kedaluwarsa",
+		"message":    "Pesanan telah kedaluwarsa, kuota promo dan stok barang telah dikembalikan",
+	})
+}
+

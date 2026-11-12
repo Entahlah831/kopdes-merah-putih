@@ -788,6 +788,17 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			return errors.New("MAKER_CHECKER_VIOLATION: Pembuat transaksi dilarang memverifikasi pembayarannya sendiri")
 		}
 
+		// Aturan Segregasi Pengimpor Mutasi: Pengimpor mutasi bank dilarang memverifikasi/menyetujui pembayaran
+		var mutasiImporterID *uuid.UUID
+		_ = tx.QueryRow(ctx, `
+			SELECT created_by FROM mutasi_bank_impor
+			WHERE pembayaran_id = $1 AND koperasi_id = $2
+			LIMIT 1;
+		`, pembayaranID, claims.KoperasiID).Scan(&mutasiImporterID)
+		if mutasiImporterID != nil && *mutasiImporterID == claims.UserID {
+			return errors.New("MAKER_CHECKER_VIOLATION: Pengimpor mutasi bank dilarang memverifikasi atau menyetujui pembayaran terkait")
+		}
+
 		if currentStatus != "menunggu_verifikasi" && currentStatus != "menunggu_persetujuan_kedua" {
 			return fmt.Errorf("transaksi tidak dalam status menunggu verifikasi (status saat ini: %s)", currentStatus)
 		}
@@ -809,35 +820,9 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			nomTotalFloat, _ := strconv.ParseFloat(nominalTotal, 64)
 			nomTotalInt := int64(nomTotalFloat)
 
-			if nomTotalInt > ambangGanda {
-				// Transaksi di atas ambang memerlukan 2 pengurus berbeda
-				if persetujuanPertamaOleh == nil {
-					// Persetujuan Pertama
-					_, err = tx.Exec(ctx, `
-						UPDATE pembayaran
-						SET status = 'menunggu_persetujuan_kedua',
-						    persetujuan_pertama_oleh = $1,
-						    waktu_persetujuan_pertama = NOW(),
-						    updated_at = NOW()
-						WHERE id = $2 AND koperasi_id = $3;
-					`, claims.UserID, pembayaranID, claims.KoperasiID)
-					if err != nil {
-						return err
-					}
-
-					_, err = tx.Exec(ctx, `
-						INSERT INTO pembayaran_verifikasi_log (
-							koperasi_id, pembayaran_id, status_lama, status_baru, aksi, catatan, created_by
-						) VALUES (
-							$1, $2, 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'setujui', 'Persetujuan pertama dicatat. Menunggu persetujuan kedua karena nominal > ambang.', $3
-						);
-					`, claims.KoperasiID, pembayaranID, claims.UserID)
-					isFirstApprovalOfDual = true
-					return err
-				}
-
-				// Persetujuan Kedua
-				if *persetujuanPertamaOleh == claims.UserID {
+			if currentStatus == "menunggu_persetujuan_kedua" {
+				// Persetujuan kedua (baik karena di atas ambang maupun hasil pencocokan mutasi bank)
+				if persetujuanPertamaOleh != nil && *persetujuanPertamaOleh == claims.UserID {
 					return errors.New("DUAL_APPROVAL_VIOLATION: Persetujuan kedua wajib dilakukan oleh pengurus/pejabat yang berbeda dari penyetuju pertama")
 				}
 
@@ -851,6 +836,29 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 				if err != nil {
 					return err
 				}
+			} else if nomTotalInt > ambangGanda {
+				// Persetujuan Pertama untuk transaksi di atas ambang batas
+				_, err = tx.Exec(ctx, `
+					UPDATE pembayaran
+					SET status = 'menunggu_persetujuan_kedua',
+					    persetujuan_pertama_oleh = $1,
+					    waktu_persetujuan_pertama = NOW(),
+					    updated_at = NOW()
+					WHERE id = $2 AND koperasi_id = $3;
+				`, claims.UserID, pembayaranID, claims.KoperasiID)
+				if err != nil {
+					return err
+				}
+
+				_, err = tx.Exec(ctx, `
+					INSERT INTO pembayaran_verifikasi_log (
+						koperasi_id, pembayaran_id, status_lama, status_baru, aksi, catatan, created_by
+					) VALUES (
+						$1, $2, 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'setujui', 'Persetujuan pertama dicatat. Menunggu persetujuan kedua karena nominal > ambang.', $3
+					);
+				`, claims.KoperasiID, pembayaranID, claims.UserID)
+				isFirstApprovalOfDual = true
+				return err
 			}
 
 			// Cari atau buka periode kas aktif untuk koperasi ini
@@ -916,11 +924,11 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 			return
 		}
 		if strings.Contains(err.Error(), "MAKER_CHECKER_VIOLATION") {
-			response.Forbidden(w, "Pelanggaran Maker-Checker: Pembuat pembayaran dilarang memverifikasi pembayarannya sendiri.")
+			response.Forbidden(w, err.Error())
 			return
 		}
 		if strings.Contains(err.Error(), "DUAL_APPROVAL_VIOLATION") {
-			response.BadRequest(w, "DUAL_APPROVAL_VIOLATION: Persetujuan kedua wajib dilakukan oleh pengurus/pejabat yang berbeda dari penyetuju pertama.")
+			response.Forbidden(w, err.Error())
 			return
 		}
 		if strings.Contains(err.Error(), "tidak dalam status menunggu verifikasi") {

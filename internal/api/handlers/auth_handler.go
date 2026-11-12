@@ -710,20 +710,20 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		currentStep := time.Now().Unix() / 30
-		// Cegah pakai ulang kode TOTP dalam jendela yang sama (Anti-Replay)
-		if currentStep <= lastTotpStep {
-			recordFailure("TOTP_REPLAY_DETECTED", "Kode TOTP sudah pernah digunakan dalam jendela waktu ini. Tunggu kode berikutnya.")
-			return
-		}
-
-		if !security.ValidateTOTPCode(string(plainSecret), req.TOTPCode, time.Now()) {
+		valid, matchedStep := security.ValidateTOTPCodeWithStep(string(plainSecret), req.TOTPCode, time.Now())
+		if !valid {
 			recordFailure("INVALID_TOTP_CODE", "Kode TOTP tidak valid atau telah kedaluwarsa")
 			return
 		}
 
+		// Cegah pakai ulang kode TOTP dalam jendela yang sama atau jendela sebelumnya (Anti-Replay)
+		if matchedStep <= lastTotpStep {
+			recordFailure("TOTP_REPLAY_DETECTED", "Kode TOTP sudah pernah digunakan dalam jendela waktu ini. Tunggu kode berikutnya.")
+			return
+		}
+
 		// Update last_totp_step agar tidak bisa di-replay di jendela yang sama
-		_, _ = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2, $3, $4);", userID, encryptedSecret, currentStep, recoveryBytes)
+		_, _ = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2, $3, $4);", userID, encryptedSecret, matchedStep, recoveryBytes)
 	}
 
 	var namaLengkap string

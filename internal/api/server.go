@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +56,24 @@ func (c *Config) Validate() error {
 	}
 	if err := security.ValidateSecretKey("AES_MASTER_KEY", decodeSecretBytes(c.AESMasterKey)); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidateProductionDatabasePassword memvalidasi kepatuhan kata sandi database pada profil produksi (Tugas 8)
+func ValidateProductionDatabasePassword(appEnv, dbPassword, kopdesAppPassword string) error {
+	if strings.TrimSpace(appEnv) != "production" {
+		return nil
+	}
+	pass := strings.TrimSpace(kopdesAppPassword)
+	if pass == "" {
+		pass = strings.TrimSpace(dbPassword)
+	}
+	if pass == "" {
+		return errors.New("pada profil produksi, variabel lingkungan KOPDES_APP_PASSWORD atau DB_PASSWORD wajib disetel")
+	}
+	if pass == "kopdes_dev_password" {
+		return errors.New("pada profil produksi, dilarang menggunakan password default dev (kopdes_dev_password)")
 	}
 	return nil
 }

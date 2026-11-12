@@ -3760,6 +3760,42 @@ func TestItem3_MFA_Mandatory_Attempts_NoReplay_RecoveryCodes(t *testing.T) {
 	t.Logf("Sukses: MFA wajib untuk peran istimewa, limit percobaan sesi, anti-replay, dan recovery codes sekali pakai!")
 }
 
+func TestItem4_ProductionRolePassword_RefusesDefault(t *testing.T) {
+	// Skenario 1: Pada produksi, password kosong harus ditolak
+	errEmpty := api.ValidateProductionDatabasePassword("production", "", "")
+	if errEmpty == nil {
+		t.Fatalf("Expected error for empty password in production, got nil")
+	}
+
+	// Skenario 2: Pada produksi, password bawaan dev (kopdes_dev_password) harus ditolak
+	errDev := api.ValidateProductionDatabasePassword("production", "kopdes_dev_password", "")
+	if errDev == nil {
+		t.Fatalf("Expected error for dev password in production, got nil")
+	}
+	errDev2 := api.ValidateProductionDatabasePassword("production", "", "kopdes_dev_password")
+	if errDev2 == nil {
+		t.Fatalf("Expected error for dev password via KOPDES_APP_PASSWORD in production, got nil")
+	}
+
+	// Skenario 3: Pada produksi, password kuat dari env harus diterima
+	errStrong := api.ValidateProductionDatabasePassword("production", "SuperSecretProductionPwd123!#", "")
+	if errStrong != nil {
+		t.Fatalf("Expected success for strong password in production, got: %v", errStrong)
+	}
+
+	// Skenario 4: Pada development, password dev atau kosong diizinkan
+	errDevEnv := api.ValidateProductionDatabasePassword("development", "kopdes_dev_password", "")
+	if errDevEnv != nil {
+		t.Fatalf("Expected success in development, got: %v", errDevEnv)
+	}
+	errDevEmpty := api.ValidateProductionDatabasePassword("development", "", "")
+	if errDevEmpty != nil {
+		t.Fatalf("Expected success for empty password in development, got: %v", errDevEmpty)
+	}
+
+	t.Logf("Sukses: Validasi password role database pada profil produksi terbukti menolak default dev dan mewajibkan env!")
+}
+
 
 
 

@@ -171,11 +171,10 @@ func main() {
 		}
 	}
 
-	// Validasi kepatuhan konfigurasi produksi (S3)
+	// Validasi kepatuhan konfigurasi produksi (S3 & Tugas 8)
 	if os.Getenv("APP_ENV") == "production" {
-		dbPass := os.Getenv("DB_PASSWORD")
-		if strings.TrimSpace(dbPass) == "" || dbPass == "kopdes_dev_password" {
-			log.Fatalf("KONFIGURASI ILEGAL: DB_PASSWORD dilarang menggunakan kata sandi bawaan pengujian pada APP_ENV=production")
+		if err := api.ValidateProductionDatabasePassword(os.Getenv("APP_ENV"), os.Getenv("DB_PASSWORD"), os.Getenv("KOPDES_APP_PASSWORD")); err != nil {
+			log.Fatalf("KONFIGURASI ILEGAL: %v", err)
 		}
 		if len(cfg.AllowedOrigins) == 0 || (len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*") {
 			log.Fatalf("KONFIGURASI ILEGAL: ALLOWED_ORIGINS wajib didefinisikan secara eksplisit dan dilarang '*' pada APP_ENV=production")

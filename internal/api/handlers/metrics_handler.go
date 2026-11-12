@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -27,14 +26,6 @@ func NewMetricsHandler(pool *pgxpool.Pool, metricsToken string, trustedProxies *
 		metricsToken:   metricsToken,
 		trustedProxies: trustedProxies,
 	}
-}
-
-func isInternalIP(ipStr string) bool {
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // HandleMetrics mengembalikan metrik Prometheus operasional sistem (wajib token otentikasi internal)

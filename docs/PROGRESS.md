@@ -513,6 +513,25 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - **Hasil Pemindaian Keamanan `govulncheck ./...`**:
   0 kerentanan pada kode aplikasi sistem Kopdes Merah Putih. Seluruh peringatan yang muncul murni bersumber dari pustaka standar runtime Go bawaan mesin host (`go1.27.1`).
 
+### [2026-11-12] Item 7: Batas Pilot Rekening Pribadi Asia/Jakarta, Purge Berkas Fisik & Log Bebas PII
+- **Reproduksi Gagal**:
+  `TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree` mendeteksi bahwa berkas KYC pendaftaran sebelumnya hanya dicatat metadatanya di database tanpa ditulis ke disk penyimpanan fisik (`api_test.go:4441: Berkas KYC fisik harus tersimpan di ..., tetapi tidak ditemukan!`), serta memastikan batas harian pilot rekening pribadi dihitung berdasarkan zona waktu lokal `Asia/Jakarta` dan hanya memperhitungkan transaksi aktif/disetujui (bukan ditolak/dibatalkan).
+- **Implementasi**:
+  - `internal/api/handlers/qris_handler.go`: Query akumulasi batas harian pilot diperkuat dengan konversi zona waktu PostgreSQL `(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::date AT TIME ZONE 'Asia/Jakarta'` dan hanya menghitung transaksi berstatus `status IN ('menunggu_pembayaran', 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'disetujui')`.
+  - `internal/api/handlers/pendaftaran_handler.go`:
+    - `HandleUploadDokumenPendaftaran`: Menyimpan berkas fisik ke `STORAGE_DIR` dengan proteksi permission direktori `0750` dan berkas `0600`. Jika transaksi database gagal, berkas fisik otomatis dibersihkan.
+    - `HandlePurgeRejectedPendaftaran`: Membaca seluruh `storage_key` calon anggota yang berstatus ditolak, memanggil prosedur SQL `fn_purge_rejected_pendaftaran_pdp`, lalu menghapus berkas fisik KYC secara permanen dari penyimpanan disk via `os.Remove`.
+    - `sanitizeLogCatatan`: Menambahkan sanitasi berbasis ekspresi reguler untuk menyensor NIK 16 digit (`[NIK_REDACTED]`), nomor telepon (`[NO_HP_REDACTED]`), dan email (`[EMAIL_REDACTED]`) sebelum disisipkan ke tabel riwayat append-only `pendaftaran_status_log`.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree
+      api_test.go:4515: Sukses: Batas pilot Asia/Jakarta valid, berkas KYC fisik terhapus permanen saat purge, dan log status bebas PII!
+  --- PASS: TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree (0.87s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/api	1.023s
+  ```
+
+
 
 
 

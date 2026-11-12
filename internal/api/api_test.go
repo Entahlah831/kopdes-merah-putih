@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -4223,6 +4224,297 @@ func TestItem6_TokoCheckout_RoleEscalation_NeutralIuran_OpenAPI(t *testing.T) {
 
 	t.Logf("Sukses: Checkout potong stok & promo, proteksi eskalasi peran, iuran netral, dan OpenAPI 3 valid!")
 }
+
+// TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree memvalidasi:
+// 1. Batas harian pilot rekening pribadi dihitung berdasarkan zona waktu Asia/Jakarta dan HANYA status aktif/disetujui (bukan ditolak/dibatalkan)
+// 2. Pembersihan pendaftaran ditolak (Purge) menghapus berkas fisik KYC dari disk storage dan pendaftaran_status_log TIDAK menyimpan PII
+func TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	ctx := context.Background()
+
+	var wilayahDesaID uuid.UUID
+	_ = env.Pool.QueryRow(ctx, "SELECT wilayah_desa_id FROM koperasi WHERE id = $1;", env.KoperasiID).Scan(&wilayahDesaID)
+
+	// Izinkan mode pilot rekening pribadi
+	t.Setenv("ALLOW_PERSONAL_PAYMENT_PILOT", "true")
+
+	// Set storage directory ke temp dir untuk pengujian berkas fisik
+	tempStorageDir := t.TempDir()
+	t.Setenv("STORAGE_DIR", tempStorageDir)
+
+	// ==========================================
+	// BAGIAN A: Batas Harian Rekening Pribadi (Asia/Jakarta & Status Aktif/Disetujui)
+	// ==========================================
+	// 1. Buat rekening QRIS pilot perorangan
+	var rekeningPilotID uuid.UUID
+	nmidPilot := fmt.Sprintf("ID%s", uuid.New().String()[:12])
+	err := env.Pool.QueryRow(ctx, `
+		INSERT INTO rekening_qris_koperasi (
+			koperasi_id, penyedia_id, nama_merchant, nmid, nama_bank_pjp,
+			no_rekening_settlement, nama_pemilik_rekening, jenis_pemilik,
+			is_atas_nama_badan_hukum, qris_payload_statis, status_aktif
+		) VALUES (
+			$1, $2, 'Kopdes Pilot Toko', $3, 'BCA Syariah',
+			'5551234567', 'Bendahara Pilot', 'perorangan_pengurus',
+			false, '00020101021151440014ID.CO.QRIS.WWW0215ID10200000000015204549953033605802ID5909KOPDES MP6006BOGOR 61051611063045E3B', true
+		) RETURNING id;
+	`, env.KoperasiID, env.PenyediaID, nmidPilot).Scan(&rekeningPilotID)
+	if err != nil {
+		t.Fatalf("Gagal insert rekening pilot: %v", err)
+	}
+
+	// 2. Set konfigurasi batas pilot: max per tx = Rp 500.000, max per hari = Rp 1.000.000
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO konfigurasi_aturan (koperasi_id, kunci_aturan, versi, nilai_json, status_aktif, keterangan, berlaku_mulai)
+		VALUES ($1, 'pilot_rekening_pribadi_max_per_transaksi', 1, '{"nominal": 500000}'::jsonb, true, 'Uji coba batas per tx', NOW())
+		ON CONFLICT (koperasi_id, kunci_aturan, versi) DO UPDATE SET nilai_json = EXCLUDED.nilai_json;
+	`, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("Gagal set konfigurasi aturan pilot max tx: %v", err)
+	}
+
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO konfigurasi_aturan (koperasi_id, kunci_aturan, versi, nilai_json, status_aktif, keterangan, berlaku_mulai)
+		VALUES ($1, 'pilot_rekening_pribadi_max_per_hari', 1, '{"nominal": 1000000}'::jsonb, true, 'Uji coba batas per hari', NOW())
+		ON CONFLICT (koperasi_id, kunci_aturan, versi) DO UPDATE SET nilai_json = EXCLUDED.nilai_json;
+	`, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("Gagal set konfigurasi aturan pilot max hari: %v", err)
+	}
+
+	metodeID := env.MetodeID
+
+	// Buat jenis iuran dan tagihan iuran untuk pengujian pembayaran
+	var jenisIuranID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO jenis_iuran (
+			koperasi_id, kode, nama, versi, nominal, periode_tagih, hari_jatuh_tempo,
+			denda_tipe, denda_nilai, klasifikasi_akuntansi, berlaku_mulai, status_aktif
+		) VALUES (
+			$1, 'WAJIB', 'Iuran Wajib Bulanan', 1, 200000, 'bulanan', 10,
+			'tidak_ada', 0, 'perlu_keputusan', CURRENT_DATE, true
+		) RETURNING id;
+	`, env.KoperasiID).Scan(&jenisIuranID)
+	if err != nil {
+		t.Fatalf("Gagal insert jenis_iuran: %v", err)
+	}
+
+	var tagihanID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO tagihan_iuran (koperasi_id, anggota_id, jenis_iuran_id, periode, nominal_pokok, jatuh_tempo)
+		VALUES ($1, $2, $3, '2026-11', 200000, CURRENT_DATE + 5)
+		RETURNING id;
+	`, env.KoperasiID, env.AnggotaID, jenisIuranID).Scan(&tagihanID)
+	if err != nil {
+		t.Fatalf("Gagal insert tagihan_iuran: %v", err)
+	}
+
+	// Simulasikan pembayaran DITOLAK hari ini di Asia/Jakarta sebesar Rp 800.000 (tidak boleh mengurangi kuota harian)
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO pembayaran (
+			koperasi_id, no_pembayaran, pembayar_user_id, anggota_id, metode_pembayaran_id,
+			rekening_qris_id, jenis_transaksi, nominal_dasar, kode_unik, kode_unik_awal, status,
+			alasan_ditolak, berlaku_sampai, created_at, created_by
+		) VALUES (
+			$1, 'PAY-REJECTED-001', $2, $3, $4,
+			$5, 'iuran_bulanan', 800000, 101, 101, 'ditolak',
+			'Alasan penolakan dummy', NOW() + INTERVAL '1 hour', NOW() AT TIME ZONE 'Asia/Jakarta', $2
+		);
+	`, env.KoperasiID, env.AnggotaUserID, env.AnggotaID, metodeID, rekeningPilotID)
+	if err != nil {
+		t.Fatalf("Gagal insert dummy pembayaran ditolak: %v", err)
+	}
+
+	// Simulasikan pembayaran KEDALUWARSA kemarin di luar hari ini sebesar Rp 900.000 (tidak boleh mengurangi kuota)
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO pembayaran (
+			koperasi_id, no_pembayaran, pembayar_user_id, anggota_id, metode_pembayaran_id,
+			rekening_qris_id, jenis_transaksi, nominal_dasar, kode_unik, kode_unik_awal, status,
+			berlaku_sampai, created_at, created_by
+		) VALUES (
+			$1, 'PAY-EXPIRED-OLD', $2, $3, $4,
+			$5, 'iuran_bulanan', 900000, 102, 102, 'kedaluwarsa',
+			NOW() - INTERVAL '2 days' + INTERVAL '1 hour', NOW() - INTERVAL '2 days', $2
+		);
+	`, env.KoperasiID, env.AnggotaUserID, env.AnggotaID, metodeID, rekeningPilotID)
+	if err != nil {
+		t.Fatalf("Gagal insert dummy pembayaran kedaluwarsa: %v", err)
+	}
+
+	// Simulasikan pembayaran AKTIF/DISETUJUI hari ini di Asia/Jakarta sebesar Rp 850.000
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO pembayaran (
+			koperasi_id, no_pembayaran, pembayar_user_id, anggota_id, metode_pembayaran_id,
+			rekening_qris_id, jenis_transaksi, nominal_dasar, kode_unik, kode_unik_awal, status,
+			berlaku_sampai, created_at, created_by
+		) VALUES (
+			$1, 'PAY-ACTIVE-001', $2, $3, $4,
+			$5, 'iuran_bulanan', 850000, 103, 103, 'disetujui',
+			NOW() + INTERVAL '1 hour', NOW() AT TIME ZONE 'Asia/Jakarta', $2
+		);
+	`, env.KoperasiID, env.AnggotaUserID, env.AnggotaID, metodeID, rekeningPilotID)
+	if err != nil {
+		t.Fatalf("Gagal insert pembayaran aktif hari ini: %v", err)
+	}
+
+	// Coba buat pembayaran QRIS baru sebesar Rp 200.000
+	// 850.000 (aktif) + 200.000 (baru) = 1.050.000 > batas harian 1.000.000 -> HARUS DITOLAK
+	bodyQRISExceed, _ := json.Marshal(map[string]interface{}{
+		"jenis_transaksi":  "iuran_bulanan",
+		"tagihan_iuran_id": []string{tagihanID.String()},
+		"rekening_qris_id": rekeningPilotID,
+	})
+	reqQRISExceed := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyQRISExceed))
+	reqQRISExceed.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqQRISExceed.Header.Set("Content-Type", "application/json")
+	recQRISExceed := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recQRISExceed, reqQRISExceed)
+
+	if recQRISExceed.Code != http.StatusBadRequest && recQRISExceed.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Expected 400/422 saat batas harian pilot terlampaui, got %d: %s", recQRISExceed.Code, recQRISExceed.Body.String())
+	}
+	if !strings.Contains(recQRISExceed.Body.String(), "batas harian rekening pilot") {
+		t.Fatalf("Expected pesan batas harian rekening pilot, got: %s", recQRISExceed.Body.String())
+	}
+
+	// ==========================================
+	// BAGIAN B: Upload Berkas Fisik, Purge, & Sanitasi PII di Log Status
+	// ==========================================
+	// 1. Ajukan pendaftaran calon anggota baru
+	bodyAjukan, _ := json.Marshal(map[string]interface{}{
+		"nik":             "3201234567890099",
+		"nama_lengkap":    "Calon Anggota PDP Purge",
+		"tempat_lahir":    "Bogor",
+		"tanggal_lahir":   "1992-05-10",
+		"jenis_kelamin":   "L",
+		"pekerjaan":       "Wiraswasta",
+		"alamat_ktp":      "Jl. Melati No. 12 Desa Sukamaju",
+		"wilayah_desa_id": wilayahDesaID,
+	})
+	reqAjukan := httptest.NewRequest("POST", "/api/v1/pendaftaran", bytes.NewReader(bodyAjukan))
+	reqAjukan.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqAjukan.Header.Set("Content-Type", "application/json")
+	recAjukan := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAjukan, reqAjukan)
+
+	if recAjukan.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for ajukan pendaftaran, got %d: %s", recAjukan.Code, recAjukan.Body.String())
+	}
+	var resAjukan struct {
+		Data struct {
+			PendaftaranID uuid.UUID `json:"pendaftaran_id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recAjukan.Body.Bytes(), &resAjukan)
+	pendaftaranID := resAjukan.Data.PendaftaranID
+
+	// 2. Unggah Dokumen KYC (JPEG valid dengan magic bytes)
+	jpegHeader := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
+	fileContent := append(jpegHeader, []byte("SIMULASI_FOTO_KTP_CALON_ANGGOTA_TESTING")...)
+
+	var b bytes.Buffer
+	wMulti := multipart.NewWriter(&b)
+	part, _ := wMulti.CreateFormFile("dokumen", "ktp_calon.jpg")
+	_, _ = part.Write(fileContent)
+	_ = wMulti.WriteField("jenis_dokumen", "ktp")
+	wMulti.Close()
+
+	reqUpload := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/dokumen", pendaftaranID), &b)
+	reqUpload.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqUpload.Header.Set("Content-Type", wMulti.FormDataContentType())
+	recUpload := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recUpload, reqUpload)
+
+	if recUpload.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for upload dokumen, got %d: %s", recUpload.Code, recUpload.Body.String())
+	}
+
+	// Verifikasi Berkas Fisik TERSIMPAN di disk storage
+	var storageKey string
+	err = env.Pool.QueryRow(ctx, "SELECT storage_key FROM pendaftaran_dokumen WHERE pendaftaran_id = $1;", pendaftaranID).Scan(&storageKey)
+	if err != nil {
+		t.Fatalf("Gagal query storage_key: %v", err)
+	}
+	expectedPhysicalPath := filepath.Join(tempStorageDir, storageKey)
+	if _, err := os.Stat(expectedPhysicalPath); os.IsNotExist(err) {
+		t.Fatalf("Berkas KYC fisik harus tersimpan di %s, tetapi tidak ditemukan!", expectedPhysicalPath)
+	}
+
+	// 3. Verifikasi Pendaftaran dengan status DITOLAK dan catatan memuat PII sensitif
+	catatanDitolakDenganPII := "Berkas NIK 3201234567890099 dengan no kontak 081234567890 dan email calon.rahasia@example.com ditolak karena buram."
+	bodyVerifikasi, _ := json.Marshal(map[string]interface{}{
+		"status":         "ditolak",
+		"alasan_ditolak": catatanDitolakDenganPII,
+	})
+	reqVerifikasi := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pendaftaran/%s/verifikasi", pendaftaranID), bytes.NewReader(bodyVerifikasi))
+	reqVerifikasi.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqVerifikasi.Header.Set("Content-Type", "application/json")
+	recVerifikasi := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recVerifikasi, reqVerifikasi)
+
+	if recVerifikasi.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for verifikasi ditolak, got %d: %s", recVerifikasi.Code, recVerifikasi.Body.String())
+	}
+
+	// 4. Verifikasi bahwa pendaftaran_status_log TIDAK MENYIMPAN PII
+	var loggedCatatan string
+	err = env.Pool.QueryRow(ctx, `
+		SELECT catatan FROM pendaftaran_status_log
+		WHERE pendaftaran_id = $1 AND status_baru = 'ditolak'
+		ORDER BY id DESC LIMIT 1;
+	`, pendaftaranID).Scan(&loggedCatatan)
+	if err != nil {
+		t.Fatalf("Gagal query pendaftaran_status_log: %v", err)
+	}
+
+	if strings.Contains(loggedCatatan, "3201234567890099") ||
+		strings.Contains(loggedCatatan, "081234567890") ||
+		strings.Contains(loggedCatatan, "calon.rahasia@example.com") {
+		t.Fatalf("PELANGGARAN PDP: pendaftaran_status_log menyimpan PII mentah! Isi catatan: %s", loggedCatatan)
+	}
+	if !strings.Contains(loggedCatatan, "[NIK_REDACTED]") && !strings.Contains(loggedCatatan, "[NO_HP_REDACTED]") {
+		t.Fatalf("Catatan harus disanitasi dengan label redaksi: %s", loggedCatatan)
+	}
+
+	// 5. Mundurkan waktu updated_at pendaftaran_anggota ke 35 hari yang lalu (> retensi 30 hari)
+	_, err = env.Pool.Exec(ctx, `
+		UPDATE pendaftaran_anggota
+		SET updated_at = NOW() - INTERVAL '35 days'
+		WHERE id = $1;
+	`, pendaftaranID)
+	if err != nil {
+		t.Fatalf("Gagal mundurkan updated_at pendaftaran: %v", err)
+	}
+
+	// 6. Jalankan pembersihan PDP (POST /api/v1/pendaftaran/purge-ditolak)
+	reqPurge := httptest.NewRequest("POST", "/api/v1/pendaftaran/purge-ditolak", nil)
+	reqPurge.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recPurge := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPurge, reqPurge)
+
+	if recPurge.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for purge pendaftaran, got %d: %s", recPurge.Code, recPurge.Body.String())
+	}
+
+	// 7. Verifikasi berkas KYC fisik TERHAPUS dari disk
+	if _, err := os.Stat(expectedPhysicalPath); !os.IsNotExist(err) {
+		t.Fatalf("PELANGGARAN PDP: Berkas fisik di penyimpanan %s belum terhapus setelah purge!", expectedPhysicalPath)
+	}
+
+	// 8. Verifikasi audit_log mencatat aksi pembersihan tanpa PII
+	var countAudit int
+	err = env.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log
+		WHERE koperasi_id = $1 AND nama_tabel = 'pendaftaran_anggota' AND aksi = 'ANONYMIZE';
+	`, env.KoperasiID).Scan(&countAudit)
+	if err != nil || countAudit == 0 {
+		t.Fatalf("Expected audit_log entry for ANONYMIZE, count=%d, err=%v", countAudit, err)
+	}
+
+	t.Logf("Sukses: Batas pilot Asia/Jakarta valid, berkas KYC fisik terhapus permanen saat purge, dan log status bebas PII!")
+}
+
 
 
 

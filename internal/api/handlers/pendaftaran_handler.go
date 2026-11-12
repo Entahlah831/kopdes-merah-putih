@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,23 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/security"
 )
+
+var (
+	nikPattern   = regexp.MustCompile(`\b\d{16}\b`)
+	phonePattern = regexp.MustCompile(`(?:\+62|62|08)[0-9\-\s]{7,14}\b`)
+	emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+)
+
+// sanitizeLogCatatan membersihkan data pribadi (PII) sebelum dicatat ke append-only log status
+func sanitizeLogCatatan(msg string) string {
+	if msg == "" {
+		return ""
+	}
+	s := nikPattern.ReplaceAllString(msg, "[NIK_REDACTED]")
+	s = emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
+	s = phonePattern.ReplaceAllString(s, "[NO_HP_REDACTED]")
+	return s
+}
 
 type PendaftaranHandler struct {
 	pool             *pgxpool.Pool
@@ -466,12 +484,22 @@ func (h *PendaftaranHandler) HandleVerifikasiPendaftaran(w http.ResponseWriter, 
 			}
 		}
 
-		// Log jejak audit pendaftaran
+		var catatanLog string
+		if req.Status == "disetujui" {
+			catatanLog = "Pendaftaran disetujui oleh pengurus"
+		} else if req.Status == "ditolak" {
+			catatanLog = req.AlasanDitolak
+		} else {
+			catatanLog = req.CatatanPerbaikan
+		}
+		catatanLog = sanitizeLogCatatan(catatanLog)
+
+		// Log jejak audit pendaftaran (bebas PII)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO pendaftaran_status_log (
 				koperasi_id, pendaftaran_id, status_lama, status_baru, catatan, created_by
 			) VALUES ($1, $2, $3, $4, $5, $6);
-		`, claims.KoperasiID, pendaftaranID, statusLama, req.Status, req.CatatanPerbaikan, claims.UserID)
+		`, claims.KoperasiID, pendaftaranID, statusLama, req.Status, catatanLog, claims.UserID)
 		return err
 	})
 
@@ -561,6 +589,21 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	dokumenID := uuid.New()
 	storageKey := fmt.Sprintf("pendaftaran/%s/%s/%s_%s", claims.KoperasiID, pendaftaranID, dokumenID, header.Filename)
 
+	// Simpan berkas fisik ke penyimpanan lokal/volume
+	storageBase := os.Getenv("STORAGE_DIR")
+	if storageBase == "" {
+		storageBase = "storage"
+	}
+	targetPath := filepath.Join(storageBase, storageKey)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0750); err != nil {
+		response.InternalServerError(w, "Gagal menyiapkan direktori penyimpanan dokumen")
+		return
+	}
+	if err := os.WriteFile(targetPath, fileBytes, 0600); err != nil {
+		response.InternalServerError(w, "Gagal menulis berkas dokumen ke penyimpanan fisik")
+		return
+	}
+
 	ctx := r.Context()
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
 		// Simpan record metadata dokumen
@@ -589,6 +632,7 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	})
 
 	if err != nil {
+		_ = os.Remove(targetPath)
 		response.InternalServerError(w, fmt.Sprintf("Gagal menyimpan dokumen: %v", err))
 		return
 	}

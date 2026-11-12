@@ -404,8 +404,8 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				FROM pembayaran
 				WHERE rekening_qris_id = $1
 				  AND koperasi_id = $2
-				  AND created_at >= CURRENT_DATE
-				  AND status NOT IN ('ditolak', 'dibatalkan', 'kedaluwarsa')
+				  AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::date AT TIME ZONE 'Asia/Jakarta'
+				  AND status IN ('menunggu_pembayaran', 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'disetujui')
 				  AND deleted_at IS NULL;
 			`, rekeningID, claims.KoperasiID).Scan(&akumulasiHariIni)
 			if err != nil {

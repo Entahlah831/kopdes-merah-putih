@@ -10,19 +10,27 @@ import (
 )
 
 func getDBPool(t *testing.T, user, password string) *pgxpool.Pool {
-	dsn := "postgres://" + user + ":" + password + "@127.0.0.1:5433/kopdes_db?sslmode=disable"
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("Parse config error: %v", err)
+	candidates := []string{
+		"postgres://" + user + ":" + password + "@localhost:5432/kopdes_db?sslmode=disable",
+		"postgres://" + user + ":" + password + "@127.0.0.1:5433/kopdes_db?sslmode=disable",
+		"postgres://" + user + ":" + password + "@127.0.0.1:5432/kopdes_db?sslmode=disable",
 	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("Connect error: %v", err)
+
+	for _, dsn := range candidates {
+		cfg, err := pgxpool.ParseConfig(dsn)
+		if err != nil {
+			continue
+		}
+		pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+		if err == nil && pool.Ping(context.Background()) == nil {
+			return pool
+		}
+		if pool != nil {
+			pool.Close()
+		}
 	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("Ping error: %v", err)
-	}
-	return pool
+	t.Fatalf("Connect error for user %s: no reachable postgres instance on port 5432 or 5433", user)
+	return nil
 }
 
 func TestK1_SuperuserRejectedOnStartup(t *testing.T) {

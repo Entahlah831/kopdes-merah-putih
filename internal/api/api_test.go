@@ -2485,8 +2485,17 @@ func TestTask5_PaymentVerification_Reconciliation_EndToEnd(t *testing.T) {
 		} `json:"data"`
 	}
 	_ = json.Unmarshal(recStatus.Body.Bytes(), &resStatus)
-	if resStatus.Data.Status != "disetujui" {
-		t.Errorf("Expected status disetujui after auto-matching, got: %s", resStatus.Data.Status)
+	// Karena mutasi_auto_approve_enabled default-nya false, status awal beralih ke menunggu_persetujuan_kedua
+	if resStatus.Data.Status != "menunggu_persetujuan_kedua" && resStatus.Data.Status != "disetujui" {
+		t.Errorf("Expected status menunggu_persetujuan_kedua or disetujui after auto-matching, got: %s", resStatus.Data.Status)
+	}
+	if resStatus.Data.Status == "menunggu_persetujuan_kedua" {
+		pengurusTok, _ := env.createAndLoginUser(t, "pengurus")
+		reqApprove2nd := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", resPay.Data.PembayaranID), strings.NewReader(`{"disetujui":true,"catatan":"Approve kedua mutasi"}`))
+		reqApprove2nd.Header.Set("Authorization", "Bearer "+pengurusTok)
+		reqApprove2nd.Header.Set("Content-Type", "application/json")
+		recApprove2nd := httptest.NewRecorder()
+		env.Server.Router().ServeHTTP(recApprove2nd, reqApprove2nd)
 	}
 
 	// --- 2. Uji Persetujuan Ganda di Atas Ambang Batas (Dual Approval) ---
@@ -3166,6 +3175,176 @@ func TestTask9_MissingCRUD_Endpoints_EndToEnd(t *testing.T) {
 	if recUpdateRole.Code != http.StatusOK {
 		t.Fatalf("Expected 200 OK for PATCH /api/v1/users/{id}/role, got %d: %s", recUpdateRole.Code, recUpdateRole.Body.String())
 	}
+}
+
+func TestItem1_BankMutation_Segregation_Hash_1to1_FakeAttempts(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// Buat Admin 2 untuk menguji maker-checker / orang kedua
+	loginRes2, _, _, admin2ID := env.createAndLoginUserFull(t, "admin")
+	admin2Token := loginRes2.AccessToken
+
+	// --- 1. Uji Segregasi: Pengimpor TIDAK BOLEH sama dengan pembuat/pembayar ---
+	// Admin membuat pembayaran
+	billAdmin := env.CreateBill(t, env.AnggotaID, 88000)
+	bodyPayAdmin, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billAdmin},
+	})
+	reqPayAdmin := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPayAdmin))
+	reqPayAdmin.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqPayAdmin.Header.Set("Content-Type", "application/json")
+	recPayAdmin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPayAdmin, reqPayAdmin)
+	if recPayAdmin.Code != http.StatusCreated {
+		t.Fatalf("Gagal buat pembayaran admin: %d: %s", recPayAdmin.Code, recPayAdmin.Body.String())
+	}
+	var resPayAdmin struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPayAdmin.Body.Bytes(), &resPayAdmin)
+
+	// Admin mencoba mengimpor CSV untuk mencocokkan pembayarannya sendiri
+	csvSelfMatch := fmt.Sprintf("tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-12 11:00:00,SETTLEMENT SELF / CR,CR,%d.00,999111222\n", resPayAdmin.Data.NominalTotalRp)
+	bodyCSV1 := &bytes.Buffer{}
+	w1 := multipart.NewWriter(bodyCSV1)
+	p1, _ := w1.CreateFormFile("file", "mutasi_self.csv")
+	p1.Write([]byte(csvSelfMatch))
+	w1.Close()
+
+	reqSelfImport := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", bodyCSV1)
+	reqSelfImport.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqSelfImport.Header.Set("Content-Type", w1.FormDataContentType())
+	recSelfImport := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSelfImport, reqSelfImport)
+
+	// Pembayaran tidak boleh disetujui, harus terdeteksi anomali / segregasi pengimpor
+	reqCheckAdmin := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", resPayAdmin.Data.PembayaranID), nil)
+	reqCheckAdmin.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recCheckAdmin := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckAdmin, reqCheckAdmin)
+	var statusSelfPay struct {
+		Data struct {
+			Status    string `json:"status"`
+			IsAnomali bool   `json:"is_anomali"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recCheckAdmin.Body.Bytes(), &statusSelfPay)
+	if statusSelfPay.Data.Status == "disetujui" {
+		t.Fatalf("Pelanggaran segregasi: Pengimpor tidak boleh menyetujui pembayaran miliknya sendiri!")
+	}
+	if !statusSelfPay.Data.IsAnomali {
+		t.Fatalf("Harusnya ditandai anomali segregasi pengimpor sama dengan pembuat pembayaran!")
+	}
+
+	// --- 2. Auto-Approve Nonaktif Default: Pembayaran anggota cocok beralih ke 'menunggu_persetujuan_kedua' ---
+	billAnggota := env.CreateBill(t, env.AnggotaID, 95000)
+	bodyPayAnggota, _ := json.Marshal(handlers.BuatQRISRequest{
+		MetodePembayaranID: env.MetodeID,
+		JenisTransaksi:     "iuran_bulanan",
+		TagihanIuranIDs:    []uuid.UUID{billAnggota},
+	})
+	reqPayAnggota := httptest.NewRequest("POST", "/api/v1/pembayaran/qris", bytes.NewReader(bodyPayAnggota))
+	reqPayAnggota.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqPayAnggota.Header.Set("Content-Type", "application/json")
+	recPayAnggota := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPayAnggota, reqPayAnggota)
+	if recPayAnggota.Code != http.StatusCreated {
+		t.Fatalf("Gagal buat pembayaran anggota: %d: %s", recPayAnggota.Code, recPayAnggota.Body.String())
+	}
+	var resPayAnggota struct {
+		Data handlers.BuatQRISResponse `json:"data"`
+	}
+	_ = json.Unmarshal(recPayAnggota.Body.Bytes(), &resPayAnggota)
+
+	// Admin mengimpor CSV yang cocok
+	csvAnggotaMatch := fmt.Sprintf("tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-12 12:00:00,SETTLEMENT ANGGOTA / CR,CR,%d.00,999111222\n", resPayAnggota.Data.NominalTotalRp)
+	bodyCSV2 := &bytes.Buffer{}
+	w2 := multipart.NewWriter(bodyCSV2)
+	p2, _ := w2.CreateFormFile("file", "mutasi_anggota.csv")
+	p2.Write([]byte(csvAnggotaMatch))
+	w2.Close()
+
+	reqImportAnggota := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", bodyCSV2)
+	reqImportAnggota.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqImportAnggota.Header.Set("Content-Type", w2.FormDataContentType())
+	recImportAnggota := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recImportAnggota, reqImportAnggota)
+	t.Logf("Import response: %s", recImportAnggota.Body.String())
+
+	// Status HARUS 'menunggu_persetujuan_kedua' karena auto-approve nonaktif secara default
+	reqCheckStatus2 := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/pembayaran/%s", resPayAnggota.Data.PembayaranID), nil)
+	reqCheckStatus2.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	recCheckStatus2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckStatus2, reqCheckStatus2)
+	var statusPay2 struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recCheckStatus2.Body.Bytes(), &statusPay2)
+	if statusPay2.Data.Status != "menunggu_persetujuan_kedua" {
+		t.Fatalf("Expected status 'menunggu_persetujuan_kedua' (auto-approve default nonaktif), got %s", statusPay2.Data.Status)
+	}
+
+	// Orang kedua (Admin 2) menyetujui -> status 'disetujui'
+	reqApprove2 := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/pembayaran/%s/verifikasi", resPayAnggota.Data.PembayaranID), strings.NewReader(`{"status":"disetujui","catatan":"Konfirmasi orang kedua mutasi bank"}`))
+	reqApprove2.Header.Set("Authorization", "Bearer "+admin2Token)
+	reqApprove2.Header.Set("Content-Type", "application/json")
+	recApprove2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recApprove2, reqApprove2)
+	if recApprove2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for second approval, got %d: %s", recApprove2.Code, recApprove2.Body.String())
+	}
+
+	// --- 3. Hash Baris Mutasi Unik: Cegah Impor Baris yang Sama Ulang ---
+	bodyCSV3 := &bytes.Buffer{}
+	w3 := multipart.NewWriter(bodyCSV3)
+	p3, _ := w3.CreateFormFile("file", "mutasi_duplicate.csv")
+	p3.Write([]byte(csvAnggotaMatch)) // baris sama persis dengan CSV2
+	w3.Close()
+
+	reqImportDup := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", bodyCSV3)
+	reqImportDup.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqImportDup.Header.Set("Content-Type", w3.FormDataContentType())
+	recImportDup := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recImportDup, reqImportDup)
+
+	var resDup struct {
+		Data struct {
+			Duplikat int `json:"duplikat"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recImportDup.Body.Bytes(), &resDup)
+	if resDup.Data.Duplikat < 1 {
+		t.Fatalf("Expected duplicate count >= 1 for identical CSV row, got %d. Body: %s", resDup.Data.Duplikat, recImportDup.Body.String())
+	}
+
+	// --- 4. 1-to-1 Matching & Upaya CSV Palsu (Nominal Negatif, Corrupted) ---
+	fakeCSV := "tanggal,keterangan,tipe,nominal,no_rekening\n" +
+		"2026-11-12 13:00:00,NEGATIVE AMOUNT,CR,-50000,123456\n" +
+		"2026-11-12 14:00:00,DEBIT TRANSACTION,DB,100000,123456\n" +
+		"CORRUPTED LINE WITHOUT PROPER FIELDS\n"
+
+	bodyCSV4 := &bytes.Buffer{}
+	w4 := multipart.NewWriter(bodyCSV4)
+	p4, _ := w4.CreateFormFile("file", "mutasi_fake.csv")
+	p4.Write([]byte(fakeCSV))
+	w4.Close()
+
+	reqFakeImport := httptest.NewRequest("POST", "/api/v1/pembayaran/mutasi-bank/impor", bodyCSV4)
+	reqFakeImport.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqFakeImport.Header.Set("Content-Type", w4.FormDataContentType())
+	recFakeImport := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recFakeImport, reqFakeImport)
+
+	if recFakeImport.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for gracefully handling corrupted/negative rows, got %d: %s", recFakeImport.Code, recFakeImport.Body.String())
+	}
+
+	t.Logf("Sukses: Verifikasi pengimpor != pembuat, auto-approve nonaktif, hash unik baris, dan 1-to-1 mutasi!")
+	_ = admin2ID
 }
 
 

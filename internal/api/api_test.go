@@ -94,6 +94,7 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 	cfg.BlindIndexSecret = "test-blind-index-secret-32-bytes!"
 	cfg.QRISSecret = "test-qris-linear-probing-secret-32b!"
 	cfg.AESMasterKey = "test-aes-master-key-32-bytes-long!"
+	cfg.MetricsToken = "test-metrics-token-32-bytes-ok!"
 
 	server := api.NewServer(pool, cfg)
 
@@ -1956,6 +1957,7 @@ func TestP1_4_Operasional_Metrics_And_Idempotency(t *testing.T) {
 
 	// 1. Uji Endpoint Prometheus Metrics (GET /metrics)
 	reqMetrics := httptest.NewRequest("GET", "/metrics", nil)
+	reqMetrics.Header.Set("Authorization", "Bearer "+env.Config.MetricsToken)
 	recMetrics := httptest.NewRecorder()
 	env.Server.Router().ServeHTTP(recMetrics, reqMetrics)
 
@@ -2097,6 +2099,7 @@ func TestTask2_MetricsEndpoint_PartitionMetrics(t *testing.T) {
 	env := setupAPITestEnv(t)
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+env.Config.MetricsToken)
 	rec := httptest.NewRecorder()
 	env.Server.Router().ServeHTTP(rec, req)
 
@@ -2763,14 +2766,14 @@ func TestTask7_ProtectedMetrics_And_MFA_TOTP(t *testing.T) {
 		t.Fatalf("Expected 200 OK for external /metrics with valid token, got %d", recExtWithToken.Code)
 	}
 
-	// 3. Akses dari Jaringan Internal (Loopback 127.0.0.1) tanpa token -> HARUS DIIZINKAN (200 OK)
+	// 3. Akses dari Jaringan Internal (Loopback 127.0.0.1) tanpa token -> HARUS DITOLAK (401 Unauthorized, tidak percaya IP)
 	reqInternal := httptest.NewRequest("GET", "/metrics", nil)
 	reqInternal.RemoteAddr = "127.0.0.1:54321"
 	recInternal := httptest.NewRecorder()
 	serverMetrics.Router().ServeHTTP(recInternal, reqInternal)
 
-	if recInternal.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK for internal IP access to /metrics without token, got %d", recInternal.Code)
+	if recInternal.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for internal IP access to /metrics without token, got %d", recInternal.Code)
 	}
 
 	// ==========================================
@@ -3345,6 +3348,59 @@ func TestItem1_BankMutation_Segregation_Hash_1to1_FakeAttempts(t *testing.T) {
 
 	t.Logf("Sukses: Verifikasi pengimpor != pembuat, auto-approve nonaktif, hash unik baris, dan 1-to-1 mutasi!")
 	_ = admin2ID
+}
+
+func TestItem2_Metrics_AlwaysRequiresToken_EvenBehindProxy(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// Pastikan METRICS_TOKEN terkonfigurasi di server
+	metricsToken := "valid-secret-metrics-token-12345"
+	metricsHandler := handlers.NewMetricsHandler(env.Pool, metricsToken, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", metricsHandler.HandleMetrics)
+
+	// Skenario 1: Klien dari IP privat internal (10.0.1.25) tanpa token -> HARUS DITOLAK (401)
+	reqPrivate := httptest.NewRequest("GET", "/metrics", nil)
+	reqPrivate.RemoteAddr = "10.0.1.25:45678"
+	recPrivate := httptest.NewRecorder()
+	mux.ServeHTTP(recPrivate, reqPrivate)
+	if recPrivate.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for private IP without token, got %d: %s", recPrivate.Code, recPrivate.Body.String())
+	}
+
+	// Skenario 2: Klien di belakang reverse proxy (X-Forwarded-For: 192.168.1.100) tanpa token -> HARUS DITOLAK (401)
+	reqProxy := httptest.NewRequest("GET", "/metrics", nil)
+	reqProxy.RemoteAddr = "172.16.0.5:12345"
+	reqProxy.Header.Set("X-Forwarded-For", "192.168.1.100")
+	recProxy := httptest.NewRecorder()
+	mux.ServeHTTP(recProxy, reqProxy)
+	if recProxy.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized behind proxy without token, got %d: %s", recProxy.Code, recProxy.Body.String())
+	}
+
+	// Skenario 3: Loopback 127.0.0.1 tanpa token -> HARUS DITOLAK (401)
+	reqLoopback := httptest.NewRequest("GET", "/metrics", nil)
+	reqLoopback.RemoteAddr = "127.0.0.1:54321"
+	recLoopback := httptest.NewRecorder()
+	mux.ServeHTTP(recLoopback, reqLoopback)
+	if recLoopback.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for loopback without token, got %d: %s", recLoopback.Code, recLoopback.Body.String())
+	}
+
+	// Skenario 4: Token valid disertakan via Bearer -> HARUS 200 OK
+	reqValid := httptest.NewRequest("GET", "/metrics", nil)
+	reqValid.RemoteAddr = "10.0.1.25:45678"
+	reqValid.Header.Set("Authorization", "Bearer "+metricsToken)
+	recValid := httptest.NewRecorder()
+	mux.ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK with valid metrics token, got %d: %s", recValid.Code, recValid.Body.String())
+	}
+	if !strings.Contains(recValid.Body.String(), "kopdes_pembayaran_antrean_verifikasi") {
+		t.Errorf("Expected Prometheus metrics output, got: %s", recValid.Body.String())
+	}
+
+	t.Logf("Sukses: Endpoint /metrics mewajibkan token selalu dan menolak asumsi IP internal!")
 }
 
 

@@ -37,14 +37,8 @@ func isInternalIP(ipStr string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
-// HandleMetrics mengembalikan metrik Prometheus operasional sistem (diproteksi token atau jaringan internal)
+// HandleMetrics mengembalikan metrik Prometheus operasional sistem (wajib token otentikasi internal)
 func (h *MetricsHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
-	clientIP := middleware.GetClientIP(r, h.trustedProxies)
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-
 	authHeader := r.Header.Get("Authorization")
 	customHeader := r.Header.Get("X-Metrics-Token")
 	tokenProvided := ""
@@ -55,15 +49,13 @@ func (h *MetricsHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenValid := h.metricsToken != "" && tokenProvided == h.metricsToken
-	isHttptestDefault := (clientIP == "192.0.2.1" || host == "192.0.2.1") && h.metricsToken == ""
-	isInternal := isInternalIP(clientIP) || isInternalIP(host) || isHttptestDefault
 
-	// Tolak jika bukan dari IP internal dan tidak menyertakan token yang valid
-	if !tokenValid && !isInternal {
+	// Wajibkan token selalu, jangan pernah percaya "IP internal" dari RemoteAddr atau proxy
+	if !tokenValid {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="kopdes-metrics"`)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"Akses ke /metrics memerlukan token otentikasi internal atau koneksi dari jaringan internal"}}`))
+		_, _ = w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"Akses ke /metrics mewajibkan token otentikasi internal yang valid"}}`))
 		return
 	}
 

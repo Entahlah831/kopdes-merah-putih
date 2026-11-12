@@ -562,6 +562,182 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
 - **Kompilasi Binary Statis Linux**:
   Terverifikasi berhasil dikompilasi secara lokal via `CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o ./kopdes-server-linux ./cmd/server` (11.8 MB).
 
+---
+
+### [2026-11-12] Item 2: Alur Enrollment MFA Akun Istimewa & Hashed Recovery Codes
+- **Reproduksi Gagal**:
+  `TestMFA_Enrollment_PrivilegedAccount_RestrictedToken_And_HashedRecoveryCodes` mendeteksi bahwa akun istimewa tanpa MFA sebelumnya langsung ditolak login tanpa jalur enrollment yang aman, atau jika diberikan token khusus, token tersebut berpotensi disalahgunakan untuk mengakses endpoint bisnis.
+- **Implementasi**:
+  - `internal/api/middleware/auth.go`: `RequireAuth` membatasi token dengan peran khusus `mfa_setup` (restricted enrollment-only token). Pengguna dengan peran ini HANYA diizinkan mengakses `/api/v1/auth/mfa/setup` dan `/api/v1/auth/mfa/enable`. Seluruh endpoint bisnis/profil/keuangan menolak akses dengan HTTP 403 Forbidden.
+  - `internal/security/totp.go`: Menambahkan fungsi `ValidateTOTPCodeWithStep` yang mengembalikan `matchedStep` (`time.Unix() / 30`) untuk mengunci pencegahan replay ke nomor step waktu eksak.
+  - `internal/api/handlers/auth_handler.go`:
+    - `HandleLogin`: Akun istimewa (`admin`, `ketua`, `bendahara`) yang belum mengaktifkan MFA diberikan restricted access token berdurasi 15 menit dengan role `mfa_setup`.
+    - `HandleMFAEnable`: Menghasilkan 8 kode pemulihan acak ber-entropi tinggi, menyimpan hash SHA-256 terenkripsi AES-256-GCM + AAD `users:recovery:<userID>` di database (kode asli tidak pernah disimpan dalam bentuk plaintext).
+    - `HandleMFAVerify`: Menguji kode pemulihan dengan pembakaran sekali pakai (one-time burn).
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestMFA_Enrollment_PrivilegedAccount_RestrictedToken_And_HashedRecoveryCodes
+  --- PASS: TestMFA_Enrollment_PrivilegedAccount_RestrictedToken_And_HashedRecoveryCodes (20.63s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/api	22.045s
+  ```
+
+---
+
+### [2026-11-12] Item 3: Impor Mutasi Bank: Segregation of Duties & Konfirmasi Orang Kedua
+- **Reproduksi Gagal**:
+  `TestItem3_BankMutation_DefaultNoAutoApprove_SecondConfirmation_ImporterCannotApprove` memvalidasi bahwa impor CSV mutasi tidak boleh langsung meng-auto-approve pembayaran secara default, pengimpor mutasi dilarang keras bertindak sebagai penyetuju pembayaran, dan butuh konfirmasi dari pengurus kedua yang berbeda.
+- **Implementasi**:
+  - `internal/api/handlers/qris_handler.go`:
+    - Mengatur konfigurasi `mutasi_auto_approve_enabled` bernilai `false` secara default di `konfigurasi_aturan`.
+    - Pembayaran hasil pencocokan mutasi bank dialihkan ke status `menunggu_persetujuan_kedua` dengan mencatat `persetujuan_pertama_oleh` = user pengimpor mutasi.
+    - Pada `HandleVerifikasiPembayaran`:
+      - Menolak jika `mutasiImporterID == claims.UserID` (pengimpor mutasi dilarang menyetujui pembayarannya sendiri, HTTP 403 Forbidden).
+      - Menolak jika `persetujuanPertamaOleh == claims.UserID` pada tahap persetujuan kedua (memastikan 2 pasang mata / four-eyes principle).
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestItem3_BankMutation_DefaultNoAutoApprove_SecondConfirmation_ImporterCannotApprove
+      api_test.go:4928: Sukses: Impor mutasi auto-approve nonaktif default, pengimpor = penyetuju ditolak, dan orang kedua berhasil konfirmasi!
+  --- PASS: TestItem3_BankMutation_DefaultNoAutoApprove_SecondConfirmation_ImporterCannotApprove (11.52s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/api	12.871s
+  ```
+
+---
+
+### [2026-11-12] Item 4: Konkurensi Stok Toko (Bebas Oversell) & Pelepasan Stok/Promo saat Pesanan Batal/Kedaluwarsa
+- **Reproduksi Gagal**:
+  `TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release` menguji 5 goroutines yang bersaing membeli stok produk terbatas (stok = 2) secara bersamaan, serta memastikan pelepasan stok (`stok_mutasi` 'retur_penjualan') dan kuota promo saat pesanan dibatalkan atau dikedaluwarsakan.
+- **Implementasi**:
+  - `internal/api/handlers/toko_handler.go`:
+    - `HandleCheckout`: Mengunci baris `stok_saldo` dengan `FOR UPDATE`, memeriksa `qty_tersedia >= requested_qty`, dan trigger database `trg_fn_proses_stok_mutasi()` mencegah stok minus pada level mesin database.
+    - `ReleasePesananStockAndPromoTx`: Helper atomik yang melepaskan kuota promo (`GREATEST(kuota_terpakai - 1, 0)`), memperbarui `promo_penggunaan.status = 'dibatalkan'`, mengembalikan stok ke gudang melalui entri ledger append-only `stok_mutasi` dengan jenis `'retur_penjualan'`.
+    - `HandleBatalPesanan`: Endpoint `POST /api/v1/toko/pesanan/{id}/batal` dengan proteksi Anti-IDOR (anggota hanya dapat membatalkan pesanan miliknya sendiri).
+    - `HandleExpirePesanan`: Endpoint `POST /api/v1/toko/pesanan/{id}/expire` untuk memproses pesanan kedaluwarsa secara terjadwal.
+  - `internal/api/server.go`: Registrasi rute pembatalan dan kedaluwarsa pesanan.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release
+      api_test.go:5106: Verifikasi A Berhasil: 5 checkout bersamaan ditangani atomik, 2 sukses, 3 ditolak, saldo akhir = 0 (bebas oversell).
+      api_test.go:5226: Verifikasi B Berhasil: Pembatalan pesanan berhasil memulihkan stok (+2) dan kuota promo (-1) secara konsisten.
+      api_test.go:5295: Verifikasi C Berhasil: Pesanan kedaluwarsa melepaskan stok dan kuota promo kembali ke saldo tersedia.
+  --- PASS: TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release (23.46s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/api	25.809s
+  ```
+
+---
+
+### [2026-11-12] Item 5: Helper Kunci Advisory Terurut Kanonikal & Tes Kegagalan Urutan Terbalik
+- **Reproduksi Gagal**:
+  `TestAdvisoryLock_ReverseOrder_CausesDeadlockOrTimeout` mereproduksi bahwa transaksi yang mengambil kunci advisory secara manual dengan urutan terbalik (`tx1`: audit_log -> kas_mutasi, `tx2`: kas_mutasi -> audit_log) secara konsisten memicu kegagalan deadlock PostgreSQL (`40P01`) atau lock timeout (`55P03`).
+- **Implementasi**:
+  - `internal/db/advisory_lock.go`:
+    - `AcquireOrderedAdvisoryLocks`: Helper transaksi yang menormalisasi nama tabel partisi ke tabel dasar (`CanonicalBaseTable`), melakukan deduplikasi, mengurutkan secara leksikografis (deterministik kanonikal), dan mengambil `pg_advisory_xact_lock` di awal transaksi.
+    - Menjamin pemrosesan batch/paralel bebas dari siklus saling menunggu (anti-circular wait).
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestAdvisoryLock_CanonicalSorting
+      advisory_lock_test.go:39: Sukses: Normalisasi partisi dan pengurutan leksikografis kanonikal valid: [audit_log kas_mutasi pembayaran_verifikasi_log stok_mutasi]
+  --- PASS: TestAdvisoryLock_CanonicalSorting (0.03s)
+  === RUN   TestAdvisoryLock_Ordered_PreventsDeadlock_UnderParallelLoad
+      advisory_lock_test.go:106: Sukses: 40 worker paralel dengan urutan masukan terbalik berhasil dieksekusi tanpa satu pun deadlock!
+  --- PASS: TestAdvisoryLock_Ordered_PreventsDeadlock_UnderParallelLoad (0.50s)
+  === RUN   TestAdvisoryLock_ReverseOrder_CausesDeadlockOrTimeout
+      advisory_lock_test.go:187: Sukses: Penguncian manual dengan urutan terbalik terbukti memicu kegagalan deadlock/timeout (tx1Err=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03), tx2Err=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)), membuktikan bahwa AcquireOrderedAdvisoryLocks mutlak diperlukan!
+  --- PASS: TestAdvisoryLock_ReverseOrder_CausesDeadlockOrTimeout (0.56s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/db	2.198s
+  ```
+
+---
+
+### [2026-11-12] Item 6: METRICS_TOKEN Wajib >= 32 Byte, Gagal Start Bila Kosong & Contoh Konfigurasi Prometheus
+- **Reproduksi Gagal**:
+  `TestItem6_MetricsToken_Min32Bytes_RefusesShortOrEmpty` mendeteksi penolakan inisialisasi server apabila `METRICS_TOKEN` kosong atau berukuran kurang dari 32 byte.
+- **Implementasi**:
+  - `internal/api/server.go`:
+    - `Config.Validate()`: Menambahkan validasi `security.ValidateSecretKey("METRICS_TOKEN", decodeSecretBytes(c.MetricsToken))` (wajib >= 32 byte).
+    - `Server.Start()`: Memvalidasi konfigurasi keamanan sebelum memulai listener HTTP. Jika token tidak valid, mengembalikan error fatal dan menolak running.
+  - `cmd/server/main.go`: Membaca variabel lingkungan `METRICS_TOKEN` dari environment sistem.
+  - `docs/prometheus.example.yml`: Menambahkan berkas contoh konfigurasi scraping Prometheus dengan otentikasi Bearer Token 32-byte.
+- **Hasil Verifikasi**:
+  ```text
+  === RUN   TestItem6_MetricsToken_Min32Bytes_RefusesShortOrEmpty
+      api_test.go:5347: Sukses: Validasi METRICS_TOKEN >= 32 byte dan pencegahan startup server terbukti andal.
+  --- PASS: TestItem6_MetricsToken_Min32Bytes_RefusesShortOrEmpty (8.75s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/api	11.208s
+  ```
+
+---
+
+### [2026-11-12] Item 7: Latihan Pemulihan Bencana Nyata (`scripts/restore_drill.sh`) & Notifier WhatsApp/SMS Berbasis Outbox
+- **Implementasi**:
+  - `internal/outbox/notifier.go`:
+    - Mengimplementasikan `WhatsAppSMSNotifier` dengan dukungan fallback cerdas dari WhatsApp ke SMS bila pengiriman WA mengalami kendala timeout/koneksi.
+    - Fungsi `EnqueueNotification`: Memasukkan payload terstruktur ke tabel `outbox_event` dalam transaksi bisnis yang sama (atomik).
+    - Fungsi `RedactPhoneNumber`: Menyamarkan nomor telepon (`+62****890`) demi kepatuhan UU PDP.
+  - `scripts/restore_drill.sh`: Skrip bash otomatis untuk simulasi Disaster Recovery (DR) dan verifikasi Point-In-Time Recovery (PITR):
+    1. Mencatat Checkpoint LSN dan menanam marker verifikasi unik ke `audit_log`.
+    2. Mengekstrak snapshot dump terkompresi menggunakan `pg_dump -Fc` dan memverifikasi integritas berkas via checksum SHA-256.
+    3. Membuat database target drill terisolasi.
+    4. Merestorasi dump ke database drill menggunakan `pg_restore`.
+    5. Memvalidasi jumlah tabel (129 tabel terpulihkan), ketersediaan seluruh partisi `audit_log`, `kas_mutasi`, `stok_mutasi`, keberadaan 61 tabel ber-RLS aktif, dan keutuhan data marker transaksi drill.
+    6. Membersihkan database temporer secara bersih.
+- **Hasil Verifikasi Nyata Eksekusi `scripts/restore_drill.sh`**:
+  ```text
+  =============================================================================
+  [RESTORE-DRILL] Memulai Simulasi Latihan Pemulihan Bencana (DR Drill)
+  Waktu Mulai : 2026-11-12T13:10:47Z
+  Target Host : 127.0.0.1:5433 (Database: kopdes_db)
+  Drill DB    : kopdes_restore_drill_20261112_201047
+  =============================================================================
+  [LANGKAH 1/6] Mencatat Checkpoint LSN dan Marker Transaksi...
+  -> WAL LSN Checkpoint saat ini: 0/556A988
+  -> Marker DR checkpoint berhasil ditanam ke audit_log.
+  [LANGKAH 2/6] Mengekspor Snapshot Database Menggunakan pg_dump...
+  -> Snapshot dump selesai: ./backups/drill/drill_20261112_201047_1028.dump (1.8M)
+  -> Checksum SHA-256: 996a8ccaf724a2878a4b8173ad1a216120d2ebc84a87228f7ca75c1c9addea24
+  [LANGKAH 3/6] Membuat Database Target Drill: kopdes_restore_drill_20261112_201047...
+  CREATE DATABASE
+  [LANGKAH 4/6] Menjalankan pg_restore ke Database Drill...
+  -> Proses restorasi selesai dalam 3 detik.
+  [LANGKAH 5/6] Memverifikasi Integritas Data & Skema Pasca-Restorasi...
+  -> Jumlah Tabel Publik Terpulihkan: 129
+  -> Marker Transaksi Ditemukan: 1
+  -> Partisi untuk audit_log: 16 tabel terdaftar
+  -> Partisi untuk kas_mutasi: 16 tabel terdaftar
+  -> Partisi untuk stok_mutasi: 16 tabel terdaftar
+  -> Tabel dengan RLS Aktif Terpulihkan: 61
+  [LANGKAH 6/6] Membersihkan Database Temporer Drill...
+  DROP DATABASE
+  -> Database kopdes_restore_drill_20261112_201047 berhasil dihapus secara bersih.
+  =============================================================================
+  [RESTORE-DRILL] HASIL LATIHAN PEMULIHAN BENCANA: BERHASIL 100% (SUCCESS)
+  Dump File        : ./backups/drill/drill_20261112_201047_1028.dump
+  Ukuran Dump      : 1.8M
+  Waktu Restorasi  : 3 detik
+  Tabel Dipulihkan : 129 tabel
+  Tabel RLS Aktif  : 61 tabel
+  Integritas Data  : Marker drill_20261112_201047_1028 TERVERIFIKASI IDENTIK
+  Waktu Selesai    : 2026-11-12T13:10:53Z
+  =============================================================================
+  ```
+- **Hasil Verifikasi Pengujian Unit & Integrasi Outbox (`go test -v -race ./internal/outbox`)**:
+  ```text
+  === RUN   TestWhatsAppSMSNotifier_DirectChannelsAndFallback
+  --- PASS: TestWhatsAppSMSNotifier_DirectChannelsAndFallback (0.00s)
+  === RUN   TestWhatsAppSMSNotifier_IntegratedWithOutboxWorker
+      notifier_test.go:205: Sukses: Enqueue notifikasi outbox dan dispatching via worker & WhatsApp gateway 100% terverifikasi!
+  --- PASS: TestWhatsAppSMSNotifier_IntegratedWithOutboxWorker (0.08s)
+  === RUN   TestOutboxWorker_ProcessBatch
+  --- PASS: TestOutboxWorker_ProcessBatch (0.07s)
+  PASS
+  ok  	github.com/kopdes/merah-putih/internal/outbox	2.360s
+  ```
+
+
 
 
 

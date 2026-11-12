@@ -43,6 +43,9 @@ jobs:
       - name: Install PostgreSQL Client & Setup Database Schema
         env:
           PGPASSWORD: kopdes_dev_password
+          APP_ENV: development
+          KOPDES_APP_PASSWORD: kopdes_dev_password
+          DB_PASSWORD: kopdes_dev_password
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
           until pg_isready -h localhost -p 5432 -U postgres; do
@@ -115,6 +118,7 @@ jobs:
           ALLOWED_ORIGINS=https://app.kopdesmerahputih.id
           RATE_LIMIT_RPS=30
           RATE_LIMIT_BURST=60
+          METRICS_TOKEN=super-secret-metrics-token-32-chars-ok!
           EOF
 
       - name: Build and Start Services with Docker Compose

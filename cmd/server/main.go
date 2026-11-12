@@ -154,6 +154,9 @@ func main() {
 	if s := os.Getenv("AES_MASTER_KEY"); s != "" {
 		cfg.AESMasterKey = s
 	}
+	if s := os.Getenv("METRICS_TOKEN"); s != "" {
+		cfg.MetricsToken = s
+	}
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Konfigurasi keamanan aplikasi tidak valid: %v", err)

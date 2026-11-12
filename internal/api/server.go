@@ -57,6 +57,9 @@ func (c *Config) Validate() error {
 	if err := security.ValidateSecretKey("AES_MASTER_KEY", decodeSecretBytes(c.AESMasterKey)); err != nil {
 		return err
 	}
+	if err := security.ValidateSecretKey("METRICS_TOKEN", decodeSecretBytes(c.MetricsToken)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -307,6 +310,9 @@ func (s *Server) Router() http.Handler {
 
 // Start menjalankan HTTP server
 func (s *Server) Start() error {
+	if err := s.cfg.Validate(); err != nil {
+		return fmt.Errorf("gagal memulai server: konfigurasi keamanan tidak valid: %w", err)
+	}
 	return s.httpServer.ListenAndServe()
 }
 

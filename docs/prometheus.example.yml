@@ -1,0 +1,33 @@
+# =============================================================================
+# Contoh Konfigurasi Prometheus untuk Scraping Metrics API Kopdes Merah Putih
+# =============================================================================
+# Endpoint /metrics dilindungi secara ketat:
+# 1. Wajib menyertakan HTTP Header "Authorization: Bearer <METRICS_TOKEN>".
+# 2. Nilai METRICS_TOKEN wajib berukuran minimal 32 byte (256-bit entropy).
+# 3. Server menolak start (gagal inisialisasi) jika token kosong atau < 32 byte.
+# =============================================================================
+
+global:
+  scrape_interval: 15s     # Interval penarikan metrik setiap 15 detik
+  evaluation_interval: 15s # Interval evaluasi alerting rules
+
+scrape_configs:
+  - job_name: 'kopdes-api-service'
+    scheme: 'http'
+    metrics_path: '/metrics'
+    
+    # Konfigurasi Otentikasi Bearer Token (wajib >= 32 byte)
+    authorization:
+      type: 'Bearer'
+      credentials: 'PROD_METRICS_TOKEN_MINIMUM_32_BYTES_SECRET_KEY!'
+      # Catatan Keamanan Produksi:
+      # Sangat disarankan membaca token dari file secret (Kubernetes Secret / Docker Secret):
+      # credentials_file: '/etc/prometheus/secrets/metrics_token'
+
+    static_configs:
+      - targets: ['api:8080']
+        labels:
+          environment: 'production'
+          service: 'kopdes-merah-putih'
+          tenant_model: 'multi_tenant_rls'
+          instance: 'kopdes-node-01'

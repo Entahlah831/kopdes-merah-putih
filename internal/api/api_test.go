@@ -2821,7 +2821,7 @@ func TestTask7_ProtectedMetrics_And_MFA_TOTP(t *testing.T) {
 	// ==========================================
 	// BAGIAN A: Uji Proteksi /metrics (Token & Jaringan Internal)
 	// ==========================================
-	metricsToken := "secret-metrics-token-12345"
+	metricsToken := "secret-metrics-token-12345-32bytes-ok"
 	cfgMetrics := env.Config
 	cfgMetrics.MetricsToken = metricsToken
 	serverMetrics := api.NewServer(env.Pool, cfgMetrics)
@@ -5293,6 +5293,58 @@ func TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release(t 
 	}
 
 	t.Logf("Verifikasi C Berhasil: Pesanan kedaluwarsa melepaskan stok dan kuota promo kembali ke saldo tersedia.")
+}
+
+func TestItem6_MetricsToken_Min32Bytes_RefusesShortOrEmpty(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	// 1. Uji Validate() dengan token kosong -> Wajib Gagal
+	cfgEmpty := env.Config
+	cfgEmpty.MetricsToken = ""
+	errEmpty := cfgEmpty.Validate()
+	if errEmpty == nil {
+		t.Fatalf("SEHARUSNYA GAGAL: Config.Validate() harus menolak METRICS_TOKEN kosong!")
+	}
+	if !strings.Contains(errEmpty.Error(), "METRICS_TOKEN") || !strings.Contains(errEmpty.Error(), "panjang minimal 32 byte") {
+		t.Fatalf("Pesan error harus menyebut METRICS_TOKEN dan syarat minimal 32 byte, didapat: %v", errEmpty)
+	}
+
+	// 2. Uji Validate() dengan token pendek (< 32 byte) -> Wajib Gagal
+	cfgShort := env.Config
+	cfgShort.MetricsToken = "token-pendek-16b"
+	errShort := cfgShort.Validate()
+	if errShort == nil {
+		t.Fatalf("SEHARUSNYA GAGAL: Config.Validate() harus menolak METRICS_TOKEN kurang dari 32 byte!")
+	}
+	if !strings.Contains(errShort.Error(), "METRICS_TOKEN") {
+		t.Fatalf("Pesan error harus menyebut METRICS_TOKEN, didapat: %v", errShort)
+	}
+
+	// 3. Uji Start() Server dengan konfigurasi token kosong -> Wajib Menolak Memulai Server
+	srvEmpty := api.NewServer(env.Pool, cfgEmpty)
+	errStartEmpty := srvEmpty.Start()
+	if errStartEmpty == nil {
+		t.Fatalf("SEHARUSNYA GAGAL: Server.Start() harus menolak berjalan jika METRICS_TOKEN kosong!")
+	}
+	if !strings.Contains(errStartEmpty.Error(), "konfigurasi keamanan tidak valid") {
+		t.Fatalf("Pesan penolakan start harus jelas, didapat: %v", errStartEmpty)
+	}
+
+	// 4. Uji Start() Server dengan konfigurasi token pendek -> Wajib Menolak Memulai Server
+	srvShort := api.NewServer(env.Pool, cfgShort)
+	errStartShort := srvShort.Start()
+	if errStartShort == nil {
+		t.Fatalf("SEHARUSNYA GAGAL: Server.Start() harus menolak berjalan jika METRICS_TOKEN pendek!")
+	}
+
+	// 5. Uji Validate() dengan token valid >= 32 byte -> Wajib Berhasil
+	cfgValid := env.Config
+	cfgValid.MetricsToken = "valid-secret-metrics-token-32-bytes-ok!"
+	if errValid := cfgValid.Validate(); errValid != nil {
+		t.Fatalf("Config.Validate() gagal pada token valid >= 32 byte: %v", errValid)
+	}
+
+	t.Logf("Sukses: Validasi METRICS_TOKEN >= 32 byte dan pencegahan startup server terbukti andal.")
 }
 
 

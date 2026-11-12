@@ -20,7 +20,7 @@ services:
       - kopdes_pgdata:/var/lib/postgresql/data
       # Inisialisasi role kopdes_app non-superuser dan eksekusi seluruh migrasi berurutan
       - ./db/docker-init:/docker-entrypoint-initdb.d:ro
-      - ./db/migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ./db/migrations:/docker-migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_INIT_USER:-postgres} -d ${DB_NAME:-kopdes_db}"]
       interval: 5s

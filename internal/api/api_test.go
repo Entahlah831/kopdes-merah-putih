@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/api/handlers"
+	"github.com/kopdes/merah-putih/internal/auth"
 	"github.com/kopdes/merah-putih/internal/qris"
 	"github.com/kopdes/merah-putih/internal/security"
 	"github.com/kopdes/merah-putih/internal/simkopdes"
@@ -237,6 +238,12 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 
 	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
+	tm := auth.NewTokenManager(cfg.JWTSecret, "kopdes-merah-putih-api")
+	adminTok, err := tm.GenerateToken(adminUserID, koperasiID, "admin", false, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("generate admin token error: %v", err)
+	}
+
 	loginHelper := func(email, pwd string) string {
 		body, _ := json.Marshal(handlers.LoginRequest{Email: email, Password: pwd})
 		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(body))
@@ -248,7 +255,6 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		return res.Data.AccessToken
 	}
-	adminTok := loginHelper(adminEmail, "AdminPass123!")
 	anggotaTok := loginHelper(anggotaEmail, "AnggotaPass123!")
 
 	return &TestEnv{
@@ -327,6 +333,82 @@ func (env *TestEnv) createAndLoginUserFull(t testing.TB, roleName string) (handl
 		Data handlers.LoginResponse `json:"data"`
 	}
 	_ = json.Unmarshal(recLogin.Body.Bytes(), &loginRes)
+
+	if recLogin.Code == http.StatusForbidden {
+		var resForbidden struct {
+			Data struct {
+				SetupToken string `json:"setup_token"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(recLogin.Body.Bytes(), &resForbidden)
+		if resForbidden.Data.SetupToken != "" {
+			setupTok := resForbidden.Data.SetupToken
+
+			// 1. Setup MFA
+			reqSetup := httptest.NewRequest("POST", "/api/v1/auth/mfa/setup", nil)
+			reqSetup.Header.Set("Authorization", "Bearer "+setupTok)
+			recSetup := httptest.NewRecorder()
+			env.Server.Router().ServeHTTP(recSetup, reqSetup)
+
+			var resSetup struct {
+				Data struct {
+					Secret string `json:"secret"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(recSetup.Body.Bytes(), &resSetup)
+			secret := resSetup.Data.Secret
+
+			code, _ := security.GenerateTOTPCode(secret, time.Now())
+
+			// 2. Enable MFA
+			bodyEnable, _ := json.Marshal(map[string]string{
+				"secret":    secret,
+				"totp_code": code,
+			})
+			reqEnable := httptest.NewRequest("POST", "/api/v1/auth/mfa/enable", bytes.NewReader(bodyEnable))
+			reqEnable.Header.Set("Authorization", "Bearer "+setupTok)
+			reqEnable.Header.Set("Content-Type", "application/json")
+			recEnable := httptest.NewRecorder()
+			env.Server.Router().ServeHTTP(recEnable, reqEnable)
+
+			var resEnableResp struct {
+				Data struct {
+					RecoveryCodes []string `json:"recovery_codes"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(recEnable.Body.Bytes(), &resEnableResp)
+
+			// 3. Login ulang (mendapatkan mfa_session_token)
+			reqLogin2 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
+			recLogin2 := httptest.NewRecorder()
+			env.Server.Router().ServeHTTP(recLogin2, reqLogin2)
+
+			var resMFASess struct {
+				Data struct {
+					MFASessionToken string `json:"mfa_session_token"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(recLogin2.Body.Bytes(), &resMFASess)
+
+			// 4. Verify MFA menggunakan recovery code pertama
+			if len(resEnableResp.Data.RecoveryCodes) > 0 {
+				bodyVerify, _ := json.Marshal(map[string]string{
+					"mfa_session_token": resMFASess.Data.MFASessionToken,
+					"recovery_code":     resEnableResp.Data.RecoveryCodes[0],
+				})
+				reqVerify := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyVerify))
+				reqVerify.Header.Set("Content-Type", "application/json")
+				recVerify := httptest.NewRecorder()
+				env.Server.Router().ServeHTTP(recVerify, reqVerify)
+
+				_ = json.Unmarshal(recVerify.Body.Bytes(), &loginRes)
+				if loginRes.Data.AccessToken != "" {
+					return loginRes.Data, email, pwdPlain, userID
+				}
+			}
+		}
+	}
+
 	if loginRes.Data.AccessToken == "" {
 		t.Fatalf("Login gagal untuk user %s (status %d): %s", email, recLogin.Code, recLogin.Body.String())
 	}
@@ -3401,6 +3483,281 @@ func TestItem2_Metrics_AlwaysRequiresToken_EvenBehindProxy(t *testing.T) {
 	}
 
 	t.Logf("Sukses: Endpoint /metrics mewajibkan token selalu dan menolak asumsi IP internal!")
+}
+
+func TestItem3_MFA_Mandatory_Attempts_NoReplay_RecoveryCodes(t *testing.T) {
+	env := setupAPITestEnv(t)
+
+	ctx := context.Background()
+	conn, err := env.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire error: %v", err)
+	}
+	defer conn.Release()
+
+	_, _ = conn.Exec(ctx, "RESET ROLE;")
+
+	// Buat user dengan peran 'ketua'
+	ketuaEmail := fmt.Sprintf("ketua_%s@kopdes.id", uuid.New().String()[:8])
+	ketuaHash := security.HashBlindIndex(ketuaEmail, []byte(env.Config.BlindIndexSecret))
+	ketuaPwd := "KetuaPass123!"
+	ketuaPwdHash, _ := security.HashPassword(ketuaPwd)
+	ketuaUserID := uuid.New()
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap)
+		VALUES ($1, $2, $3, $2, $3, $4, 'Ketua Koperasi');
+	`, ketuaUserID, []byte("enkripsi"), ketuaHash, ketuaPwdHash)
+	if err != nil {
+		t.Fatalf("insert ketua error: %v", err)
+	}
+
+	var ketuaRoleID uuid.UUID
+	err = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'ketua' LIMIT 1").Scan(&ketuaRoleID)
+	if err != nil || ketuaRoleID == uuid.Nil {
+		ketuaRoleID = uuid.New()
+		_, _ = conn.Exec(ctx, "INSERT INTO roles (id, kode, nama, deskripsi) VALUES ($1, 'ketua', 'ketua', 'Ketua Koperasi') ON CONFLICT (kode) DO NOTHING;", ketuaRoleID)
+		_ = conn.QueryRow(ctx, "SELECT id FROM roles WHERE kode = 'ketua'").Scan(&ketuaRoleID)
+	}
+
+	_, _ = conn.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id, koperasi_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (koperasi_id, user_id, role_id) DO NOTHING;
+	`, ketuaUserID, ketuaRoleID, env.KoperasiID)
+
+	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
+
+	// -------------------------------------------------------------------------
+	// Skenario 1: Login ketua sebelum MFA aktif HARUS DITOLAK (403 Forbidden)
+	// -------------------------------------------------------------------------
+	bodyLogin1, _ := json.Marshal(handlers.LoginRequest{Email: ketuaEmail, Password: ketuaPwd})
+	reqLogin1 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin1, reqLogin1)
+
+	if recLogin1.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden for ketua login without MFA active, got %d: %s", recLogin1.Code, recLogin1.Body.String())
+	}
+
+	var resLogin1 struct {
+		Success bool `json:"success"`
+		Error   struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Data struct {
+			MFARequired      bool   `json:"mfa_required"`
+			MFASetupRequired bool   `json:"mfa_setup_required"`
+			SetupToken       string `json:"setup_token"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recLogin1.Body.Bytes(), &resLogin1)
+	if !resLogin1.Data.MFASetupRequired || resLogin1.Data.SetupToken == "" {
+		t.Fatalf("Expected mfa_setup_required=true and setup_token in 403 response, got: %+v", resLogin1)
+	}
+
+	setupToken := resLogin1.Data.SetupToken
+
+	// -------------------------------------------------------------------------
+	// Skenario 2: Setup MFA dengan setup_token dan enable MFA (dapatkan recovery codes)
+	// -------------------------------------------------------------------------
+	reqSetup := httptest.NewRequest("POST", "/api/v1/auth/mfa/setup", nil)
+	reqSetup.Header.Set("Authorization", "Bearer "+setupToken)
+	recSetup := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSetup, reqSetup)
+
+	if recSetup.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/auth/mfa/setup with setup_token, got %d: %s", recSetup.Code, recSetup.Body.String())
+	}
+
+	var resSetup struct {
+		Data struct {
+			Secret string `json:"secret"`
+			QRURI  string `json:"qr_uri"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recSetup.Body.Bytes(), &resSetup)
+	totpSecret := resSetup.Data.Secret
+
+	validCode, err := security.GenerateTOTPCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode error: %v", err)
+	}
+
+	bodyEnable, _ := json.Marshal(map[string]string{
+		"secret":    totpSecret,
+		"totp_code": validCode,
+	})
+	reqEnable := httptest.NewRequest("POST", "/api/v1/auth/mfa/enable", bytes.NewReader(bodyEnable))
+	reqEnable.Header.Set("Authorization", "Bearer "+setupToken)
+	reqEnable.Header.Set("Content-Type", "application/json")
+	recEnable := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recEnable, reqEnable)
+
+	if recEnable.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/auth/mfa/enable, got %d: %s", recEnable.Code, recEnable.Body.String())
+	}
+
+	var resEnable struct {
+		Data struct {
+			RecoveryCodes []string `json:"recovery_codes"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recEnable.Body.Bytes(), &resEnable)
+	if len(resEnable.Data.RecoveryCodes) != 8 {
+		t.Fatalf("Expected 8 one-time recovery codes, got %d: %+v", len(resEnable.Data.RecoveryCodes), resEnable.Data.RecoveryCodes)
+	}
+	recoveryCodes := resEnable.Data.RecoveryCodes
+
+	// -------------------------------------------------------------------------
+	// Skenario 3: Login ketua setelah MFA aktif -> mengembalikan mfa_session_token
+	// -------------------------------------------------------------------------
+	reqLogin2 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin2, reqLogin2)
+
+	if recLogin2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK after MFA active, got %d: %s", recLogin2.Code, recLogin2.Body.String())
+	}
+
+	var resLogin2 struct {
+		Data struct {
+			MFARequired     bool   `json:"mfa_required"`
+			MFASessionToken string `json:"mfa_session_token"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recLogin2.Body.Bytes(), &resLogin2)
+	sessionToken := resLogin2.Data.MFASessionToken
+	if !resLogin2.Data.MFARequired || sessionToken == "" {
+		t.Fatalf("Expected mfa_required=true and session_token, got: %+v", resLogin2)
+	}
+
+	// -------------------------------------------------------------------------
+	// Skenario 4: Batas Percobaan per mfa_session_token (Maksimal 3 kali)
+	// -------------------------------------------------------------------------
+	// Percobaan 1: Kode salah -> 401
+	bodyWrongMFA, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken,
+		"totp_code":         "000000",
+	})
+	reqV1 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyWrongMFA))
+	recV1 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV1, reqV1)
+	if recV1.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 on attempt 1, got %d", recV1.Code)
+	}
+
+	// Percobaan 2: Kode salah -> 401
+	reqV2 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyWrongMFA))
+	recV2 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV2, reqV2)
+	if recV2.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 on attempt 2, got %d", recV2.Code)
+	}
+
+	// Percobaan 3: Kode salah -> 429 atau 401 (terkunci)
+	reqV3 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyWrongMFA))
+	recV3 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV3, reqV3)
+	if recV3.Code != http.StatusTooManyRequests && recV3.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 429 Too Many Requests or 401 on attempt 3, got %d: %s", recV3.Code, recV3.Body.String())
+	}
+
+	// Percobaan 4: Menggunakan kode yang benar pada sesi yang telah terkunci -> HARUS DITOLAK
+	freshCode, _ := security.GenerateTOTPCode(totpSecret, time.Now())
+	bodyLockedMFA, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken,
+		"totp_code":         freshCode,
+	})
+	reqV4 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyLockedMFA))
+	recV4 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV4, reqV4)
+	if recV4.Code != http.StatusTooManyRequests && recV4.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected locked session rejection on attempt 4, got %d", recV4.Code)
+	}
+
+	// -------------------------------------------------------------------------
+	// Skenario 5: Cegah Pakai Ulang Kode TOTP dalam Jendela yang Sama (Anti-Replay)
+	// -------------------------------------------------------------------------
+	// Login ulang untuk sesi baru
+	reqLogin3 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin3 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin3, reqLogin3)
+	_ = json.Unmarshal(recLogin3.Body.Bytes(), &resLogin2)
+	sessionToken3 := resLogin2.Data.MFASessionToken
+
+	currentCode, _ := security.GenerateTOTPCode(totpSecret, time.Now())
+	bodyValidMFA, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken3,
+		"totp_code":         currentCode,
+	})
+	reqV5 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyValidMFA))
+	recV5 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV5, reqV5)
+	if recV5.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on first valid TOTP verify, got %d: %s", recV5.Code, recV5.Body.String())
+	}
+
+	// Buat sesi baru lagi di detik/jendela yang sama dan gunakan currentCode yang sama -> HARUS DITOLAK (Replay)
+	reqLogin4 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin4 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin4, reqLogin4)
+	_ = json.Unmarshal(recLogin4.Body.Bytes(), &resLogin2)
+	sessionToken4 := resLogin2.Data.MFASessionToken
+
+	bodyReplayMFA, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken4,
+		"totp_code":         currentCode,
+	})
+	reqV6 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyReplayMFA))
+	recV6 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV6, reqV6)
+	if recV6.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for replayed TOTP code within same window, got %d: %s", recV6.Code, recV6.Body.String())
+	}
+
+	// -------------------------------------------------------------------------
+	// Skenario 6: Kode Pemulihan Sekali Pakai (One-time Recovery Codes)
+	// -------------------------------------------------------------------------
+	// Buat sesi login baru untuk recovery code
+	reqLogin5 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin5 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin5, reqLogin5)
+	_ = json.Unmarshal(recLogin5.Body.Bytes(), &resLogin2)
+	sessionToken5 := resLogin2.Data.MFASessionToken
+
+	chosenRecoveryCode := recoveryCodes[0]
+	bodyRecovery, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken5,
+		"recovery_code":     chosenRecoveryCode,
+	})
+	reqV7 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyRecovery))
+	recV7 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV7, reqV7)
+	if recV7.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK using valid recovery code, got %d: %s", recV7.Code, recV7.Body.String())
+	}
+
+	// Coba pakai ulang recovery code yang sama di sesi baru -> HARUS DITOLAK (sudah hangus/burned)
+	reqLogin6 := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin1))
+	recLogin6 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recLogin6, reqLogin6)
+	_ = json.Unmarshal(recLogin6.Body.Bytes(), &resLogin2)
+	sessionToken6 := resLogin2.Data.MFASessionToken
+
+	bodyBurnedRecovery, _ := json.Marshal(map[string]string{
+		"mfa_session_token": sessionToken6,
+		"recovery_code":     chosenRecoveryCode,
+	})
+	reqV8 := httptest.NewRequest("POST", "/api/v1/auth/mfa/verify", bytes.NewReader(bodyBurnedRecovery))
+	recV8 := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recV8, reqV8)
+	if recV8.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized for reused/burned recovery code, got %d: %s", recV8.Code, recV8.Body.String())
+	}
+
+	t.Logf("Sukses: MFA wajib untuk peran istimewa, limit percobaan sesi, anti-replay, dan recovery codes sekali pakai!")
 }
 
 

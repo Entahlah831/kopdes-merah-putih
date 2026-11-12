@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,12 +155,43 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		targetKoperasiID = koperasiID.UUID
 	}
 
-	// Periksa apakah MFA TOTP aktif untuk pengguna ini (Task 7)
+	// Periksa apakah MFA TOTP aktif untuk pengguna ini (Task 7 & Item 3)
 	var (
 		mfaEnabled      bool
 		totpSecretBytes []byte
+		lastTotpStep    int64
+		recoveryBytes   []byte
 	)
-	_ = h.pool.QueryRow(ctx, "SELECT mfa_enabled, totp_secret_enkripsi FROM fn_get_user_mfa($1);", userID).Scan(&mfaEnabled, &totpSecretBytes)
+	_ = h.pool.QueryRow(ctx, "SELECT mfa_enabled, totp_secret_enkripsi, last_totp_step, mfa_recovery_codes FROM fn_get_user_mfa($1);", userID).Scan(&mfaEnabled, &totpSecretBytes, &lastTotpStep, &recoveryBytes)
+
+	// Peran istimewa (admin, bendahara, ketua, platform admin) WAJIB mengaktifkan MFA (login ditolak sampai MFA aktif)
+	isPrivileged := isSuperAdmin || roleName == "admin" || roleName == "bendahara" || roleName == "ketua"
+
+	if isPrivileged && !mfaEnabled {
+		setupToken, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, "mfa_setup", false, 15*time.Minute)
+		if err != nil {
+			response.InternalServerError(w, "Gagal membuat token setup MFA")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error": map[string]interface{}{
+				"code":    "MFA_MANDATORY_SETUP_REQUIRED",
+				"message": "Pengguna dengan peran istimewa (admin/bendahara/ketua) wajib mengaktifkan MFA TOTP sebelum dapat masuk ke sistem.",
+			},
+			"data": map[string]interface{}{
+				"mfa_required":       true,
+				"mfa_setup_required": true,
+				"setup_token":        setupToken,
+				"user_id":            userID,
+				"role":               roleName,
+			},
+		})
+		return
+	}
 
 	if mfaEnabled {
 		sessionBytes := make([]byte, 32)
@@ -176,8 +208,8 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 		_, err = h.pool.Exec(ctx, `
 			INSERT INTO mfa_login_sessions (
-				user_id, koperasi_id, role_name, is_super_admin, session_token, expires_at
-			) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes');
+				user_id, koperasi_id, role_name, is_super_admin, session_token, expires_at, attempts, is_locked
+			) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes', 0, false);
 		`, userID, kopIDParam, roleName, isSuperAdmin, sessionToken)
 		if err != nil {
 			response.InternalServerError(w, "Gagal mencatat sesi login MFA")
@@ -387,6 +419,11 @@ func (h *AuthHandler) HandleGetProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claims.Role == "mfa_setup" {
+		response.Forbidden(w, "Token setup MFA tidak diizinkan mengakses data profil")
+		return
+	}
+
 	ctx := r.Context()
 	var (
 		namaLengkap string
@@ -479,24 +516,44 @@ func (h *AuthHandler) HandleMFAEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recoveryCodes, err := security.GenerateRecoveryCodes(8)
+	if err != nil {
+		response.InternalServerError(w, "Gagal menghasilkan kode pemulihan")
+		return
+	}
+
+	recoveryHashes := make([]string, len(recoveryCodes))
+	for i, c := range recoveryCodes {
+		recoveryHashes[i] = security.HashRecoveryCode(c)
+	}
+	recoveryJSON, _ := json.Marshal(recoveryHashes)
+	recoveryAAD := []byte(fmt.Sprintf("users:recovery:%s", claims.UserID))
+	encryptedRecovery, err := h.keyProvider.EncryptWithAAD(recoveryJSON, recoveryAAD)
+	if err != nil {
+		response.InternalServerError(w, "Gagal mengenkripsi kode pemulihan")
+		return
+	}
+
 	ctx := r.Context()
-	_, err = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2);", claims.UserID, encryptedSecret)
+	_, err = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2, 0, $3);", claims.UserID, encryptedSecret, encryptedRecovery)
 	if err != nil {
 		response.InternalServerError(w, "Gagal mengaktifkan MFA pengguna")
 		return
 	}
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"message": "MFA TOTP berhasil diaktifkan",
+		"message":        "MFA TOTP berhasil diaktifkan",
+		"recovery_codes": recoveryCodes,
 	})
 }
 
 type MFAVerifyRequest struct {
 	MFASessionToken string `json:"mfa_session_token"`
 	TOTPCode        string `json:"totp_code"`
+	RecoveryCode    string `json:"recovery_code"`
 }
 
-// HandleMFAVerify memvalidasi kode TOTP tahap kedua login dan menerbitkan Access & Refresh Token
+// HandleMFAVerify memvalidasi kode TOTP / recovery code tahap kedua login dan menerbitkan Access & Refresh Token
 func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	var req MFAVerifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -504,8 +561,8 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.MFASessionToken == "" || req.TOTPCode == "" {
-		response.BadRequest(w, "Sesi MFA token dan kode TOTP wajib disertakan")
+	if req.MFASessionToken == "" || (req.TOTPCode == "" && req.RecoveryCode == "") {
+		response.BadRequest(w, "Sesi MFA token dan kode TOTP atau recovery code wajib disertakan")
 		return
 	}
 
@@ -516,52 +573,159 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		koperasiID   uuid.NullUUID
 		roleName     string
 		isSuperAdmin bool
+		attempts     int
+		isLocked     bool
 	)
 
 	err := h.pool.QueryRow(ctx, `
-		SELECT id, user_id, koperasi_id, role_name, is_super_admin
+		SELECT id, user_id, koperasi_id, role_name, is_super_admin, attempts, is_locked
 		FROM mfa_login_sessions
 		WHERE session_token = $1 AND expires_at > NOW();
-	`, req.MFASessionToken).Scan(&sessionID, &userID, &koperasiID, &roleName, &isSuperAdmin)
+	`, req.MFASessionToken).Scan(&sessionID, &userID, &koperasiID, &roleName, &isSuperAdmin, &attempts, &isLocked)
 
 	if err != nil {
 		response.Unauthorized(w, "Sesi MFA tidak valid atau telah kedaluwarsa")
 		return
 	}
 
-	// Ambil secret terenkripsi pengguna
+	if isLocked || attempts >= 3 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error": map[string]interface{}{
+				"code":    "MFA_SESSION_LOCKED",
+				"message": "Sesi MFA terkunci karena melebihi batas percobaan (maksimal 3 kali). Silakan login ulang.",
+			},
+		})
+		return
+	}
+
+	recordFailure := func(reasonCode, reasonMsg string) {
+		var newAttempts int
+		var lockedNow bool
+		_ = h.pool.QueryRow(ctx, `
+			UPDATE mfa_login_sessions
+			SET attempts = attempts + 1,
+			    is_locked = (attempts + 1 >= 3)
+			WHERE id = $1
+			RETURNING attempts, is_locked;
+		`, sessionID).Scan(&newAttempts, &lockedNow)
+
+		if lockedNow || newAttempts >= 3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error": map[string]interface{}{
+					"code":    "MFA_SESSION_LOCKED",
+					"message": "Sesi MFA terkunci karena melebihi batas percobaan (maksimal 3 kali). Silakan login ulang.",
+				},
+			})
+			return
+		}
+
+		response.Unauthorized(w, reasonMsg)
+	}
+
+	// Ambil secret dan konfigurasi MFA pengguna
 	var (
 		mfaEnabled      bool
 		encryptedSecret []byte
+		lastTotpStep    int64
+		recoveryBytes   []byte
 	)
 	err = h.pool.QueryRow(ctx, `
-		SELECT mfa_enabled, totp_secret_enkripsi
+		SELECT mfa_enabled, totp_secret_enkripsi, last_totp_step, mfa_recovery_codes
 		FROM fn_get_user_mfa($1);
-	`, userID).Scan(&mfaEnabled, &encryptedSecret)
+	`, userID).Scan(&mfaEnabled, &encryptedSecret, &lastTotpStep, &recoveryBytes)
 	if err != nil || !mfaEnabled || len(encryptedSecret) == 0 {
 		response.Unauthorized(w, "Konfigurasi MFA pengguna tidak ditemukan")
 		return
 	}
-
-	var namaLengkap string
-	_ = h.pool.QueryRow(ctx, "SELECT nama_lengkap FROM users WHERE id = $1;", userID).Scan(&namaLengkap)
 
 	if h.keyProvider == nil {
 		response.InternalServerError(w, "Enkripsi master key belum dikonfigurasi")
 		return
 	}
 
-	aad := []byte(fmt.Sprintf("users:totp:%s", userID))
-	plainSecret, err := h.keyProvider.DecryptWithAAD(encryptedSecret, aad)
-	if err != nil {
-		response.InternalServerError(w, "Gagal mendekripsi secret MFA")
-		return
+	// Tentukan apakah verifikasi via Recovery Code atau TOTP Code
+	useRecovery := req.RecoveryCode != "" || (len(strings.TrimSpace(req.TOTPCode)) > 6 && strings.Contains(req.TOTPCode, "-"))
+	recoveryInput := req.RecoveryCode
+	if recoveryInput == "" && useRecovery {
+		recoveryInput = req.TOTPCode
 	}
 
-	if !security.ValidateTOTPCode(string(plainSecret), req.TOTPCode, time.Now()) {
-		response.Unauthorized(w, "Kode TOTP tidak valid atau telah kedaluwarsa")
-		return
+	if useRecovery {
+		if len(recoveryBytes) == 0 {
+			recordFailure("INVALID_RECOVERY_CODE", "Kode pemulihan tidak valid atau sudah pernah digunakan")
+			return
+		}
+
+		recAAD := []byte(fmt.Sprintf("users:recovery:%s", userID))
+		decryptedJSON, err := h.keyProvider.DecryptWithAAD(recoveryBytes, recAAD)
+		if err != nil {
+			response.InternalServerError(w, "Gagal memproses kode pemulihan")
+			return
+		}
+
+		var hashes []string
+		if err := json.Unmarshal(decryptedJSON, &hashes); err != nil {
+			response.InternalServerError(w, "Gagal membaca format kode pemulihan")
+			return
+		}
+
+		targetHash := security.HashRecoveryCode(recoveryInput)
+		matchedIdx := -1
+		for i, hVal := range hashes {
+			if hVal == targetHash {
+				matchedIdx = i
+				break
+			}
+		}
+
+		if matchedIdx == -1 {
+			recordFailure("INVALID_RECOVERY_CODE", "Kode pemulihan tidak valid atau sudah pernah digunakan")
+			return
+		}
+
+		// Hanguskan kode pemulihan yang sudah digunakan (one-time use / burn)
+		remainingHashes := append(hashes[:matchedIdx], hashes[matchedIdx+1:]...)
+		newJSON, _ := json.Marshal(remainingHashes)
+		newEncrypted, err := h.keyProvider.EncryptWithAAD(newJSON, recAAD)
+		if err != nil {
+			response.InternalServerError(w, "Gagal memperbarui kode pemulihan")
+			return
+		}
+
+		_, _ = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2, $3, $4);", userID, encryptedSecret, lastTotpStep, newEncrypted)
+	} else {
+		// Verifikasi kode TOTP 6-digit
+		totpAAD := []byte(fmt.Sprintf("users:totp:%s", userID))
+		plainSecret, err := h.keyProvider.DecryptWithAAD(encryptedSecret, totpAAD)
+		if err != nil {
+			response.InternalServerError(w, "Gagal mendekripsi secret MFA")
+			return
+		}
+
+		currentStep := time.Now().Unix() / 30
+		// Cegah pakai ulang kode TOTP dalam jendela yang sama (Anti-Replay)
+		if currentStep <= lastTotpStep {
+			recordFailure("TOTP_REPLAY_DETECTED", "Kode TOTP sudah pernah digunakan dalam jendela waktu ini. Tunggu kode berikutnya.")
+			return
+		}
+
+		if !security.ValidateTOTPCode(string(plainSecret), req.TOTPCode, time.Now()) {
+			recordFailure("INVALID_TOTP_CODE", "Kode TOTP tidak valid atau telah kedaluwarsa")
+			return
+		}
+
+		// Update last_totp_step agar tidak bisa di-replay di jendela yang sama
+		_, _ = h.pool.Exec(ctx, "SELECT fn_set_user_mfa($1, true, $2, $3, $4);", userID, encryptedSecret, currentStep, recoveryBytes)
 	}
+
+	var namaLengkap string
+	_ = h.pool.QueryRow(ctx, "SELECT nama_lengkap FROM users WHERE id = $1;", userID).Scan(&namaLengkap)
 
 	// Hapus sesi MFA setelah verifikasi berhasil (one-time use)
 	_, _ = h.pool.Exec(ctx, "DELETE FROM mfa_login_sessions WHERE id = $1;", sessionID)

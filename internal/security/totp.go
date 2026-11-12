@@ -4,8 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -70,4 +72,27 @@ func GenerateTOTPURI(secretBase32, accountName, issuer string) string {
 	escapedAccount := url.QueryEscape(accountName)
 	return fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
 		escapedIssuer, escapedAccount, secretBase32, escapedIssuer)
+}
+
+// GenerateRecoveryCodes menghasilkan sejumlah kode pemulihan acak 8-karakter hex (e.g. "a1b2-c3d4")
+func GenerateRecoveryCodes(count int) ([]string, error) {
+	if count <= 0 {
+		count = 8
+	}
+	codes := make([]string, count)
+	for i := 0; i < count; i++ {
+		b := make([]byte, 4)
+		if _, err := rand.Read(b); err != nil {
+			return nil, fmt.Errorf("gagal menghasilkan recovery code: %w", err)
+		}
+		codes[i] = fmt.Sprintf("%04x-%04x", b[:2], b[2:])
+	}
+	return codes, nil
+}
+
+// HashRecoveryCode menghasilkan hash SHA-256 dari kode pemulihan untuk disimpan aman
+func HashRecoveryCode(code string) string {
+	clean := strings.ToLower(strings.TrimSpace(code))
+	h := sha256.Sum256([]byte(clean))
+	return hex.EncodeToString(h[:])
 }

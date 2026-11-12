@@ -14,12 +14,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	kopdes "github.com/kopdes/merah-putih"
 	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/auth"
@@ -3794,6 +3796,187 @@ func TestItem4_ProductionRolePassword_RefusesDefault(t *testing.T) {
 	}
 
 	t.Logf("Sukses: Validasi password role database pada profil produksi terbukti menolak default dev dan mewajibkan env!")
+}
+
+func TestItem5_HashChain_OrderedLocks_NoDeadlock_UnderLoad(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	// 1. Verifikasi Keberadaan Indeks Pencarian Baris Terakhir (Last-Row Index)
+	indexCheckQuery := `
+		SELECT indexname, tablename 
+		FROM pg_indexes 
+		WHERE indexname IN (
+			'idx_audit_log_last_row',
+			'idx_kas_mutasi_last_row',
+			'idx_pembayaran_verifikasi_log_last_row',
+			'idx_stok_mutasi_last_row',
+			'idx_pendaftaran_status_log_last_row',
+			'idx_anggota_status_log_last_row'
+		);
+	`
+	rows, err := env.Pool.Query(ctx, indexCheckQuery)
+	if err != nil {
+		t.Fatalf("Query pg_indexes failed: %v", err)
+	}
+	defer rows.Close()
+
+	foundIndexes := make(map[string]bool)
+	for rows.Next() {
+		var idxName, tblName string
+		_ = rows.Scan(&idxName, &tblName)
+		foundIndexes[idxName] = true
+	}
+	expectedIndexes := []string{
+		"idx_audit_log_last_row",
+		"idx_kas_mutasi_last_row",
+		"idx_pembayaran_verifikasi_log_last_row",
+		"idx_stok_mutasi_last_row",
+		"idx_pendaftaran_status_log_last_row",
+		"idx_anggota_status_log_last_row",
+	}
+	for _, exp := range expectedIndexes {
+		if !foundIndexes[exp] {
+			t.Errorf("Missing last-row index in schema: %s", exp)
+		}
+	}
+
+	// 2. Buat pembayaran & periode kas untuk foreign key
+	var periodeKasID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO periode_kas (id, koperasi_id, periode, saldo_awal, status, dibuka_oleh)
+		VALUES (uuid_generate_v7(), $1, '2026-11', 0, 'buka', $2)
+		ON CONFLICT (koperasi_id, periode) DO UPDATE SET status = 'buka'
+		RETURNING id;
+	`, env.KoperasiID, env.AdminUserID).Scan(&periodeKasID)
+	if err != nil {
+		t.Fatalf("Insert periode_kas failed: %v", err)
+	}
+
+	var paymentID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO pembayaran (
+			id, koperasi_id, no_pembayaran, pembayar_user_id, anggota_id,
+			metode_pembayaran_id, rekening_qris_id, jenis_transaksi,
+			nominal_dasar, kode_unik, kode_unik_awal, berlaku_sampai, created_by
+		) VALUES (
+			uuid_generate_v7(), $1, 'PAY-TEST-HC', $2, $3,
+			$4, $5, 'iuran_bulanan',
+			150000, 100, 100, NOW() + INTERVAL '1 hour', $2
+		) RETURNING id;
+	`, env.KoperasiID, env.AdminUserID, env.AnggotaID, env.MetodeID, env.RekeningID).Scan(&paymentID)
+	if err != nil {
+		t.Fatalf("Insert dummy payment failed: %v", err)
+	}
+
+	// 3. Uji Beban Paralel: 30 Transaksi Konkuren Menulis ke kas_mutasi + audit_log + verifikasi log
+	// Sesuai Hierarki Kanonikal: Level 2 (audit_log) -> Level 3 (kas_mutasi) -> Level 4 (pembayaran_verifikasi_log)
+	concurrentWorkers := 30
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrentWorkers)
+
+	for i := 0; i < concurrentWorkers; i++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+
+			conn, aErr := env.Pool.Acquire(ctx)
+			if aErr != nil {
+				errCh <- fmt.Errorf("worker %d: acquire failed: %w", workerIdx, aErr)
+				return
+			}
+			defer conn.Release()
+
+			tx, txErr := conn.Begin(ctx)
+			if txErr != nil {
+				errCh <- fmt.Errorf("worker %d: begin failed: %w", workerIdx, txErr)
+				return
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+
+			// Set tenant context
+			if _, sErr := tx.Exec(ctx, "SELECT set_config('app.current_koperasi_id', $1, true);", env.KoperasiID.String()); sErr != nil {
+				errCh <- fmt.Errorf("worker %d: set_config failed: %w", workerIdx, sErr)
+				return
+			}
+
+			// LEVEL 2: Insert audit_log
+			_, insErr := tx.Exec(ctx, `
+				INSERT INTO audit_log (
+					id, koperasi_id, user_id, nama_tabel, record_id, aksi,
+					data_baru, created_at
+				) VALUES (
+					uuid_generate_v7(), $1, $2, 'pembayaran', $3, 'APPROVE',
+					'{"test": true}'::jsonb, clock_timestamp()
+				);
+			`, env.KoperasiID, env.AdminUserID, paymentID)
+			if insErr != nil {
+				errCh <- fmt.Errorf("worker %d: insert audit_log failed: %w", workerIdx, insErr)
+				return
+			}
+
+			// LEVEL 3: Insert kas_mutasi
+			buktiKas := fmt.Sprintf("BKT-%d-%d", workerIdx, time.Now().UnixNano()%1000000)
+			_, insErr = tx.Exec(ctx, `
+				INSERT INTO kas_mutasi (
+					id, koperasi_id, periode_kas_id, no_bukti_kas, jenis, kategori,
+					nominal, pembayaran_id, keterangan, created_by, created_at
+				) VALUES (
+					uuid_generate_v7(), $1, $2, $3, 'pemasukan', 'iuran_pokok_bulanan',
+					1000, $4, 'Uji Beban Hash Chain Paralel', $5, clock_timestamp()
+				);
+			`, env.KoperasiID, periodeKasID, buktiKas, paymentID, env.AdminUserID)
+			if insErr != nil {
+				errCh <- fmt.Errorf("worker %d: insert kas_mutasi failed: %w", workerIdx, insErr)
+				return
+			}
+
+			// LEVEL 4: Insert pembayaran_verifikasi_log
+			_, insErr = tx.Exec(ctx, `
+				INSERT INTO pembayaran_verifikasi_log (
+					id, koperasi_id, pembayaran_id, status_lama, status_baru,
+					aksi, catatan, created_by, created_at
+				) VALUES (
+					uuid_generate_v7(), $1, $2, 'menunggu_verifikasi', 'disetujui',
+					'setujui', 'Verifikasi log uji beban', $3, clock_timestamp()
+				);
+			`, env.KoperasiID, paymentID, env.AdminUserID)
+			if insErr != nil {
+				errCh <- fmt.Errorf("worker %d: insert pembayaran_verifikasi_log failed: %w", workerIdx, insErr)
+				return
+			}
+
+			if cErr := tx.Commit(ctx); cErr != nil {
+				errCh <- fmt.Errorf("worker %d: commit failed: %w", workerIdx, cErr)
+				return
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for workerErr := range errCh {
+		t.Fatalf("Deadlock atau error terjadi pada uji beban paralel: %v", workerErr)
+	}
+
+	// 4. Verifikasi Integritas Rantai Hash (VerifyHashChain) pada ketiga tabel
+	tables := []string{"audit_log", "kas_mutasi", "pembayaran_verifikasi_log"}
+	for _, tbl := range tables {
+		valid, count, brokenID, vErr := kopdes.VerifyHashChain(ctx, env.Pool, tbl, env.KoperasiID)
+		if vErr != nil {
+			t.Fatalf("VerifyHashChain pada %s mengembalikan error: %v", tbl, vErr)
+		}
+		if !valid {
+			t.Fatalf("Rantai integritas hash chain pada %s terputus! Broken ID: %v", tbl, brokenID)
+		}
+		if count < int64(concurrentWorkers) {
+			t.Fatalf("Jumlah baris terverifikasi pada %s kurang dari beban worker (%d < %d)", tbl, count, concurrentWorkers)
+		}
+		t.Logf("Tabel %s: Rantai hash 100%% VALID (%d baris tanpa cabang)", tbl, count)
+	}
+
+	t.Logf("Sukses: Urutan kunci advisory terbukti bebas deadlock di bawah beban paralel!")
 }
 
 

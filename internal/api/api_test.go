@@ -3979,6 +3979,251 @@ func TestItem5_HashChain_OrderedLocks_NoDeadlock_UnderLoad(t *testing.T) {
 	t.Logf("Sukses: Urutan kunci advisory terbukti bebas deadlock di bawah beban paralel!")
 }
 
+func TestItem6_TokoCheckout_RoleEscalation_NeutralIuran_OpenAPI(t *testing.T) {
+	env := setupAPITestEnv(t)
+	ctx := context.Background()
+
+	// ==========================================
+	// BAGIAN A: Checkout Toko & Mutasi Stok & Promo
+	// ==========================================
+	// 1. Buat unit usaha, gudang, produk, harga, dan stok_saldo
+	unitUsahaID := uuid.New()
+	_, err := env.Pool.Exec(ctx, `
+		INSERT INTO unit_usaha (id, koperasi_id, kode_unit, nama, kode_kbli, jenis_unit)
+		VALUES ($1, $2, 'UNIT-TEST', 'Unit Usaha Retail', '47111', 'gerai_sembako')
+		ON CONFLICT DO NOTHING;
+	`, unitUsahaID, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("Insert unit usaha failed: %v", err)
+	}
+
+	gudangID := uuid.New()
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO gudang (id, koperasi_id, unit_usaha_id, kode, nama)
+		VALUES ($1, $2, $3, 'GDG-TEST', 'Gudang Utama')
+		ON CONFLICT DO NOTHING;
+	`, gudangID, env.KoperasiID, unitUsahaID)
+	if err != nil {
+		t.Fatalf("Insert gudang failed: %v", err)
+	}
+
+	var katID uuid.UUID
+	err = env.Pool.QueryRow(ctx, `
+		INSERT INTO kategori_produk (id, koperasi_id, kode, nama, slug)
+		VALUES (uuid_generate_v7(), $1, 'KAT-SEMBAKO', 'Sembako', 'sembako')
+		ON CONFLICT (koperasi_id, slug) DO UPDATE SET nama = EXCLUDED.nama
+		RETURNING id;
+	`, env.KoperasiID).Scan(&katID)
+	if err != nil {
+		t.Fatalf("Insert kategori failed: %v", err)
+	}
+
+	produkID := uuid.New()
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO produk (id, koperasi_id, unit_usaha_id, kategori_id, sku, nama, slug, satuan, status)
+		VALUES ($1, $2, $3, $4, 'BERAS-01', 'Beras Merah Putih 5kg', 'beras-merah-putih-5kg', 'pack', 'aktif');
+	`, produkID, env.KoperasiID, unitUsahaID, katID)
+	if err != nil {
+		t.Fatalf("Insert produk failed: %v", err)
+	}
+
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO produk_harga (id, koperasi_id, produk_id, harga_umum, harga_anggota, berlaku_mulai, created_by)
+		VALUES (uuid_generate_v7(), $1, $2, 60000, 55000, CURRENT_DATE, $3);
+	`, env.KoperasiID, produkID, env.AdminUserID)
+	if err != nil {
+		t.Fatalf("Insert produk_harga failed: %v", err)
+	}
+
+	// Set initial stock = 5
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO stok_saldo (id, koperasi_id, gudang_id, produk_id, qty_tersedia, qty_dipesan)
+		VALUES (uuid_generate_v7(), $1, $2, $3, 5, 0);
+	`, env.KoperasiID, gudangID, produkID)
+	if err != nil {
+		t.Fatalf("Insert stok_saldo failed: %v", err)
+	}
+
+	// Seed Promo: 10% diskon, min belanja 50000
+	promoID := uuid.New()
+	_, err = env.Pool.Exec(ctx, `
+		INSERT INTO promo (
+			id, koperasi_id, kode, nama, tipe_promo, nilai_diskon, cakupan,
+			berlaku_mulai, berlaku_sampai, minimal_belanja
+		) VALUES (
+			$1, $2, 'DISKON10', 'Promo Merdeka 10%', 'persen', 10, 'seluruh_katalog',
+			NOW() - INTERVAL '1 day', NOW() + INTERVAL '30 days', 50000
+		);
+	`, promoID, env.KoperasiID)
+	if err != nil {
+		t.Fatalf("Insert promo failed: %v", err)
+	}
+
+	// 2. Anggota menambahkan 3 beras ke keranjang
+	bodyAddCart, _ := json.Marshal(map[string]interface{}{
+		"produk_id": produkID,
+		"qty":       3,
+	})
+	reqCart := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyAddCart))
+	reqCart.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqCart.Header.Set("Content-Type", "application/json")
+	recCart := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCart, reqCart)
+	if recCart.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for add to cart, got %d: %s", recCart.Code, recCart.Body.String())
+	}
+
+	// 3. Checkout dengan promo DISKON10 (3 x 55000 = 165000 - 10% = 148500)
+	bodyCheckout, _ := json.Marshal(map[string]interface{}{
+		"metode_serah_terima": "ambil_di_koperasi",
+		"kode_promo":          "DISKON10",
+		"catatan":             "Pesanan uji coba",
+	})
+	reqCheckout := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckout))
+	reqCheckout.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqCheckout.Header.Set("Content-Type", "application/json")
+	recCheckout := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckout, reqCheckout)
+
+	if recCheckout.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for checkout, got %d: %s", recCheckout.Code, recCheckout.Body.String())
+	}
+
+	var resCheckout struct {
+		Data struct {
+			PesananID  uuid.UUID `json:"pesanan_id"`
+			TotalAkhir int64     `json:"total_akhir"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(recCheckout.Body.Bytes(), &resCheckout)
+	if resCheckout.Data.TotalAkhir != 148500 {
+		t.Fatalf("Expected discounted total 148500, got %d", resCheckout.Data.TotalAkhir)
+	}
+
+	// 4. Verifikasi Pemotongan Stok di Database & Pencatatan di stok_mutasi
+	var qtySisa float64
+	_ = env.Pool.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&qtySisa)
+	if qtySisa != 2 {
+		t.Fatalf("Expected remaining stock 2, got %v", qtySisa)
+	}
+
+	var countMutasi int
+	var qtyMutasi float64
+	_ = env.Pool.QueryRow(ctx, "SELECT count(*), COALESCE(SUM(qty_perubahan), 0) FROM stok_mutasi WHERE produk_id = $1 AND referensi_id = $2;", produkID, resCheckout.Data.PesananID).Scan(&countMutasi, &qtyMutasi)
+	if countMutasi == 0 || qtyMutasi != -3 {
+		t.Fatalf("Expected stok_mutasi entry with qty_perubahan -3, got count=%d qty=%v", countMutasi, qtyMutasi)
+	}
+
+	// 5. Coba checkout melebihi stok yang tersisa (pesan 5 lagi saat sisa 2) -> HARUS DITOLAK (Stok Minus Ditolak)
+	bodyAddExcess, _ := json.Marshal(map[string]interface{}{
+		"produk_id": produkID,
+		"qty":       5,
+	})
+	reqAddExcess := httptest.NewRequest("POST", "/api/v1/toko/keranjang", bytes.NewReader(bodyAddExcess))
+	reqAddExcess.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqAddExcess.Header.Set("Content-Type", "application/json")
+	recAddExcess := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recAddExcess, reqAddExcess)
+
+	reqCheckoutExcess := httptest.NewRequest("POST", "/api/v1/toko/checkout", bytes.NewReader(bodyCheckout))
+	reqCheckoutExcess.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqCheckoutExcess.Header.Set("Content-Type", "application/json")
+	recCheckoutExcess := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recCheckoutExcess, reqCheckoutExcess)
+
+	if recCheckoutExcess.Code != http.StatusBadRequest && recCheckoutExcess.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Expected 400/422 for checkout exceeding stock, got %d: %s", recCheckoutExcess.Code, recCheckoutExcess.Body.String())
+	}
+
+	// Pastikan stok tidak minus
+	var qtySisaAkhir float64
+	_ = env.Pool.QueryRow(ctx, "SELECT qty_tersedia FROM stok_saldo WHERE produk_id = $1;", produkID).Scan(&qtySisaAkhir)
+	if qtySisaAkhir < 0 {
+		t.Fatalf("Stok menjadi minus: %v", qtySisaAkhir)
+	}
+
+	// ==========================================
+	// BAGIAN B: Proteksi Eskalasi Peran (PATCH users/{id}/role)
+	// ==========================================
+	// 1. Admin dilarang menaikkan peran diri sendiri -> 403 Forbidden
+	bodySelf, _ := json.Marshal(map[string]string{"role": "ketua"})
+	reqSelf := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/users/%s/role", env.AdminUserID), bytes.NewReader(bodySelf))
+	reqSelf.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqSelf.Header.Set("Content-Type", "application/json")
+	recSelf := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recSelf, reqSelf)
+
+	if recSelf.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden when admin modifies own role, got %d: %s", recSelf.Code, recSelf.Body.String())
+	}
+
+	// 2. Admin dilarang memberikan peran di atas perannya (misal 'ketua') -> 403 Forbidden
+	bodyPromoteAbove, _ := json.Marshal(map[string]string{"role": "ketua"})
+	reqPromoteAbove := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/users/%s/role", env.AnggotaUserID), bytes.NewReader(bodyPromoteAbove))
+	reqPromoteAbove.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqPromoteAbove.Header.Set("Content-Type", "application/json")
+	recPromoteAbove := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPromoteAbove, reqPromoteAbove)
+
+	if recPromoteAbove.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden when admin grants role above their rank, got %d: %s", recPromoteAbove.Code, recPromoteAbove.Body.String())
+	}
+
+	// 3. Admin memberikan peran yang setara/di bawah perannya (misal 'operator') -> 200 OK
+	bodyPromoteOk, _ := json.Marshal(map[string]string{"role": "operator"})
+	reqPromoteOk := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/users/%s/role", env.AnggotaUserID), bytes.NewReader(bodyPromoteOk))
+	reqPromoteOk.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	reqPromoteOk.Header.Set("Content-Type", "application/json")
+	recPromoteOk := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recPromoteOk, reqPromoteOk)
+
+	if recPromoteOk.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK when admin assigns valid operator role, got %d: %s", recPromoteOk.Code, recPromoteOk.Body.String())
+	}
+
+	// ==========================================
+	// BAGIAN C: Label Netral Iuran & KEPUTUSAN AKUNTAN
+	// ==========================================
+	reqIuran := httptest.NewRequest("GET", "/api/v1/iuran/jenis", nil)
+	reqIuran.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	recIuran := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recIuran, reqIuran)
+
+	if recIuran.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for /api/v1/iuran/jenis, got %d", recIuran.Code)
+	}
+	var resIuran struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	_ = json.Unmarshal(recIuran.Body.Bytes(), &resIuran)
+	if len(resIuran.Data) > 0 {
+		klasifikasi := fmt.Sprintf("%v", resIuran.Data[0]["klasifikasi_akuntansi"])
+		if klasifikasi != "KEPUTUSAN AKUNTAN" {
+			t.Errorf("Expected klasifikasi_akuntansi 'KEPUTUSAN AKUNTAN', got: %s", klasifikasi)
+		}
+	}
+
+	// ==========================================
+	// BAGIAN D: Spesifikasi OpenAPI 3.0
+	// ==========================================
+	openAPIBytes, err := os.ReadFile("../../docs/openapi.yaml")
+	if err != nil {
+		openAPIBytes, err = os.ReadFile("docs/openapi.yaml")
+	}
+	if err != nil {
+		t.Fatalf("Gagal membaca docs/openapi.yaml: %v", err)
+	}
+	openAPIStr := string(openAPIBytes)
+	if !strings.Contains(openAPIStr, "openapi: 3.") {
+		t.Fatalf("docs/openapi.yaml harus spesifikasi OpenAPI 3.x, got: %s", openAPIStr[:50])
+	}
+	if !strings.Contains(openAPIStr, "/api/v1/auth/login") || !strings.Contains(openAPIStr, "/api/v1/toko/checkout") {
+		t.Fatalf("docs/openapi.yaml tidak memuat endpoint wajib")
+	}
+
+	t.Logf("Sukses: Checkout potong stok & promo, proteksi eskalasi peran, iuran netral, dan OpenAPI 3 valid!")
+}
+
 
 
 

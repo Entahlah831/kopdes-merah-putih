@@ -163,6 +163,39 @@ func (h *UserManagementHandler) HandleUpdateUserRole(w http.ResponseWriter, r *h
 		return
 	}
 
+	// 1. Admin dilarang menaikkan / mengubah peranan sendiri
+	if claims.UserID == targetUserID {
+		response.Forbidden(w, "Pengguna dilarang mengubah peranan diri sendiri")
+		return
+	}
+
+	roleRank := map[string]int{
+		"platform_admin": 999,
+		"ketua":          100,
+		"admin":          80,
+		"bendahara":      70,
+		"pengurus":       60,
+		"pengawas":       50,
+		"operator":       40,
+		"anggota":        10,
+	}
+
+	callerRank := roleRank[claims.Role]
+	if claims.IsPlatformAdmin {
+		callerRank = 999
+	}
+
+	targetNewRank, ok := roleRank[req.Role]
+	if !ok {
+		targetNewRank = 10
+	}
+
+	// 2. Admin tidak boleh memberi peran di atas perannya
+	if targetNewRank > callerRank {
+		response.Forbidden(w, fmt.Sprintf("Anda tidak memiliki hak untuk memberikan peran '%s' yang lebih tinggi dari peran Anda", req.Role))
+		return
+	}
+
 	ctx := r.Context()
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
 		var roleID uuid.UUID

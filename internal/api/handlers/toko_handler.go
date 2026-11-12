@@ -198,6 +198,7 @@ func (h *TokoHandler) HandleRemoveFromCart(w http.ResponseWriter, r *http.Reques
 type CheckoutRequest struct {
 	MetodeSerahTerima string `json:"metode_serah_terima"` // 'ambil_di_koperasi' | 'kirim_alamat'
 	Catatan           string `json:"catatan"`
+	KodePromo         string `json:"kode_promo,omitempty"`
 }
 
 // HandleCheckout memproses checkout seluruh item keranjang menjadi pesanan aktif
@@ -280,6 +281,31 @@ func (h *TokoHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
 			return errors.New("keranjang belanja kosong, tidak ada item untuk checkout")
 		}
 
+		// 1. Periksa ketersediaan stok produk (menolak jika stok tidak mencukupi atau minus)
+		type StockCheck struct {
+			SaldoID     uuid.UUID
+			GudangID    uuid.UUID
+			QtyTersedia float64
+		}
+		stockUpdates := make(map[uuid.UUID]StockCheck)
+
+		for _, it := range cartItems {
+			var sc StockCheck
+			err := tx.QueryRow(ctx, `
+				SELECT id, gudang_id, qty_tersedia
+				FROM stok_saldo
+				WHERE produk_id = $1 AND koperasi_id = $2
+				FOR UPDATE;
+			`, it.ProdukID, claims.KoperasiID).Scan(&sc.SaldoID, &sc.GudangID, &sc.QtyTersedia)
+			if err != nil {
+				return fmt.Errorf("stok produk '%s' tidak ditemukan atau belum diinisialisasi", it.NamaProduk)
+			}
+			if sc.QtyTersedia < it.Qty {
+				return fmt.Errorf("stok produk '%s' tidak mencukupi (tersedia: %v, diminta: %v)", it.NamaProduk, sc.QtyTersedia, it.Qty)
+			}
+			stockUpdates[it.ProdukID] = sc
+		}
+
 		// Tentukan apakah pembeli anggota aktif
 		var anggotaID *uuid.UUID
 		var aID uuid.UUID
@@ -299,6 +325,59 @@ func (h *TokoHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
 			totalAkhir = subtotalAnggota
 		} else {
 			totalAkhir = subtotalUmum
+		}
+
+		// 2. Terapkan kode promo aktif bila disertakan
+		var promoPotongan int64
+		var promoID *uuid.UUID
+		if req.KodePromo != "" {
+			var (
+				pID           uuid.UUID
+				tipePromo     string
+				nilaiDiskon   float64
+				cakupan       string
+				minBelanja    float64
+				maksPotongan  *float64
+				kuotaTotal    *int
+				kuotaTerpakai int
+				berlakuMulai  time.Time
+				berlakuSampai time.Time
+			)
+			err := tx.QueryRow(ctx, `
+				SELECT id, tipe_promo::text, nilai_diskon, cakupan::text, minimal_belanja, maksimal_potongan, kuota_total, kuota_terpakai, berlaku_mulai, berlaku_sampai
+				FROM promo
+				WHERE kode = $1 AND koperasi_id = $2
+				FOR UPDATE;
+			`, req.KodePromo, claims.KoperasiID).Scan(&pID, &tipePromo, &nilaiDiskon, &cakupan, &minBelanja, &maksPotongan, &kuotaTotal, &kuotaTerpakai, &berlakuMulai, &berlakuSampai)
+			if err != nil {
+				return errors.New("kode promo tidak ditemukan")
+			}
+			now := time.Now()
+			if now.Before(berlakuMulai) || now.After(berlakuSampai) {
+				return errors.New("kode promo telah kedaluwarsa atau belum berlaku")
+			}
+			if kuotaTotal != nil && kuotaTerpakai >= *kuotaTotal {
+				return errors.New("kuota promo telah habis")
+			}
+			if float64(totalAkhir) < minBelanja {
+				return fmt.Errorf("minimal belanja untuk promo ini adalah Rp %.0f", minBelanja)
+			}
+
+			if tipePromo == "persen" {
+				promoPotongan = int64(float64(totalAkhir) * (nilaiDiskon / 100.0))
+				if maksPotongan != nil && *maksPotongan > 0 && float64(promoPotongan) > *maksPotongan {
+					promoPotongan = int64(*maksPotongan)
+				}
+			} else if tipePromo == "nominal" {
+				promoPotongan = int64(nilaiDiskon)
+			}
+			if promoPotongan > totalAkhir {
+				promoPotongan = totalAkhir
+			}
+			totalAkhir -= promoPotongan
+			promoID = &pID
+
+			_, _ = tx.Exec(ctx, `UPDATE promo SET kuota_terpakai = kuota_terpakai + 1 WHERE id = $1;`, pID)
 		}
 
 		unitUsahaID := cartItems[0].UnitUsahaID
@@ -350,6 +429,40 @@ func (h *TokoHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return fmt.Errorf("gagal membuat item pesanan: %w", err)
 			}
+		}
+
+		// 3. Potong stok lewat ledger append-only stok_mutasi (trigger trg_stok_mutasi_update_saldo otomatis mengupdate stok_saldo & cegah minus)
+		for _, it := range cartItems {
+			sc := stockUpdates[it.ProdukID]
+			newSaldo := sc.QtyTersedia - it.Qty
+
+			_, err = tx.Exec(ctx, `
+				INSERT INTO stok_mutasi (
+					id, koperasi_id, gudang_id, produk_id, jenis_mutasi,
+					qty_perubahan, qty_saldo_setelah, referensi_tipe, referensi_id,
+					catatan, created_by, created_at
+				) VALUES (
+					uuid_generate_v7(), $1, $2, $3, 'keluar_penjualan',
+					$4, $5, 'pesanan', $6,
+					'Pengurangan stok checkout pesanan', $7, clock_timestamp()
+				);
+			`, claims.KoperasiID, sc.GudangID, it.ProdukID, -it.Qty, newSaldo, pesananID, claims.UserID)
+			if err != nil {
+				return fmt.Errorf("gagal mencatat mutasi stok: %w", err)
+			}
+		}
+
+		// Catat riwayat promo_penggunaan jika promo digunakan
+		if promoID != nil && isAnggota && anggotaID != nil && promoPotongan > 0 {
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO promo_penggunaan (
+					id, koperasi_id, promo_id, anggota_id, pesanan_id,
+					nominal_potongan, status
+				) VALUES (
+					uuid_generate_v7(), $1, $2, $3, $4,
+					$5, 'dipesan'
+				);
+			`, claims.KoperasiID, *promoID, *anggotaID, pesananID, promoPotongan)
 		}
 
 		// Kosongkan keranjang belanja

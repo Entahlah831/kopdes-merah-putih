@@ -208,12 +208,13 @@ func (h *IuranHandler) HandleListJenisIuran(w http.ResponseWriter, r *http.Reque
 				return err
 			}
 			list = append(list, map[string]interface{}{
-				"id":              id,
-				"kode":            kode,
-				"nama":            nama,
-				"tipe":            periodeTagih,
-				"nominal_standar": nominal,
-				"status_aktif":    statusAktif,
+				"id":                    id,
+				"kode":                  kode,
+				"nama":                  nama,
+				"tipe":                  periodeTagih,
+				"nominal_standar":       nominal,
+				"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN",
+				"status_aktif":          statusAktif,
 			})
 		}
 		return rows.Err()

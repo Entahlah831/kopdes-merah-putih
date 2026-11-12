@@ -1,0 +1,265 @@
+openapi: 3.0.3
+info:
+  title: API Kopdes Merah Putih
+  version: 1.0.0
+  description: |
+    Spesifikasi API Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go).
+    Menerapkan Multi-Tenancy berbasis Row Level Security (FORCE RLS), MFA TOTP,
+    Anti-IDOR, Idempotensi Database, dan Ledger Append-Only Hash Chain.
+servers:
+  - url: http://localhost:8080
+    description: Lingkungan Lokal / Development
+paths:
+  /healthz:
+    get:
+      summary: Liveness Probe
+      responses:
+        '200':
+          description: Server aktif
+  /readyz:
+    get:
+      summary: Readiness Probe
+      responses:
+        '200':
+          description: Database siap melayani lalu lintas
+  /metrics:
+    get:
+      summary: Metrik Operasional Prometheus
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Format metrik Prometheus text/plain
+        '401':
+          description: Unauthorized (Token metrik internal wajib)
+  /api/v1/auth/login:
+    post:
+      summary: Autentikasi Pengguna Tahap 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login berhasil (langsung jika anggota, atau mfa_required jika MFA aktif)
+        '401':
+          description: Kredensial tidak sah
+        '403':
+          description: MFA wajib untuk peran admin/bendahara/ketua (mengembalikan setup_token)
+  /api/v1/auth/mfa/setup:
+    post:
+      summary: Permintaan Secret TOTP Baru
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Mengembalikan secret Base32 dan otpauth URI
+  /api/v1/auth/mfa/enable:
+    post:
+      summary: Pengaktifan MFA TOTP & Pembuatan Recovery Codes
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret, totp_code]
+              properties:
+                secret:
+                  type: string
+                totp_code:
+                  type: string
+      responses:
+        '200':
+          description: MFA aktif & 8 kode pemulihan sekali pakai diterbitkan
+  /api/v1/auth/mfa/verify:
+    post:
+      summary: Verifikasi MFA Tahap 2 Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_session_token]
+              properties:
+                mfa_session_token:
+                  type: string
+                totp_code:
+                  type: string
+                recovery_code:
+                  type: string
+      responses:
+        '200':
+          description: Token Access & Refresh diterbitkan
+        '401':
+          description: Kode TOTP/recovery tidak valid atau replay terdeteksi
+        '429':
+          description: Sesi terkunci karena melebihi batas percobaan (maks 3 kali)
+  /api/v1/auth/me:
+    get:
+      summary: Profil Pengguna Aktif
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Data profil pengguna
+  /api/v1/pembayaran/qris:
+    post:
+      summary: Pembuatan Pembayaran Tagihan via QRIS
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metode_pembayaran_id, jenis_transaksi]
+              properties:
+                metode_pembayaran_id:
+                  type: string
+                  format: uuid
+                jenis_transaksi:
+                  type: string
+                  enum: [iuran_bulanan, pesanan_katalog, gabungan]
+      responses:
+        '201':
+          description: QRIS berhasil dibuat dengan slot kode unik
+  /api/v1/pembayaran/mutasi-bank/impor:
+    post:
+      summary: Impor Berkas Mutasi Bank CSV (Maker-Checker Rekonsiliasi)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Hasil rekonsiliasi dan pencocokan 1-to-1
+  /api/v1/pembayaran/verifikasi:
+    post:
+      summary: Verifikasi dan Persetujuan Pembayaran
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pembayaran_id, disetujui]
+              properties:
+                pembayaran_id:
+                  type: string
+                  format: uuid
+                disetujui:
+                  type: boolean
+      responses:
+        '200':
+          description: Pembayaran diverifikasi / disetujui
+  /api/v1/toko/keranjang:
+    post:
+      summary: Tambah Item ke Keranjang Belanja
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [produk_id, qty]
+              properties:
+                produk_id:
+                  type: string
+                  format: uuid
+                qty:
+                  type: number
+      responses:
+        '200':
+          description: Item ditambahkan ke keranjang
+  /api/v1/toko/checkout:
+    post:
+      summary: Checkout Pesanan, Pemotongan Stok Transaksional & Aplikasi Promo
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                metode_serah_terima:
+                  type: string
+                  enum: [ambil_di_koperasi, kirim_alamat]
+                kode_promo:
+                  type: string
+                catatan:
+                  type: string
+      responses:
+        '201':
+          description: Pesanan draft dibuat, stok dipotong via stok_mutasi
+        '400':
+          description: Stok tidak mencukupi atau promo tidak valid
+  /api/v1/users/{id}/role:
+    patch:
+      summary: Perbarui Peranan Pengguna (Proteksi Anti-Eskalasi)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+      responses:
+        '200':
+          description: Peranan berhasil diubah
+        '403':
+          description: Dilarang mengubah peran sendiri atau memberi peran di atas perannya
+  /api/v1/iuran/jenis:
+    get:
+      summary: Daftar Jenis Iuran Keanggotaan (Label Netral / KEPUTUSAN AKUNTAN)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar jenis iuran beserta tag KEPUTUSAN AKUNTAN
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

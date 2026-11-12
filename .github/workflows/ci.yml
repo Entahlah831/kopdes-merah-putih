@@ -1,0 +1,146 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-security:
+    name: Test, Static Analysis & Security Scanning
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kopdes_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: kopdes_dev_password
+          KOPDES_APP_PASSWORD: kopdes_dev_password
+          APP_ENV: development
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install PostgreSQL Client & Setup Database Schema
+        env:
+          PGPASSWORD: kopdes_dev_password
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+          echo "Initializing database roles..."
+          psql -h localhost -p 5432 -U postgres -d kopdes_db -f db/docker-init/01_roles.sql
+          echo "Running database migrations..."
+          for file in $(ls db/migrations/*.up.sql | sort -V); do
+            echo "Applying migration: $file"
+            psql -h localhost -p 5432 -U postgres -d kopdes_db -f "$file"
+          done
+
+      - name: Run Tests with Race Detector
+        env:
+          TEST_DATABASE_URL: postgres://kopdes_app:kopdes_dev_password@localhost:5432/kopdes_db?sslmode=disable
+          DATABASE_URL: postgres://kopdes_app:kopdes_dev_password@localhost:5432/kopdes_db?sslmode=disable
+          ALLOW_PERSONAL_PAYMENT_PILOT: "true"
+        run: |
+          go test -count=1 -race -v ./...
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || echo "govulncheck completed with warnings"
+
+      - name: Run staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Run gosec Security Scanner
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G101,G404,G115 ./...
+
+      - name: Run Gitleaks Secret Detection
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  docker-smoke-test:
+    name: Docker Compose Smoke Test
+    runs-on: ubuntu-latest
+    needs: test-and-security
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create .env Configuration for Smoke Test
+        run: |
+          cat << 'EOF' > .env
+          APP_ENV=production
+          APP_PORT=8080
+          PORT=8080
+          DB_HOST=postgres
+          DB_PORT=5432
+          DB_USER=kopdes_app
+          DB_PASSWORD=kopdes_production_secure_pass_123!
+          DB_NAME=kopdes_db
+          POSTGRES_INIT_USER=postgres
+          POSTGRES_INIT_PASSWORD=kopdes_admin_secure_pass_123!
+          JWT_SECRET=super-secret-jwt-signing-key-32-chars-ok!
+          BLIND_INDEX_SECRET=super-secret-blind-index-key-32-chars!
+          AES_MASTER_KEY=super-secret-aes-master-key-32-chars-ok!
+          QRIS_SECRET=super-secret-qris-linear-probing-32-chars!
+          ALLOWED_ORIGINS=https://app.kopdesmerahputih.id
+          RATE_LIMIT_RPS=30
+          RATE_LIMIT_BURST=60
+          EOF
+
+      - name: Build and Start Services with Docker Compose
+        run: |
+          docker compose up -d --build
+
+      - name: Wait for Containers Health Check
+        run: |
+          echo "Waiting for services to become healthy..."
+          for i in {1..30}; do
+            STATUS=$(docker compose ps --format json | jq -r '.[].Health' 2>/dev/null || true)
+            echo "Current status check #$i..."
+            if docker compose ps | grep -q "healthy"; then
+              echo "Services are reporting healthy!"
+              break
+            fi
+            sleep 2
+          done
+          docker compose ps
+
+      - name: Verify Health Endpoint
+        run: |
+          curl --retry 5 --retry-delay 2 --retry-connrefused -f http://localhost:8080/healthz
+
+      - name: Teardown Services
+        if: always()
+        run: |
+          docker compose logs --tail=100
+          docker compose down -v

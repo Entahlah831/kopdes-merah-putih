@@ -27,3 +27,8 @@ Thumbs.db
 # Local PostgreSQL data (jika ditaruh di dalam folder project)
 .pgdata/
 pgdata/
+
+# Local storage uploads
+storage/
+internal/api/storage/
+

@@ -187,6 +187,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 				"mfa_setup_required": true,
 				"setup_token":        setupToken,
 				"user_id":            userID,
+				"koperasi_id":        targetKoperasiID,
 				"role":               roleName,
 			},
 		})
@@ -220,6 +221,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"mfa_required":      true,
 			"mfa_session_token": sessionToken,
 			"user_id":           userID,
+			"koperasi_id":       targetKoperasiID,
 			"role":              roleName,
 			"expires_in":        300,
 			"message":           "Verifikasi MFA diperlukan. Masukkan kode 6 digit dari aplikasi autentikator.",

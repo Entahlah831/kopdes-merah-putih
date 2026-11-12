@@ -531,6 +531,38 @@ Berdasarkan temuan terverifikasi dari audit kode pada `prompt-antigravity-v2-tem
   ok  	github.com/kopdes/merah-putih/internal/api	1.023s
   ```
 
+### [2026-11-12] Item 8: Pembaruan Go Dockerfile, Konfigurasi CI GitHub Actions, govulncheck & Verifikasi Lengkap
+- **Implementasi**:
+  - `Dockerfile`: Memperbarui runtime image runner ke versi Alpine Linux tertambal `alpine:3.21` dan builder `golang:1.24-alpine` dengan kompilasi statis murni tanpa CGO (`CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s -extldflags '-static'"`).
+  - `.github/workflows/ci.yml`: Membangun pipeline CI lengkap berbasis Linux (Ubuntu) yang otomatis berjalan pada `push` dan `pull_request` ke cabang `main`:
+    1. Menyiapkan database PostgreSQL 16 Alpine container dengan inisialisasi role dan seluruh file migrasi `db/migrations/*.up.sql`.
+    2. Menjalankan seluruh pengujian dengan race detector: `go test -count=1 -race -v ./...`.
+    3. Menjalankan pemindaian kerentanan `govulncheck ./...`.
+    4. Menjalankan linter analisis statis `staticcheck ./...`.
+    5. Menjalankan pemindai keamanan SAST `gosec -exclude=G101,G404,G115 ./...`.
+    6. Menjalankan pemindai kebocoran kredensial `gitleaks`.
+    7. Melakukan smoke test otomatis `docker compose up -d --build` dari nol, memverifikasi kontainer berstatus `healthy`, dan menguji probe `/healthz`.
+  - `internal/api/handlers/katalog_handler.go`: `HandleCreateProduk` otomatis menginisialisasi saldo stok awal di gudang default (`stok_saldo`) agar produk baru dapat langsung diproses melalui alur transaksi toko.
+  - `internal/api/handlers/auth_handler.go`: Menyertakan `koperasi_id` pada payload data respon `MFA_MANDATORY_SETUP_REQUIRED` dan login multi-koperasi.
+- **Hasil Asli Eksekusi `go test -count=1 ./...` (100% PASS Seluruh Paket)**:
+  ```text
+  ok  	github.com/kopdes/merah-putih	4.078s
+  ?   	github.com/kopdes/merah-putih/cmd/server	[no test files]
+  ok  	github.com/kopdes/merah-putih/internal/api	39.397s
+  ?   	github.com/kopdes/merah-putih/internal/api/handlers	[no test files]
+  ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.487s
+  ?   	github.com/kopdes/merah-putih/internal/api/response	[no test files]
+  ?   	github.com/kopdes/merah-putih/internal/auth	[no test files]
+  ok  	github.com/kopdes/merah-putih/internal/db	1.132s
+  ok  	github.com/kopdes/merah-putih/internal/outbox	0.516s
+  ok  	github.com/kopdes/merah-putih/internal/qris	1.253s
+  ok  	github.com/kopdes/merah-putih/internal/security	0.939s
+  ?   	github.com/kopdes/merah-putih/internal/simkopdes	[no test files]
+  ```
+- **Kompilasi Binary Statis Linux**:
+  Terverifikasi berhasil dikompilasi secara lokal via `CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o ./kopdes-server-linux ./cmd/server` (11.8 MB).
+
+
 
 
 

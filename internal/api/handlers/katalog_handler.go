@@ -195,6 +195,28 @@ func (h *KatalogHandler) HandleCreateProduk(w http.ResponseWriter, r *http.Reque
 			return fmt.Errorf("gagal mencatat harga produk: %w", err)
 		}
 
+		// Inisialisasi saldo stok awal di gudang default
+		var gudangID uuid.UUID
+		err = tx.QueryRow(ctx, `SELECT id FROM gudang WHERE koperasi_id = $1 AND deleted_at IS NULL LIMIT 1;`, claims.KoperasiID).Scan(&gudangID)
+		if err != nil {
+			err = tx.QueryRow(ctx, `
+				INSERT INTO gudang (koperasi_id, unit_usaha_id, kode, nama, status_aktif)
+				VALUES ($1, $2, 'GDG-DEFAULT', 'Gudang Utama Toko', true)
+				RETURNING id;
+			`, claims.KoperasiID, unitUsahaID).Scan(&gudangID)
+		}
+		if err == nil {
+			stokAwal := req.StokAwal
+			if stokAwal <= 0 {
+				stokAwal = 50 // default stok inventori awal jika tidak ditentukan
+			}
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO stok_saldo (koperasi_id, gudang_id, produk_id, qty_tersedia, qty_dipesan)
+				VALUES ($1, $2, $3, $4, 0)
+				ON CONFLICT (koperasi_id, gudang_id, produk_id, varian_id) DO NOTHING;
+			`, claims.KoperasiID, gudangID, produkID, stokAwal)
+		}
+
 		return nil
 	})
 

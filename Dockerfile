@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /build/kopdes-server ./cmd/server
 
 # --- Tahap 2: Runtime Runner ---
-FROM alpine:3.20
+FROM alpine:3.21
 
 WORKDIR /app
 

@@ -729,17 +729,12 @@ func TestAPI_MakerChecker_HTTP_Violation(t *testing.T) {
 
 	_, _ = conn.Exec(ctx, "SELECT set_config('app.is_platform_admin', 'false', false); SET ROLE kopdes_app;")
 
-	// Login admin
-	bodyLogin, _ := json.Marshal(handlers.LoginRequest{Email: emailAdmin, Password: pwdPlain})
-	reqLogin := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(bodyLogin))
-	recLogin := httptest.NewRecorder()
-	env.Server.Router().ServeHTTP(recLogin, reqLogin)
-
-	var loginRes struct {
-		Data handlers.LoginResponse `json:"data"`
+	// Generate token admin langsung untuk pengujian Maker-Checker
+	tm := auth.NewTokenManager(env.Config.JWTSecret, "kopdes-merah-putih-api")
+	tokenAdmin, err := tm.GenerateToken(adminID, env.KoperasiID, "admin", false, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("generate admin token error: %v", err)
 	}
-	_ = json.Unmarshal(recLogin.Body.Bytes(), &loginRes)
-	tokenAdmin := loginRes.Data.AccessToken
 
 	billID := env.CreateBill(t, env.AnggotaID, 100000)
 

@@ -1,0 +1,101 @@
+name: kopdes-test-stack
+
+networks:
+  kopdes_test_internal:
+    internal: true
+  kopdes_test_edge:
+
+volumes:
+  pgdata_test:
+  kyc_test_storage:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: ["postgres", "-p", "${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib disetel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib disetel}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME wajib disetel}
+      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
+      APP_ENV: test
+    ports:
+      - "${DB_BIND_HOST:-127.0.0.1}:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"
+    volumes:
+      - pgdata_test:/var/lib/postgresql/data
+      - ./db/docker-init:/docker-entrypoint-initdb.d:ro
+      - ./db/migrations:/docker-migrations:ro
+    networks:
+      - kopdes_test_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${DB_CONTAINER_PORT}"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    mem_limit: 512m
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: test
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+      API_PORT: ${API_PORT:?API_PORT wajib disetel}
+      METRICS_PORT: ${METRICS_PORT:?METRICS_PORT wajib disetel}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
+      DB_HOST: postgres
+      DB_PORT: ${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}
+      DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
+      DB_USER: ${DB_USER:?DB_USER wajib disetel}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      DB_SSLMODE: disable
+      DATABASE_URL: ""
+      DB_APP_ROLE: ${DB_APP_ROLE:-kopdes_app}
+      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
+      ALLOW_SUPERUSER_DB: "false"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET wajib disetel}
+      JWT_PREVIOUS_SECRET: ${JWT_PREVIOUS_SECRET:-}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-kopdes-merah-putih}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
+      AES_KEY_VERSION: ${AES_KEY_VERSION:-v1}
+      AES_KEY_ID: ${AES_KEY_ID:-k1}
+      AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
+      QRIS_SECRET: ${QRIS_SECRET:?QRIS_SECRET wajib disetel}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN wajib disetel}
+      METRICS_PREVIOUS_TOKEN: ${METRICS_PREVIOUS_TOKEN:-}
+      BCRYPT_COST: ${BCRYPT_COST:-10}
+      MFA_ISSUER: ${MFA_ISSUER:-Kopdes Merah Putih Test}
+      MFA_MAX_ATTEMPTS: ${MFA_MAX_ATTEMPTS:-3}
+      MFA_SESSION_TTL: ${MFA_SESSION_TTL:-5m}
+      MFA_SETUP_TTL: ${MFA_SETUP_TTL:-10m}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_DURATION: ${LOGIN_LOCKOUT_DURATION:-15m}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
+      STORAGE_KYC_DIR: /app/storage/kyc
+    ports:
+      - "${API_HOST_PORT:?API_HOST_PORT wajib disetel}:${API_PORT:?API_PORT wajib disetel}"
+      - "127.0.0.1:${METRICS_HOST_PORT:?METRICS_HOST_PORT wajib disetel}:${METRICS_PORT:?METRICS_PORT wajib disetel}"
+    volumes:
+      - kyc_test_storage:/app/storage/kyc
+    networks:
+      - kopdes_test_internal
+      - kopdes_test_edge
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${API_PORT}/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m

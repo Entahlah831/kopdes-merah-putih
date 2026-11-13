@@ -1,77 +1,131 @@
+name: kopdes-merah-putih
+
+networks:
+  kopdes_internal:
+    internal: true
+  kopdes_edge:
+
+volumes:
+  pgdata:
+  kyc_storage:
+
 services:
-  # ============================================================================
-  # 1. DATABASE POSTGRESQL 16 (Multi-Tenant & Row Level Security)
-  # ============================================================================
   postgres:
     image: postgres:16-alpine
     container_name: kopdes_postgres
     restart: unless-stopped
+    command: ["postgres", "-p", "${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"]
     environment:
-      POSTGRES_DB: ${DB_NAME:-kopdes_db}
-      # Inisialisasi awal menggunakan user administratif sementara (bukan user aplikasi)
-      POSTGRES_USER: ${POSTGRES_INIT_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_INIT_PASSWORD}
-      KOPDES_APP_PASSWORD: ${DB_PASSWORD}
-      APP_ENV: ${APP_ENV:-production}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib disetel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib disetel}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME wajib disetel}
+      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
+      APP_ENV: ${APP_ENV:?APP_ENV wajib disetel}
     ports:
-      # K1: Batasi port PostgreSQL pada host ke 127.0.0.1 (mencegah akses terbuka dari luar)
-      - "127.0.0.1:${DB_PORT:-5432}:5432"
+      - "${DB_BIND_HOST:-127.0.0.1}:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"
     volumes:
-      - kopdes_pgdata:/var/lib/postgresql/data
-      # Inisialisasi role kopdes_app non-superuser dan eksekusi seluruh migrasi berurutan
+      - pgdata:/var/lib/postgresql/data
       - ./db/docker-init:/docker-entrypoint-initdb.d:ro
       - ./db/migrations:/docker-migrations:ro
+    networks:
+      - kopdes_internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_INIT_USER:-postgres} -d ${DB_NAME:-kopdes_db}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${DB_CONTAINER_PORT}"]
       interval: 5s
       timeout: 5s
-      retries: 5
-    networks:
-      - kopdes_net
+      retries: 10
+    cpus: "1.5"
+    mem_limit: 1024m
 
-  # ============================================================================
-  # 2. BACKEND API KOPDES MERAH PUTIH (Golang High-Performance API)
-  # ============================================================================
   api:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     container_name: kopdes_api
     restart: unless-stopped
-    environment:
-      APP_ENV: ${APP_ENV:-production}
-      PORT: ${APP_PORT:-8080}
-      APP_PORT: ${APP_PORT:-8080}
-      # K1: API berjalan menggunakan role kopdes_app (NOSUPERUSER, NOBYPASSRLS)
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-kopdes_app}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_NAME: ${DB_NAME:-kopdes_db}
-      DB_SSLMODE: disable
-      DATABASE_URL: postgres://${DB_USER:-kopdes_app}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-kopdes_db}?sslmode=disable
-      # Kunci kriptografi dari file .env
-      JWT_SECRET: ${JWT_SECRET}
-      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET}
-      AES_MASTER_KEY: ${AES_MASTER_KEY}
-      QRIS_SECRET: ${QRIS_SECRET}
-      METRICS_TOKEN: ${METRICS_TOKEN}
-      # Kebijakan CORS
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
-      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
-      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
-    ports:
-      - "${APP_PORT:-8080}:${APP_PORT:-8080}"
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:?APP_ENV wajib disetel}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+      API_PORT: ${API_PORT:?API_PORT wajib disetel}
+      METRICS_PORT: ${METRICS_PORT:?METRICS_PORT wajib disetel}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
+      DB_HOST: postgres
+      DB_PORT: ${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}
+      DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
+      DB_USER: ${DB_USER:?DB_USER wajib disetel}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      DATABASE_URL: ""
+      DB_APP_ROLE: ${DB_APP_ROLE:-kopdes_app}
+      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
+      ALLOW_SUPERUSER_DB: ${ALLOW_SUPERUSER_DB:-false}
+      DB_POOL_MAX_CONNS: ${DB_POOL_MAX_CONNS:-25}
+      DB_POOL_MIN_CONNS: ${DB_POOL_MIN_CONNS:-2}
+      DB_STATEMENT_TIMEOUT: ${DB_STATEMENT_TIMEOUT:-15s}
+      DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-5s}
+      DB_IDLE_IN_TX_TIMEOUT: ${DB_IDLE_IN_TX_TIMEOUT:-30s}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET wajib disetel}
+      JWT_PREVIOUS_SECRET: ${JWT_PREVIOUS_SECRET:-}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-kopdes-merah-putih}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
+      AES_KEY_VERSION: ${AES_KEY_VERSION:-v1}
+      AES_KEY_ID: ${AES_KEY_ID:-k1}
+      AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
+      QRIS_SECRET: ${QRIS_SECRET:?QRIS_SECRET wajib disetel}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN wajib disetel}
+      METRICS_PREVIOUS_TOKEN: ${METRICS_PREVIOUS_TOKEN:-}
+      BCRYPT_COST: ${BCRYPT_COST:-12}
+      MFA_ISSUER: ${MFA_ISSUER:-Kopdes Merah Putih}
+      MFA_MAX_ATTEMPTS: ${MFA_MAX_ATTEMPTS:-3}
+      MFA_SESSION_TTL: ${MFA_SESSION_TTL:-5m}
+      MFA_SETUP_TTL: ${MFA_SETUP_TTL:-10m}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_DURATION: ${LOGIN_LOCKOUT_DURATION:-15m}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
+      RATE_LIMIT_MAX_CLIENTS: ${RATE_LIMIT_MAX_CLIENTS:-10000}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-10s}
+      HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-15s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+      PARTITION_MONTHS_AHEAD: ${PARTITION_MONTHS_AHEAD:-3}
+      PARTITION_JOB_INTERVAL: ${PARTITION_JOB_INTERVAL:-24h}
+      PDP_REJECTED_RETENTION_DAYS: ${PDP_REJECTED_RETENTION_DAYS:-30}
+      PDP_PURGE_INTERVAL: ${PDP_PURGE_INTERVAL:-24h}
+      QRIS_DYNAMIC_ENABLED: ${QRIS_DYNAMIC_ENABLED:-false}
+      ALLOW_PERSONAL_PAYMENT_PILOT: ${ALLOW_PERSONAL_PAYMENT_PILOT:-false}
+      PILOT_DEFAULT_MAX_PER_TX: ${PILOT_DEFAULT_MAX_PER_TX:-500000}
+      PILOT_DEFAULT_MAX_PER_DAY: ${PILOT_DEFAULT_MAX_PER_DAY:-2000000}
+      DUAL_APPROVAL_DEFAULT_THRESHOLD: ${DUAL_APPROVAL_DEFAULT_THRESHOLD:-500000}
+      STORAGE_KYC_DIR: /app/storage/kyc
+      MAX_KYC_UPLOAD_BYTES: ${MAX_KYC_UPLOAD_BYTES:-5242880}
+      NOTIFIER_PROVIDER: ${NOTIFIER_PROVIDER:-noop}
+      WHATSAPP_API_KEY: ${WHATSAPP_API_KEY:-}
+      SMS_API_KEY: ${SMS_API_KEY:-}
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-}
+    ports:
+      - "${API_HOST_PORT:?API_HOST_PORT wajib disetel}:${API_PORT:?API_PORT wajib disetel}"
+      - "127.0.0.1:${METRICS_HOST_PORT:?METRICS_HOST_PORT wajib disetel}:${METRICS_PORT:?METRICS_PORT wajib disetel}"
+    volumes:
+      - kyc_storage:/app/storage/kyc
     networks:
-      - kopdes_net
-
-networks:
-  kopdes_net:
-    driver: bridge
-
-volumes:
-  kopdes_pgdata:
-    driver: local
+      - kopdes_internal
+      - kopdes_edge
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${API_PORT}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    cpus: "1.0"
+    mem_limit: 512m

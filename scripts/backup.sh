@@ -1,34 +1,39 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Kopdes Merah Putih - Automated Backup & PITR Script
-# =============================================================================
+# Script Backup Harian PostgreSQL 16 Kopdes Merah Putih (terparameterisasi dari environment)
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/kopdes}"
+if [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+fi
+
+BACKUP_DIR="${BACKUP_DIR:?BACKUP_DIR wajib disetel}"
+DB_HOST="${DB_HOST:?DB_HOST wajib disetel}"
+DB_PORT="${DB_PORT:?DB_PORT wajib disetel}"
+DB_NAME="${DB_NAME:?DB_NAME wajib disetel}"
+DB_USER="${DB_USER:-${POSTGRES_USER:?DB_USER atau POSTGRES_USER wajib disetel}}"
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
+export PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${DB_PASSWORD:?PGPASSWORD/POSTGRES_PASSWORD/DB_PASSWORD wajib disetel}}}"
+
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-DB_HOST="${DB_HOST:-127.0.0.1}"
-DB_PORT="${DB_PORT:-5432}"
-DB_NAME="${DB_NAME:-kopdes_db}"
-DB_USER="${DB_USER:-kopdes_app}"
+mkdir -p "${BACKUP_DIR}/daily" "${BACKUP_DIR}/wal_archive"
 
-mkdir -p "${BACKUP_DIR}/daily"
-mkdir -p "${BACKUP_DIR}/wal_archive"
-
-echo "[$(date +'%Y-%m-%dT%H:%M:%S')] Memulai proses backup database ${DB_NAME}..."
-
-# 1. Snapshot Logical Backup Terkompresi (pg_dump -Fc)
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Memulai backup database ${DB_NAME} (${DB_HOST}:${DB_PORT})..."
 DUMP_FILE="${BACKUP_DIR}/daily/${DB_NAME}_${TIMESTAMP}.dump"
-pg_dump -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" \
-  -F c -b -v -f "${DUMP_FILE}"
+pg_dump -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -F c -b -f "${DUMP_FILE}"
 
-echo "[$(date +'%Y-%m-%dT%H:%M:%S')] Snapshot tersimpan di: ${DUMP_FILE}"
+if [ -n "${BACKUP_ENCRYPTION_KEY:-}" ]; then
+  openssl enc -aes-256-cbc -pbkdf2 -salt -in "${DUMP_FILE}" -out "${DUMP_FILE}.enc" -pass env:BACKUP_ENCRYPTION_KEY
+  rm -f "${DUMP_FILE}"
+  ARTIFACT="${DUMP_FILE}.enc"
+else
+  ARTIFACT="${DUMP_FILE}"
+fi
 
-# 2. Hitung Checksum SHA-256 untuk verifikasi integritas data
-sha256sum "${DUMP_FILE}" > "${DUMP_FILE}.sha256"
-echo "[$(date +'%Y-%m-%dT%H:%M:%S')] Checksum SHA-256 dihasilkan: $(cat "${DUMP_FILE}.sha256")"
+sha256sum "${ARTIFACT}" > "${ARTIFACT}.sha256"
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Artifact tersimpan: ${ARTIFACT} (SHA-256 dicatat)."
 
-# 3. Retensi Backup: Hapus backup yang lebih lama dari 30 hari
-find "${BACKUP_DIR}/daily" -name "*.dump" -mtime +30 -delete
-find "${BACKUP_DIR}/daily" -name "*.sha256" -mtime +30 -delete
-
-echo "[$(date +'%Y-%m-%dT%H:%M:%S')] Backup selesai dengan sukses."
+find "${BACKUP_DIR}/daily" -name "*.dump*" -mtime +"${BACKUP_RETENTION_DAYS}" -delete
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Backup selesai."

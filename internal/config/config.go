@@ -113,6 +113,7 @@ type AppConfig struct {
 	WhatsAppAPIKey       string `env:"WHATSAPP_API_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci API gateway WhatsApp opsional untuk worker outbox" example:""`
 	SMSAPIKey            string `env:"SMS_API_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci API gateway SMS opsional untuk worker outbox" example:""`
 	WebhookSigningSecret string `env:"WEBHOOK_SIGNING_SECRET" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Rahasia HMAC-SHA256 penandatangan request outbox webhook" example:""`
+	TestEnvFile          string `env:"TEST_ENV_FILE" type:"string" default:".env.test" required:"optional" secret:"false" component:"tests" desc:"Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt)" example:".env.test"`
 	TestDatabaseURL      string `env:"TEST_DATABASE_URL" type:"string" default:"" required:"test" secret:"true" component:"tests" desc:"DSN khusus suite tes Go (wajib berakhiran *_test)" example:"postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable"`
 }
 

@@ -73,9 +73,9 @@ func TestEnvCheck_StrictAndPortConflictDetection(t *testing.T) {
 		t.Fatalf("Expected output to report occupied port %d, got:\n%s", busyPort, portOut.String())
 	}
 
-	// Uji Set B (.env.test.alt) lulus --strict dan --ports (tanpa menyentuh kode Go)
+	// Uji Set B (.env.test.alt) lulus --strict dan --ports --no-listen (tanpa menyentuh kode Go, dan deterministik walau daemon Set B sedang berjalan)
 	var setBOut bytes.Buffer
-	setBCode := runCLI([]string{"--strict", "--ports", "--env-file", filepath.Join(root, ".env.test.alt")}, &setBOut, &setBOut)
+	setBCode := runCLI([]string{"--strict", "--ports", "--no-listen", "--env-file", filepath.Join(root, ".env.test.alt")}, &setBOut, &setBOut)
 	if setBCode != 0 {
 		t.Fatalf("Expected Set B (.env.test.alt) --strict --ports to pass, got %d:\n%s", setBCode, setBOut.String())
 	}

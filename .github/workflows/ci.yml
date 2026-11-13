@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: Kopdes Merah Putih CI & Verification
 
 on:
   push:
@@ -7,21 +7,64 @@ on:
     branches: [ main ]
 
 jobs:
-  test-and-security:
-    name: Test, Static Analysis & Security Scanning
+  config-and-static-audit:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kode
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Validasi Konfigurasi & Konflik Port (Set A & Set B)
+        run: |
+          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
+          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
+          go run ./cmd/envcheck --compare .env.test .env.test.alt
+
+      - name: Validasi Sintaks Docker Compose (Semua Profil)
+        run: |
+          docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.test config --quiet
+          docker compose --env-file .env.test.alt config --quiet
+          docker compose -f docker-compose.test.yml --env-file .env.test config --quiet
+          docker compose -f docker-compose.test.yml --env-file .env.test.alt config --quiet
+
+      - name: Hadolint Audit Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Trivy Config & Image Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+
+      - name: Gitleaks Secret Scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --config .gitleaks.toml --verbose --redact
+
+  test-and-security-setA:
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: kopdes_db
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: kopdes_dev_password
-          KOPDES_APP_PASSWORD: kopdes_dev_password
-          APP_ENV: development
+          POSTGRES_PASSWORD: kopdes_test_setA_pass_123!
+          POSTGRES_DB: kopdes_test
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -29,129 +72,82 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Kode
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Go
+      - name: Set Up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
-          cache: true
+          go-version: '1.25.x'
 
-      - name: Install PostgreSQL Client & Setup Database Schema
+      - name: Inisialisasi Database Set A (kopdes_test)
         env:
-          PGPASSWORD: kopdes_dev_password
-          APP_ENV: development
-          KOPDES_APP_PASSWORD: kopdes_dev_password
-          DB_PASSWORD: kopdes_dev_password
+          PGPASSWORD: kopdes_test_setA_pass_123!
+          APP_ENV: test
+          KOPDES_APP_PASSWORD: kopdes_test_setA_pass_123!
         run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          until pg_isready -h localhost -p 5432 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-          echo "Initializing database roles..."
-          psql -h localhost -p 5432 -U postgres -d kopdes_db -f db/docker-init/01_roles.sql
-          echo "Running database migrations..."
-          for file in $(ls db/migrations/*.up.sql | sort -V); do
-            echo "Applying migration: $file"
-            psql -h localhost -p 5432 -U postgres -d kopdes_db -f "$file"
+          psql -h 127.0.0.1 -p 5433 -U postgres -d kopdes_test -v ON_ERROR_STOP=1 -f db/docker-init/01_roles.sql
+          for file in $(ls db/migrations/*_*.up.sql | sort -V); do
+            psql -h 127.0.0.1 -p 5433 -U postgres -d kopdes_test -v ON_ERROR_STOP=1 -f "$file"
           done
 
-      - name: Run Tests with Race Detector
+      - name: Jalankan Full Suite -race (Set A)
         env:
-          TEST_DATABASE_URL: postgres://kopdes_app:kopdes_dev_password@localhost:5432/kopdes_db?sslmode=disable
-          DATABASE_URL: postgres://kopdes_app:kopdes_dev_password@localhost:5432/kopdes_db?sslmode=disable
-          ALLOW_PERSONAL_PAYMENT_PILOT: "true"
-        run: |
-          go test -count=1 -race -v ./... 2>&1 | tee test-output.log
+          TEST_ENV_FILE: .env.test
+        run: go test -v -count=1 -race ./...
 
-      - name: Upload Test Output on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-output-log
-          path: test-output.log
-
-      - name: Run govulncheck
+      - name: Pemindaian Keamanan Go (govulncheck, staticcheck, gosec)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... || echo "govulncheck completed with warnings"
-
-      - name: Run staticcheck
-        run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
-          staticcheck ./...
-
-      - name: Run gosec Security Scanner
-        run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude=G101,G404,G115,G505,G703,G705,G120,G304 ./...
+          "$(go env GOPATH)/bin/govulncheck" ./...
+          "$(go env GOPATH)/bin/staticcheck" ./...
+          "$(go env GOPATH)/bin/gosec" -exclude=G104,G304,G101 ./...
 
-      - name: Run Gitleaks Secret Detection
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
-  docker-smoke-test:
-    name: Docker Compose Smoke Test
+  docker-setB-e2e-and-load:
     runs-on: ubuntu-latest
-    needs: test-and-security
-
+    needs: [config-and-static-audit]
     steps:
-      - name: Checkout Code
+      - name: Checkout Kode
         uses: actions/checkout@v4
 
-      - name: Create .env Configuration for Smoke Test
-        run: |
-          cat << 'EOF' > .env
-          APP_ENV=production
-          APP_PORT=8080
-          PORT=8080
-          DB_HOST=postgres
-          DB_PORT=5432
-          DB_USER=kopdes_app
-          DB_PASSWORD=kopdes_production_secure_pass_123!
-          DB_NAME=kopdes_db
-          POSTGRES_INIT_USER=postgres
-          POSTGRES_INIT_PASSWORD=kopdes_admin_secure_pass_123!
-          JWT_SECRET=super-secret-jwt-signing-key-32-chars-ok!
-          BLIND_INDEX_SECRET=super-secret-blind-index-key-32-chars!
-          AES_MASTER_KEY=super-secret-aes-master-key-32-chars-ok!
-          QRIS_SECRET=super-secret-qris-linear-probing-32-chars!
-          ALLOWED_ORIGINS=https://app.kopdesmerahputih.id
-          RATE_LIMIT_RPS=30
-          RATE_LIMIT_BURST=60
-          METRICS_TOKEN=super-secret-metrics-token-32-chars-ok!
-          EOF
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
 
-      - name: Build and Start Services with Docker Compose
+      - name: Boot Stack Set B dari Nol (Port Non-Standar 18080/15433/19100)
         run: |
-          docker compose up -d --build
-
-      - name: Wait for Containers Health Check
-        run: |
-          echo "Waiting for services to become healthy..."
-          for i in {1..30}; do
-            STATUS=$(docker compose ps --format json | jq -r '.[].Health' 2>/dev/null || true)
-            echo "Current status check #$i..."
-            if docker compose ps | grep -q "healthy"; then
-              echo "Services are reporting healthy!"
+          sudo apt-get update && sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-16
+          set -a
+          source .env.test.alt
+          set +a
+          docker compose -f docker-compose.test.yml --env-file .env.test.alt up -d --build
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz" >/dev/null; then
+              echo "Set B API siap pada port ${API_HOST_PORT}"
               break
             fi
-            sleep 2
+            sleep 3
           done
-          docker compose ps
+          curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
+          STATUS_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${METRICS_HOST_PORT}/metrics")
+          test "${STATUS_NOAUTH}" = "401"
+          curl -fsS -H "Authorization: Bearer ${METRICS_TOKEN}" "http://127.0.0.1:${METRICS_HOST_PORT}/metrics" | head -n 10
 
-      - name: Verify Health Endpoint
+      - name: Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B
         run: |
-          curl --retry 5 --retry-delay 2 --retry-connrefused -f http://localhost:8080/healthz
+          set -a
+          source .env.test.alt
+          set +a
+          go test -count=1 -race ./...
+          bash scripts/backup.sh
+          bash scripts/restore_drill.sh
+          go run ./cmd/loadtest --base-url "http://127.0.0.1:${API_HOST_PORT}" --members 2000 --concurrency 100
 
-      - name: Teardown Services
+      - name: Bersihkan Container Set B
         if: always()
-        run: |
-          docker compose logs --tail=100
-          docker compose down -v
+        run: docker compose -f docker-compose.test.yml --env-file .env.test.alt down -v

@@ -23,6 +23,12 @@ import (
 
 var validSQLIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+var logSanitizer = strings.NewReplacer("\r", "", "\n", "")
+
+func sanitizeLogValue(v string) string {
+	return logSanitizer.Replace(v)
+}
+
 func main() {
 	envFile := strings.TrimSpace(os.Getenv("ENV_FILE"))
 	if envFile == "" {
@@ -61,7 +67,7 @@ func main() {
 
 	pgxCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", security.RedactDSN(dsn), err)
+		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
 	}
 
 	if appCfg.DBPoolMaxConns > 0 && appCfg.DBPoolMaxConns <= math.MaxInt32 {
@@ -103,9 +109,9 @@ func main() {
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", security.RedactDSN(dsn), err)
+		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
 	}
-	log.Printf("Koneksi ke PostgreSQL (%s) berhasil terhubung.", security.RedactDSN(dsn))
+	log.Printf("Koneksi ke PostgreSQL (%s) berhasil terhubung.", sanitizeLogValue(security.RedactDSN(dsn))) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
 
 	if err := db.CheckDatabaseRole(ctx, pool, appCfg.AllowSuperuserDB); err != nil {
 		log.Fatalf("Gagal validasi keamanan role database: %v", err)
@@ -123,9 +129,9 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Server API Kopdes Merah Putih berjalan pada http://0.0.0.0:%d", appCfg.APIPort)
-		if mAddr := server.MetricsAddr(); mAddr != "" {
-			log.Printf("Endpoint internal Prometheus /metrics berjalan pada http://0.0.0.0%s/metrics", mAddr)
+		log.Printf("Server API Kopdes Merah Putih berjalan pada http://0.0.0.0:%d", appCfg.APIPort) // #nosec G706 -- port sudah tervalidasi numerik dari AppConfig
+		if mAddr := sanitizeLogValue(server.MetricsAddr()); mAddr != "" {
+			log.Printf("Endpoint internal Prometheus /metrics berjalan pada http://0.0.0.0%s/metrics", mAddr) // #nosec G706 -- alamat internal sudah tervalidasi & disanitasi CR/LF
 		}
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server berhenti karena error: %v", err)

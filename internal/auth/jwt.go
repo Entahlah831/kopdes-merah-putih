@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -26,8 +28,10 @@ type UserClaims struct {
 }
 
 type TokenManager struct {
-	secretKey []byte
-	issuer    string
+	secretKey     []byte
+	previousKey   []byte
+	signingMethod jwt.SigningMethod
+	issuer        string
 }
 
 func NewTokenManager(secretKey string, issuer string) *TokenManager {
@@ -35,12 +39,41 @@ func NewTokenManager(secretKey string, issuer string) *TokenManager {
 		issuer = "kopdes-merah-putih"
 	}
 	return &TokenManager{
-		secretKey: []byte(secretKey),
-		issuer:    issuer,
+		secretKey:     []byte(secretKey),
+		signingMethod: jwt.SigningMethodHS256,
+		issuer:        issuer,
 	}
 }
 
-// GenerateToken membuat token JWT bertanda tangan HMAC-SHA256
+// NewTokenManagerWithConfig membuat TokenManager dengan algoritma HMAC eksplisit dan dukungan JWT_PREVIOUS_SECRET untuk masa transisi rotasi.
+func NewTokenManagerWithConfig(secretKey, previousSecret, algorithm, issuer string) (*TokenManager, error) {
+	if issuer == "" {
+		issuer = "kopdes-merah-putih"
+	}
+	var method jwt.SigningMethod
+	switch strings.ToUpper(strings.TrimSpace(algorithm)) {
+	case "", "HS256":
+		method = jwt.SigningMethodHS256
+	case "HS384":
+		method = jwt.SigningMethodHS384
+	case "HS512":
+		method = jwt.SigningMethodHS512
+	default:
+		return nil, fmt.Errorf("algoritma JWT tidak diizinkan: %q (wajib HS256, HS384, atau HS512)", algorithm)
+	}
+	var prev []byte
+	if strings.TrimSpace(previousSecret) != "" {
+		prev = []byte(previousSecret)
+	}
+	return &TokenManager{
+		secretKey:     []byte(secretKey),
+		previousKey:   prev,
+		signingMethod: method,
+		issuer:        issuer,
+	}, nil
+}
+
+// GenerateToken membuat token JWT bertanda tangan HMAC terkonfigurasi
 func (tm *TokenManager) GenerateToken(userID, koperasiID uuid.UUID, role string, isPlatformAdmin bool, ttl time.Duration) (string, error) {
 	now := time.Now().UTC()
 	claims := UserClaims{
@@ -58,18 +91,42 @@ func (tm *TokenManager) GenerateToken(userID, koperasiID uuid.UUID, role string,
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	method := tm.signingMethod
+	if method == nil {
+		method = jwt.SigningMethodHS256
+	}
+	token := jwt.NewWithClaims(method, claims)
 	return token.SignedString(tm.secretKey)
 }
 
-// ValidateToken memvalidasi tanda tangan dan klaim JWT
+// ValidateToken memvalidasi tanda tangan dan klaim JWT (termasuk previousKey selama rotasi)
 func (tm *TokenManager) ValidateToken(tokenString string) (*UserClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, ErrInvalidToken
-		}
-		return tm.secretKey, nil
-	})
+	claims, err := tm.parseWithKey(tokenString, tm.secretKey)
+	if err == nil {
+		return claims, nil
+	}
+	if errors.Is(err, ErrExpiredToken) || len(tm.previousKey) == 0 {
+		return nil, err
+	}
+	return tm.parseWithKey(tokenString, tm.previousKey)
+}
+
+func (tm *TokenManager) parseWithKey(tokenString string, key []byte) (*UserClaims, error) {
+	method := tm.signingMethod
+	if method == nil {
+		method = jwt.SigningMethodHS256
+	}
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		&UserClaims{},
+		func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, ErrInvalidToken
+			}
+			return key, nil
+		},
+		jwt.WithValidMethods([]string{method.Alg()}),
+	)
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {

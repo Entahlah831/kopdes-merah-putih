@@ -15,8 +15,8 @@ RUN go mod download
 COPY . .
 
 # Kompilasi binary statis dengan strip simbol
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/server
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck
 
 # Tahap 2: Runtime Container Minimal & Non-Root
 FROM alpine:3.21

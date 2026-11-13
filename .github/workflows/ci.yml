@@ -38,7 +38,7 @@ jobs:
           docker compose -f docker-compose.test.yml --env-file .env.test.alt config --quiet
 
       - name: Hadolint Audit Dockerfile
-        run: docker run --rm -i ghcr.io/hadolint/hadolint:latest hadolint - < Dockerfile
+        run: docker run --rm -i hadolint/hadolint < Dockerfile
 
       - name: Trivy Config & Filesystem Scan
         run: docker run --rm -v "${{ github.workspace }}:/src" aquasec/trivy:latest config --severity HIGH,CRITICAL --exit-code 1 /src

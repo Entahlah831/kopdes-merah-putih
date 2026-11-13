@@ -2,7 +2,6 @@ name: kopdes-test-stack
 
 networks:
   kopdes_test_internal:
-    internal: true
   kopdes_test_edge:
 
 volumes:

@@ -1,0 +1,11 @@
+# Hanya mengabaikan temuan pada commit historis lama yang isinya SUDAH dibersihkan di HEAD saat ini.
+# Setiap rahasia baru pada commit berikutnya akan tetap memicu kegagalan Gitleaks.
+d198098bc683288d19eb4e2b136ab94b6bea9bd3:.env.example:generic-api-key:52
+0fde6ce70f1337715b5c85e1dc4a8ca071830d91:internal/config/config_test.go:generic-api-key:25
+43e2e207fd305855a37fd3eec4dab3c8ff26cd58:docs/DOKUMENTASI_LENGKAP_API_KOPDES.html:generic-api-key:395
+43e2e207fd305855a37fd3eec4dab3c8ff26cd58:scripts/generate_docs.py:generic-api-key:408
+24ffe9a24c57750508a05a7594f0fd11140a97ff:docs/backend_integration_guide.md:generic-api-key:85
+24ffe9a24c57750508a05a7594f0fd11140a97ff:docs/backend_integration_guide.md:generic-api-key:86
+24ffe9a24c57750508a05a7594f0fd11140a97ff:docs/backend_integration_guide.md:generic-api-key:87
+24ffe9a24c57750508a05a7594f0fd11140a97ff:docs/backend_integration_guide.md:generic-api-key:88
+b2ced33c064cca6a164b0bf284a8d6af34239874:docs/backend_integration_guide.md:generic-api-key:120

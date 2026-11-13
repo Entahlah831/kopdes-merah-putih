@@ -3,10 +3,21 @@
 set -euo pipefail
 
 if [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
+  while IFS= read -r _line || [ -n "${_line}" ]; do
+    _line="${_line%$'\r'}"
+    case "${_line}" in
+      ''|\#*) continue ;;
+    esac
+    if [[ "${_line}" == *=* ]]; then
+      _key="${_line%%=*}"
+      _val="${_line#*=}"
+      _key="${_key#"${_key%%[![:space:]]*}"}"
+      _key="${_key%"${_key##*[![:space:]]}"}"
+      if [[ "${_key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        export "${_key}=${_val}"
+      fi
+    fi
+  done < "${ENV_FILE}"
 fi
 
 DB_HOST="${DB_HOST:?DB_HOST wajib disetel}"
@@ -34,6 +45,7 @@ echo "-> WAL LSN Checkpoint: ${WAL_LSN}"
 KOPERASI_ID=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -t -A -c "SELECT id FROM koperasi LIMIT 1;" || true)
 if [ -n "${KOPERASI_ID}" ]; then
   psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 <<-EOSQL > /dev/null
+    BEGIN;
     SELECT set_config('app.is_platform_admin', 'true', true);
     INSERT INTO audit_log (id, koperasi_id, nama_tabel, record_id, aksi, data_baru, created_at)
     VALUES (
@@ -41,10 +53,11 @@ if [ -n "${KOPERASI_ID}" ]; then
       '${KOPERASI_ID}',
       'sistem_drill',
       uuid_generate_v7(),
-      'RESTORE_DRILL_MARKER',
-      jsonb_build_object('drill_id', '${DRILL_ID}', 'wal_lsn', '${WAL_LSN}'),
+      'INSERT',
+      jsonb_build_object('marker', 'RESTORE_DRILL_MARKER', 'drill_id', '${DRILL_ID}', 'wal_lsn', '${WAL_LSN}'),
       NOW()
     );
+    COMMIT;
 EOSQL
 fi
 

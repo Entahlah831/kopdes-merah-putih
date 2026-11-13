@@ -3,10 +3,21 @@
 set -euo pipefail
 
 if [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
+  while IFS= read -r _line || [ -n "${_line}" ]; do
+    _line="${_line%$'\r'}"
+    case "${_line}" in
+      ''|\#*) continue ;;
+    esac
+    if [[ "${_line}" == *=* ]]; then
+      _key="${_line%%=*}"
+      _val="${_line#*=}"
+      _key="${_key#"${_key%%[![:space:]]*}"}"
+      _key="${_key%"${_key##*[![:space:]]}"}"
+      if [[ "${_key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        export "${_key}=${_val}"
+      fi
+    fi
+  done < "${ENV_FILE}"
 fi
 
 BACKUP_DIR="${BACKUP_DIR:?BACKUP_DIR wajib disetel}"

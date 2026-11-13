@@ -106,5 +106,6 @@ Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` 
 | `WHATSAPP_API_KEY` | `string` | _(kosong)_ | `optional` | **Ya** | `api` | Kunci API gateway WhatsApp opsional untuk worker outbox | _(opsional)_ |
 | `SMS_API_KEY` | `string` | _(kosong)_ | `optional` | **Ya** | `api` | Kunci API gateway SMS opsional untuk worker outbox | _(opsional)_ |
 | `WEBHOOK_SIGNING_SECRET` | `string` | _(kosong)_ | `optional` | **Ya** | `api` | Rahasia HMAC-SHA256 penandatangan request outbox webhook | _(opsional)_ |
+| `ENV_FILE` | `string` | `.env` | `optional` | Tidak | `api,scripts` | Path berkas .env fallback untuk binary server dan skrip operasional | `.env` |
 | `TEST_ENV_FILE` | `string` | `.env.test` | `optional` | Tidak | `tests` | Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt) | `.env.test` |
 | `TEST_DATABASE_URL` | `string` | _(kosong)_ | `test` | **Ya** | `tests` | DSN khusus suite tes Go (wajib berakhiran *_test) | `postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable` |

@@ -445,7 +445,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				FROM pembayaran
 				WHERE rekening_qris_id = $1
 				  AND koperasi_id = $2
-				  AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE $3::text)::date AT TIME ZONE $3::text
+				  AND created_at >= date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE $3::text) AT TIME ZONE $3::text
 				  AND status IN ('menunggu_pembayaran', 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'disetujui')
 				  AND deleted_at IS NULL;
 			`, rekeningID, claims.KoperasiID, h.timezone).Scan(&akumulasiHariIni)

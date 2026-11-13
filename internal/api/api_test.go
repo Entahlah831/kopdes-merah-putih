@@ -4337,7 +4337,7 @@ func TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree(t *testing.T) {
 		) VALUES (
 			$1, 'PAY-REJECTED-001', $2, $3, $4,
 			$5, 'iuran_bulanan', 800000, 101, 101, 'ditolak',
-			'Alasan penolakan dummy', NOW() + INTERVAL '1 hour', NOW() AT TIME ZONE 'Asia/Jakarta', $2
+			'Alasan penolakan dummy', NOW() + INTERVAL '1 hour', NOW(), $2
 		);
 	`, env.KoperasiID, env.AnggotaUserID, env.AnggotaID, metodeID, rekeningPilotID)
 	if err != nil {
@@ -4369,7 +4369,7 @@ func TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree(t *testing.T) {
 		) VALUES (
 			$1, 'PAY-ACTIVE-001', $2, $3, $4,
 			$5, 'iuran_bulanan', 850000, 103, 103, 'disetujui',
-			NOW() + INTERVAL '1 hour', NOW() AT TIME ZONE 'Asia/Jakarta', $2
+			NOW() + INTERVAL '1 hour', NOW(), $2
 		);
 	`, env.KoperasiID, env.AnggotaUserID, env.AnggotaID, metodeID, rekeningPilotID)
 	if err != nil {

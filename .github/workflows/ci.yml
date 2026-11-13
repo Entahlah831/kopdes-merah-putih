@@ -26,9 +26,12 @@ jobs:
           go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
           go run ./cmd/envcheck --compare .env.test .env.test.alt
 
-      - name: Validasi Sintaks Docker Compose (Semua Profil)
+      - name: Validasi Sintaks Docker Compose & Penolakan .env.example Kosong
         run: |
-          docker compose --env-file .env.example config --quiet
+          if go run ./cmd/envcheck --strict --env-file .env.example >/dev/null 2>&1; then
+            echo "ERROR: .env.example seharusnya gagal strict check karena secret wajib kosong!"
+            exit 1
+          fi
           docker compose --env-file .env.test config --quiet
           docker compose --env-file .env.test.alt config --quiet
           docker compose -f docker-compose.test.yml --env-file .env.test config --quiet

@@ -1,5 +1,5 @@
 # Tahap 1: Build binary statis Go menggunakan versi terbaru yang ter-patch
-FROM golang:1.27.4-alpine3.21 AS builder
+FROM golang:1.27.4-alpine3.23 AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/
     CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck
 
 # Tahap 2: Runtime Container Minimal & Non-Root
-FROM alpine:3.21
+FROM alpine:3.23
 
 WORKDIR /app
 

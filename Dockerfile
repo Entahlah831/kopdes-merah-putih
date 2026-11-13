@@ -4,6 +4,7 @@ FROM golang:1.27.4-alpine3.21 AS builder
 WORKDIR /app
 
 # Dependensi build minimal (termasuk sertifikat Root CA & data zona waktu)
+# hadolint ignore=DL3018
 RUN apk add --no-cache git ca-certificates tzdata
 
 # Cache layer untuk go.mod dan go.sum
@@ -25,6 +26,7 @@ WORKDIR /app
 ARG APP_TIMEZONE=UTC
 ENV TZ=${APP_TIMEZONE}
 
+# hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata curl && \
     addgroup -S kopdes && adduser -S -G kopdes kopdesuser && \
     mkdir -p /app/storage/kyc && chown -R kopdesuser:kopdes /app/storage

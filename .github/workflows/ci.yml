@@ -35,24 +35,15 @@ jobs:
           docker compose -f docker-compose.test.yml --env-file .env.test.alt config --quiet
 
       - name: Hadolint Audit Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
+        run: docker run --rm -i ghcr.io/hadolint/hadolint:latest hadolint - < Dockerfile
 
-      - name: Trivy Config & Image Scan
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: 'config'
-          scan-ref: '.'
-          severity: 'HIGH,CRITICAL'
-          exit-code: '1'
+      - name: Trivy Config & Filesystem Scan
+        run: docker run --rm -v "${{ github.workspace }}:/src" aquasec/trivy:latest config --severity HIGH,CRITICAL --exit-code 1 /src
 
       - name: Gitleaks Secret Scanning
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: detect --config .gitleaks.toml --verbose --redact
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          "$(go env GOPATH)/bin/gitleaks" git --config .gitleaks.toml --verbose --redact
 
   test-and-security-setA:
     runs-on: ubuntu-latest
@@ -120,20 +111,27 @@ jobs:
 
       - name: Boot Stack Set B dari Nol (Port Non-Standar 18080/15433/19100)
         run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-client-16
-          set -a
-          source .env.test.alt
-          set +a
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          while IFS= read -r _line || [ -n "${_line}" ]; do
+            _line="${_line%$'\r'}"
+            [[ -z "${_line}" || "${_line}" == \#* ]] && continue
+            if [[ "${_line}" == *=* ]]; then
+              _k="${_line%%=*}"
+              _v="${_line#*=}"
+              export "${_k}=${_v}"
+            fi
+          done < .env.test.alt
           docker compose -f docker-compose.test.yml --env-file .env.test.alt up -d --build
+          READY=0
           for i in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz" >/dev/null; then
               echo "Set B API siap pada port ${API_HOST_PORT}"
+              READY=1
               break
             fi
             sleep 3
           done
+          test "${READY}" = "1"
           curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
           STATUS_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${METRICS_HOST_PORT}/metrics")
           test "${STATUS_NOAUTH}" = "401"
@@ -141,12 +139,18 @@ jobs:
 
       - name: Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B
         run: |
-          set -a
-          source .env.test.alt
-          set +a
+          while IFS= read -r _line || [ -n "${_line}" ]; do
+            _line="${_line%$'\r'}"
+            [[ -z "${_line}" || "${_line}" == \#* ]] && continue
+            if [[ "${_line}" == *=* ]]; then
+              _k="${_line%%=*}"
+              _v="${_line#*=}"
+              export "${_k}=${_v}"
+            fi
+          done < .env.test.alt
           go test -count=1 -race ./...
-          bash scripts/backup.sh
-          bash scripts/restore_drill.sh
+          ENV_FILE=.env.test.alt bash scripts/backup.sh
+          ENV_FILE=.env.test.alt bash scripts/restore_drill.sh
           go run ./cmd/loadtest --base-url "http://127.0.0.1:${API_HOST_PORT}" --members 2000 --concurrency 100
 
       - name: Bersihkan Container Set B

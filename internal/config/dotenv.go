@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 // ParseEnvFile membaca pasangan KEY=VALUE dari berkas .env tanpa mengekspansi shell.
 func ParseEnvFile(path string) (map[string]string, error) {
-	f, err := os.Open(path)
+	// #nosec G304 -- membaca path berkas env yang dikonfigurasi caller/CLI
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}

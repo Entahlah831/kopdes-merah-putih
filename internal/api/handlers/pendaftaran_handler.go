@@ -572,6 +572,7 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	const maxUploadSize = 5 * 1024 * 1024
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
+	// #nosec G120 -- r.Body sudah dibatasi via http.MaxBytesReader tepat di baris sebelumnya
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		response.BadRequest(w, "Ukuran file lampiran melampaui batas maksimal 5 MB")
 		return
@@ -611,15 +612,30 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	checksum := hex.EncodeToString(h256[:])
 
 	dokumenID := uuid.New()
-	storageKey := fmt.Sprintf("pendaftaran/%s/%s/%s_%s", claims.KoperasiID, pendaftaranID, dokumenID, header.Filename)
+	safeFilename := strings.ReplaceAll(filepath.Base(header.Filename), "..", "_")
+	if safeFilename == "" || safeFilename == "." || safeFilename == "/" || safeFilename == `\` {
+		safeFilename = "dokumen"
+	}
+	storageKey := fmt.Sprintf("pendaftaran/%s/%s/%s_%s", claims.KoperasiID, pendaftaranID, dokumenID, safeFilename)
 
-	// Simpan berkas fisik ke penyimpanan lokal/volume
+	// Simpan berkas fisik ke penyimpanan lokal/volume (dengan validasi path traversal)
 	storageBase := h.resolveStorageKYCDir()
-	targetPath := filepath.Join(storageBase, storageKey)
+	absBase, err := filepath.Abs(storageBase)
+	if err != nil {
+		response.InternalServerError(w, "Gagal memvalidasi direktori penyimpanan dokumen")
+		return
+	}
+	targetPath := filepath.Join(absBase, filepath.FromSlash(storageKey))
+	if !strings.HasPrefix(targetPath, absBase+string(os.PathSeparator)) {
+		response.BadRequest(w, "Nama berkas tidak valid")
+		return
+	}
+	// #nosec G703 -- targetPath sudah divalidasi berada di dalam absBase dengan filepath.Base dan prefix separator
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0750); err != nil {
 		response.InternalServerError(w, "Gagal menyiapkan direktori penyimpanan dokumen")
 		return
 	}
+	// #nosec G703 -- targetPath sudah divalidasi berada di dalam absBase dengan filepath.Base dan prefix separator
 	if err := os.WriteFile(targetPath, fileBytes, 0600); err != nil {
 		response.InternalServerError(w, "Gagal menulis berkas dokumen ke penyimpanan fisik")
 		return
@@ -653,6 +669,7 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	})
 
 	if err != nil {
+		// #nosec G703 -- targetPath sudah divalidasi di atas berada dalam absBase
 		_ = os.Remove(targetPath)
 		response.InternalServerError(w, fmt.Sprintf("Gagal menyimpan dokumen: %v", err))
 		return

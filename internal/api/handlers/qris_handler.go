@@ -177,6 +177,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 		} else if cachedRec != nil {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(cachedRec.ResponseCode)
+			// #nosec G705 -- respons idempotensi bertipe application/json dari cache transaksi server
 			_, _ = w.Write(cachedRec.ResponseBody)
 			return
 		}

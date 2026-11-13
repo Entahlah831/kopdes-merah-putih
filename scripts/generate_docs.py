@@ -405,7 +405,7 @@ docker compose up -d --build</code></pre>
       <pre><code>{
   "success": true,
   "data": {
-    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "access_token": "<JWT_ACCESS_TOKEN>",
     "token_type": "Bearer",
     "expires_in_seconds": 86400,
     "user": {

@@ -1,5 +1,5 @@
 # Tahap 1: Build binary statis Go menggunakan versi terbaru yang ter-patch
-FROM golang:1.25.8-alpine3.21 AS builder
+FROM golang:1.27.4-alpine3.21 AS builder
 
 WORKDIR /app
 

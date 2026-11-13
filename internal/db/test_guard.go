@@ -63,8 +63,10 @@ func loadTestEnvMap() map[string]string {
 
 	candidatePath := envFile
 	if !filepath.IsAbs(candidatePath) {
-		candidatePath = filepath.Join(findRepoRoot(), envFile)
+		candidatePath = filepath.Join(findRepoRoot(), filepath.Base(envFile))
 	}
+	candidatePath = filepath.Clean(candidatePath)
+	// #nosec G304,G703 -- helper tes membaca file profil env lokal repositori setelah pembersihan path
 	data, err := os.ReadFile(candidatePath)
 	if err != nil {
 		return envMap

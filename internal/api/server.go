@@ -153,6 +153,7 @@ func ValidateProductionDatabasePassword(appEnv, dbPassword, kopdesAppPassword st
 	if pass == "" {
 		return errors.New("pada profil produksi, variabel lingkungan KOPDES_APP_PASSWORD atau DB_PASSWORD wajib disetel")
 	}
+	// #nosec G101 -- literal pembanding untuk menolak password dev bawaan di profil produksi
 	if pass == "kopdes_dev_password" {
 		return errors.New("pada profil produksi, dilarang menggunakan password default dev (kopdes_dev_password)")
 	}

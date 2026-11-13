@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -59,10 +60,10 @@ func main() {
 		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", security.RedactDSN(dsn), err)
 	}
 
-	if appCfg.DBPoolMaxConns > 0 {
+	if appCfg.DBPoolMaxConns > 0 && appCfg.DBPoolMaxConns <= math.MaxInt32 {
 		pgxCfg.MaxConns = int32(appCfg.DBPoolMaxConns)
 	}
-	if appCfg.DBPoolMinConns > 0 {
+	if appCfg.DBPoolMinConns > 0 && appCfg.DBPoolMinConns <= math.MaxInt32 {
 		pgxCfg.MinConns = int32(appCfg.DBPoolMinConns)
 	}
 

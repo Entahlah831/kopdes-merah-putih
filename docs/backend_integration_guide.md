@@ -82,10 +82,10 @@ DB_SSLMODE=disable
 DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=${DB_SSLMODE}
 
 # 3. Kunci Kriptografi (32-byte Hex Random)
-JWT_SECRET=4195a376a9c8dcafec4fc3eabf6723681224d4d1aa69bd5df68159f8b537ec7a
-BLIND_INDEX_SECRET=67c1e8ce4b201264b2794bfc2275079f10dd5fba5a837b3afb76f41428f824a2
-AES_MASTER_KEY=8311388c97cabf827500afc01f8cfaa3d68b957c7061ae86c095e5962715b063
-QRIS_SECRET=1b43d46e7bbecedf897fc4c3200974391c0e0815a13dc32620bcdf2d565f6d65
+JWT_SECRET=<ISI_DENGAN_OPENSSL_RAND_HEX_32>
+BLIND_INDEX_SECRET=<ISI_DENGAN_OPENSSL_RAND_HEX_32>
+AES_MASTER_KEY=<ISI_DENGAN_OPENSSL_RAND_HEX_32>
+QRIS_SECRET=<ISI_DENGAN_OPENSSL_RAND_HEX_32>
 
 # 4. Kebijakan Jaringan & Rate Limit
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000
@@ -133,7 +133,7 @@ Ketika koperasi mendaftar ke Bank Acquirer (BRI, Mandiri, BNI, BCA, dll), bank m
   {
     "success": true,
     "data": {
-      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "access_token": "<JWT_ACCESS_TOKEN>",
       "token_type": "Bearer",
       "expires_in_seconds": 86400,
       "user": {

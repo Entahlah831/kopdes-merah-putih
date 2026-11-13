@@ -815,6 +815,58 @@ number name                                         status    conclusion
   ok  	github.com/kopdes/merah-putih/internal/security	1.426s
   ```
 
+---
+
+### IX. AUDIT KONFIGURASI TERPUSAT, PORT ALTERNATIF (SET B), CI MULTI-JOB & DOKUMENTASI LENGKAP (2026-11-13)
+
+1. **Perbaikan Sensitivitas Zona Waktu Linux (UTC) pada Batas Harian Pilot (`1fa4f1c`)**
+   - Akar masalah di `internal/api/handlers/qris_handler.go`: casting ganda `((CURRENT_TIMESTAMP AT TIME ZONE $3::text)::date AT TIME ZONE $3::text)` menghasilkan offset keliru saat `TimeZone` sesi PostgreSQL bernilai `UTC` (Linux Docker/CI).
+   - Diperbaiki menjadi `date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE $3::text) AT TIME ZONE $3::text`.
+   - Diverifikasi lulus di kedua zona waktu (`PGTZ=UTC TZ=UTC` dan `PGTZ=Asia/Jakarta TZ=Asia/Jakarta`) via `go test -count=1 -v -race -run "Pilot" ./internal/api`.
+
+2. **Perbaikan Keamanan `gosec G706` & Kepercayaan Proxy Load Test Docker Set B (`5b24dab`)**
+   - Menambahkan sanitasi newline/CRLF (`sanitizeLogValue`) di `cmd/server/main.go` serta menandai `#nosec G706` hanya pada titik cetak yang telah disanitasi.
+   - Menambahkan subnet bridge Docker `172.16.0.0/12` ke `TRUSTED_PROXIES` pada `.env.test.alt` agar simulasi 2.000 anggota dengan `X-Forwarded-For` tidak terkena rate-limit per host gateway.
+
+3. **Hasil Penuh GitHub Actions CI Linux Run ID `43385163339` (Commit `5b24dab` — 100% HIJAU)**
+   - **URL Run:** `https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43385163339` (`status=completed`, `conclusion=success`)
+   - **`config-and-static-audit` (`131751801060`):** `completed/success` (`envcheck --strict --ports` Set A & Set B, `--compare`, penolakan `.env.example`, `docker compose config`, Hadolint, Trivy `--severity HIGH,CRITICAL --exit-code 1 .`, Gitleaks).
+   - **`test-and-security-setA` (`131751801297`):** `completed/success` (`go test -count=1 -race -p 1 ./...` semua paket `ok` termasuk `internal/api 472.845s`, `govulncheck ./...` -> `No vulnerabilities found.`, `staticcheck ./...`, `gosec` -> `Issues : 0`).
+   - **`docker-setB-e2e-and-load` (`131752034881`):** `completed/success`:
+     - Stack Set B (`18080/15433/19100`, `kopdes_alt_test`) & `go test -count=1 -race -p 1 ./...`: semua paket `ok` (`internal/api 469.022s`).
+     - Backup & `scripts/restore_drill.sh`: `WAL LSN Checkpoint: 0/2342000`, `Tabel Terpulihkan: 129 (durasi 2s)`, `Marker Audit Drill: 1`, `Pemeriksaan Rantai Hash audit_log (broken links): 0`, `Tabel RLS Aktif: 61`, `RESTORE DRILL BERHASIL: Snapshot, Marker, RLS, dan Integritas Hash Chain Terverifikasi.`
+     - `cmd/loadtest` 2.000 anggota (100 konkurensi): `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `duration_sec: 0.127`, `p50: 3.71`, `p95: 20.08`, `p99: 31.67`.
+
+4. **Verifikasi Lokal Konfigurasi (`envcheck`) & Pemindaian Keamanan**
+   ```text
+   envcheck STRICT PASS (.env.test): 79 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100 (EXIT: 0)
+   envcheck STRICT+PORTS PASS (.env.test.alt): tidak ada konflik port, 79 variabel, API_PORT=18080, METRICS_PORT=19100 (EXIT: 0)
+   envcheck STRICT REJECT (.env.example): DITOLAK sesuai aturan — NILAI KOSONG DB_PASSWORD, JWT_SECRET, AES_MASTER_KEY, BLIND_INDEX_SECRET, QRIS_SECRET, METRICS_TOKEN (EXIT: 1)
+   envcheck COMPARE PASS (.env.test vs .env.test.alt): skema kunci 100% identik (79 kunci) (EXIT: 0)
+   envcheck PORTS CONFLICT (.env.test saat PG Set A aktif di 5433): PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433 (EXIT: 1)
+
+   gitleaks git --no-banner -v -> 68 commits scanned, 1.35 MB, no leaks found (EXIT: 0)
+   staticcheck ./... -> 0 isu (EXIT: 0)
+   gosec -quiet -exclude=G104,G304,G101,G505,G115 ./... -> 0 isu (EXIT: 0)
+   govulncheck ./... (Windows lokal go1.27.1) -> mendeteksi 11 kerentanan stdlib go1.27.1 (fixed in go1.27.4; CI Linux & Dockerfile sudah go 1.27.4 dengan 0 kerentanan).
+   ```
+
+5. **Pembuatan & Pengujian Otomatis Paket Dokumentasi Lengkap (`Tugas E`)**
+   - Pembaruan menyeluruh: `docs/openapi.yaml` (OpenAPI 3.0.3 v1.1.0, seluruh 48 path, server berparameter), `scripts/generate_api_artifacts.py` (`docs/kopdes.postman_collection.json`, `docs/kopdesClient.ts`), `docs/README.md`, `docs/BACKEND_GUIDE.md`, `docs/FRONTEND_GUIDE.md`, `docs/TUGAS_MANUAL_PEMILIK.md`, `docs/AUDIT_REPORT.md`, serta pembaruan `scripts/generate_docs.py` dan regenerasi `DOKUMENTASI_LENGKAP_API_KOPDES.html` (30.872 B), `.pdf` (507.935 B), `.docx` (3.955 B).
+   - Suite uji dokumentasi otomatis (`internal/api/docs_verification_test.go`) lulus penuh:
+     ```text
+     $ go test -count=1 -v -race -run TestDoc ./internal/api
+     === RUN   TestDoc_OpenAPI_RouteParity
+     --- PASS: TestDoc_OpenAPI_RouteParity (0.03s)
+     === RUN   TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims
+     --- PASS: TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims (0.23s)
+     === RUN   TestDoc_EndToEnd_DocumentedWorkflows
+     --- PASS: TestDoc_EndToEnd_DocumentedWorkflows (41.29s)
+     PASS
+     ok  	github.com/kopdes/merah-putih/internal/api	46.062s
+     ```
+
+
 
 
 

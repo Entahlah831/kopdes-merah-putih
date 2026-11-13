@@ -46,3 +46,6 @@ Karena host pengujian saat pengembangan tidak memiliki daemon Docker lokal maupu
 2. Verifikasi `curl -fsS http://127.0.0.1:${API_HOST_PORT}/readyz` mengembalikan HTTP `200`.
 3. Pastikan `/metrics` tidak terekspos ke publik oleh reverse proxy (Caddy/Nginx) dan hanya di-scrape Prometheus menggunakan `METRICS_TOKEN`.
 4. Konsultasikan dengan konsultan hukum/notaris mengenai kesesuaian masa retensi `PDP_REJECTED_RETENTION_DAYS` (default 30 hari — **PERLU VERIFIKASI HUKUM**).
+5. Tetapkan klasifikasi pembukuan akuntansi untuk setiap jenis iuran (`pokok`, `wajib`, `sukarela`) bersama akuntan koperasi sebelum periode tutup buku (**KEPUTUSAN AKUNTAN**).
+6. Lengkapi kredensial penyedia eksternal nyata saat beralih dari stub/outbox lokal: gateway SMS/WhatsApp (`NOTIFIER_*`), penyimpanan objek S3/MinIO untuk berkas KYC (jika pindah dari `STORAGE_KYC_DIR` lokal), serta payload QRIS badan hukum koperasi dari PJP resmi ketika menonaktifkan `ALLOW_PERSONAL_PAYMENT_PILOT=false`.
+7. Bila membangun biner dari mesin pengembang Windows secara langsung (non-Docker), perbarui toolchain Go lokal ke rilis patch terbaru (di mesin dev terdeteksi `go1.27.1`, sementara `govulncheck` pada container Linux CI sudah lolos `No vulnerabilities found`).

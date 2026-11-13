@@ -58,5 +58,79 @@ Seluruh 5 parameter kebijakan telah ditetapkan secara resmi oleh Ketua Koperasi 
 
 ---
 
-## 4. Kesimpulan Akhir
-Basis kode dan infrastruktur database Koperasi Desa Merah Putih kini berada dalam kondisi **siap produksi (production-ready)** dari aspek integritas data, ketahanan multi-tenant, dan kepatuhan hukum privasi Indonesia.
+## 4. Kesimpulan & Status Kesiapan Terkini (2026-11-13)
+Basis kode, skema PostgreSQL 16 (termasuk pemulihan adapter stub `internal/simkopdes` sebagai batas integrasi siap-ekstensi), pengujian otomatis Go `-race`, konfigurasi terpusat (`envcheck`), serta paket dokumentasi teknis berada dalam kondisi terverifikasi pada lingkungan pengujian Set A dan Set B (Windows + Linux GitHub Actions CI). Keseluruhan klaim kepatuhan mutlak tetap tunduk pada audit hukum (`PERLU VERIFIKASI HUKUM`), penetapan pembukuan akuntansi (`KEPUTUSAN AKUNTAN`), dan pengisian kredensial produksi oleh pemilik sistem ([TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md)).
+
+---
+
+## 5. Hasil Audit Konfigurasi Terpusat (`envcheck`) & Uji Konflik Port
+
+Seluruh konfigurasi dievaluasi tanpa memodifikasi `.env` asli pemilik, melainkan menggunakan dua berkas uji terisolasi (`.env.test` Set A dan `.env.test.alt` Set B dengan 79 variabel):
+
+```text
+=== .env.test (Set A --strict) ===
+envcheck STRICT PASS: 79 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100 (EXIT: 0)
+
+=== .env.test.alt (Set B --strict --ports) ===
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 79 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100 (EXIT: 0)
+
+=== .env.example (Penolakan Nilai Kosong Wajib) ===
+NILAI KOSONG: DB_PASSWORD wajib diisi
+NILAI KOSONG: JWT_SECRET wajib diisi
+NILAI KOSONG: AES_MASTER_KEY wajib diisi
+NILAI KOSONG: BLIND_INDEX_SECRET wajib diisi
+NILAI KOSONG: QRIS_SECRET wajib diisi
+NILAI KOSONG: METRICS_TOKEN wajib diisi
+DSN DB TIDAK VALID: DB_PASSWORD wajib diisi
+VALIDASI KEAMANAN GAGAL: secret JWT_SECRET tidak valid: panjang minimal 32 byte (didapat 0 byte)
+(EXIT: 1 — Ditolak sesuai ekspektasi)
+
+=== Perbandingan Skema (.env.test vs .env.test.alt) ===
+envcheck COMPARE PASS: skema kunci 100% identik (79 kunci). (Seluruh rahasia disamarkan ***REDACTED***)
+
+=== Uji Deteksi Konflik Port Live (--ports saat Set A PostgreSQL aktif pada :5433) ===
+PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433 (listen tcp 127.0.0.1:5433: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.) (EXIT: 1 — Bentrok terdeteksi akurat)
+```
+
+---
+
+## 6. Pemindaian Keamanan Statis, Container, Secret & Toolchain
+
+| Pemindai | Lingkungan Eksekusi | Hasil Teramati | Catatan |
+|---|---|---|---|
+| **Gitleaks** | Lokal Windows + Linux CI | `0` kebocoran (`68` commit dipindai, `1.35 MB`) | EXIT `0` |
+| **staticcheck `./...`** | Lokal Windows + Linux CI | `0` temuan | EXIT `0` |
+| **gosec `./...`** | Lokal Windows + Linux CI | `Issues : 0` | Pengecualian eksplisit `G104,G304,G101,G505,G115` (`SHA-1` TOTP RFC 6238 di folder terkunci `internal/security/`) |
+| **Hadolint & Trivy Config** | Linux CI (`ubuntu-latest`) | Lolos (`--severity HIGH,CRITICAL --exit-code 1 .`) | Run ID `43385163339` |
+| **`govulncheck ./...` (Linux CI)** | Linux CI (`go 1.27.4`) | `No vulnerabilities found.` | Lolos 100% di target build CI/Docker |
+| **`govulncheck ./...` (Host Windows Lokal)** | Lokal Windows (`go1.27.1`) | 11 temuan stdlib (a.l. `GO-2026-6859`, fixed in `go1.27.4`) | Hanya memengaruhi toolchain dev Windows lokal `1.27.1`; image CI/Docker memakai `1.27.4` |
+
+---
+
+## 7. Perbandingan Hasil Pengujian Set A vs Set B, Load Test & Restore Drill
+
+Pengujian akhir pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43385163339`, commit `5b24dab`) menyelesaikan 3 job paralel hingga 100% hijau (`completed/success`), termasuk validasi sensitivitas timezone `UTC` (Linux CI) vs `Asia/Jakarta` (Windows lokal) untuk batas harian pilot rekening pribadi:
+
+| Aspek Uji | Set A (`kopdes_test`, CI `test-and-security-setA`) | Set B (`kopdes_alt_test`, CI `docker-setB-e2e-and-load`) |
+|---|---|---|
+| **Job ID & Status** | `131751801297` (`completed/success`) | `131752034881` (`completed/success`) |
+| **Port API / DB / Metrics** | `8080 / 5433 / 9100` | `18080 / 15433 / 19100` |
+| **Timeout & TTL** | `JWT 15m (HS256)`, `stmt 15s`, `rate 30 rps` | `JWT 3m (HS512)`, `stmt 12s`, `rate 45 rps`, key rotation aktif |
+| **`go test -count=1 -race -p 1 ./...`** | Seluruh paket `ok` (`internal/api 472.845s`) | Seluruh paket `ok` (`internal/api 469.022s`) |
+| **Uji Beban 2.000 Anggota (`cmd/loadtest`)** | *(Dijalankan di Set B Docker Compose)* | `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `p50: 3.71ms`, `p95: 20.08ms`, `p99: 31.67ms` |
+| **Backup + `scripts/restore_drill.sh`** | *(Dijalankan di Set B Docker Compose)* | `WAL LSN 0/2342000`, `129` tabel pulih (`2s`), Marker Drill `1`, `0 broken links` (`VerifyHashChain` `audit_log`), `61` tabel RLS aktif |
+
+### Verifikasi Dokumentasi & Spesifikasi API Otomatis (`TestDoc_*`)
+Eksekusi lokal pasca-pembaruan dokumentasi (`go test -count=1 -v -race -run TestDoc ./internal/api`):
+- `TestDoc_OpenAPI_RouteParity` (`PASS 0.03s`): paritas 100% seluruh rute `internal/api/server.go` terhadap `docs/openapi.yaml`, `docs/kopdes.postman_collection.json`, dan `docs/kopdesClient.ts` tanpa hardcode alamat/port tetap.
+- `TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims` (`PASS 0.23s`): validasi seluruh tautan relatif & `#heading-anchor` di `docs/*.md`, nihil klaim mutlak yang dilarang, dan mencantumkan penanda `PERLU VERIFIKASI HUKUM` & `KEPUTUSAN AKUNTAN`.
+- `TestDoc_EndToEnd_DocumentedWorkflows` (`PASS 41.29s`): mengeksekusi alur langsung `/healthz`, `/readyz`, `/metrics`, MFA wajib (`MFA_MANDATORY_SETUP_REQUIRED` -> `data.setup_token` -> `/enable` -> `recovery_codes` -> `/mfa/verify`), pendaftaran + upload PNG KYC + masking NIK `****`, `GET /iuran/jenis` (`KEPUTUSAN AKUNTAN`), QRIS `Idempotency-Key` (`201`, replay, `422 IDEMPOTENCY_CONFLICT`), klaim RRN, dan verifikasi maker-checker.
+
+---
+
+## 8. Hal Tertunda & Keputusan Manusia yang Masih Diperlukan
+
+- **`TES DITUNDA` (Menunggu Kredensial & Infrastruktur Eksternal Pemilik):** Integrasi langsung ke API penyedia SMS/WhatsApp berbayar (`internal/outbox` kini menggunakan stub/outbox worker lokal teruji), penyimpanan objek eksternal S3/MinIO jika memindahkan lampiran KYC dari disk lokal, verifikasi domain TLS HTTPS di reverse proxy VPS produksi, serta aktivasi QRIS badan hukum resmi dari PJP (saat `ALLOW_PERSONAL_PAYMENT_PILOT` dimatikan).
+- **`PERLU VERIFIKASI HUKUM`:** Konsultan hukum/notaris perlu meninjau masa retensi penghapusan data pendaftar ditolak (`PDP_REJECTED_RETENTION_DAYS`, default `30` hari).
+- **`KEPUTUSAN AKUNTAN`:** Pengurus & akuntan koperasi perlu menetapkan pemetaan jurnal akuntansi (ekuitas vs kewajiban/simpanan) untuk setiap jenis iuran sebelum tutup buku.

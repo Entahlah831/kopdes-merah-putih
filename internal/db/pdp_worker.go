@@ -24,7 +24,7 @@ func StartPDPPurgeWorker(ctx context.Context, pool *pgxpool.Pool, interval time.
 			defer cancel()
 
 			// Ambil daftar koperasi aktif
-			rows, err := pool.Query(runCtx, "SELECT id FROM koperasi WHERE status_operasional = 'aktif';")
+			rows, err := pool.Query(runCtx, "SELECT id FROM koperasi WHERE status_aktif = true AND deleted_at IS NULL;")
 			if err != nil {
 				log.Printf("[PDP-PURGE-WORKER] Gagal mengambil daftar koperasi: %v", err)
 				return

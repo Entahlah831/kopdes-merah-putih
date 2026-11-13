@@ -24,7 +24,11 @@ import (
 var validSQLIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func main() {
-	appCfg, err := config.LoadFromEnvAndFile(".env")
+	envFile := strings.TrimSpace(os.Getenv("ENV_FILE"))
+	if envFile == "" {
+		envFile = ".env"
+	}
+	appCfg, err := config.LoadFromEnvAndFile(envFile)
 	if err != nil {
 		log.Fatalf("Gagal memuat konfigurasi aplikasi: %v", err)
 	}

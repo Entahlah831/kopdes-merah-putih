@@ -2,10 +2,9 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -14,33 +13,105 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/auth"
+	"github.com/kopdes/merah-putih/internal/config"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
 type Config struct {
-	Port                      int
-	JWTSecret                 string
-	BlindIndexSecret          string
-	QRISSecret                string
-	AESMasterKey              string
-	AllowedOrigins            []string
-	RateLimitRPS              float64
-	RateLimitBurst            int
-	TrustedProxies            []string
-	MaxRateLimitClients       int
-	QRISDynamicEnabled        bool
-	AllowPersonalPaymentPilot bool
-	MetricsToken              string
+	AppEnv                       string
+	AppTimezone                  string
+	Port                         int
+	MetricsPort                  int
+	JWTSecret                    string
+	JWTPreviousSecret            string
+	JWTAlgorithm                 string
+	JWTIssuer                    string
+	JWTAccessTTL                 time.Duration
+	JWTRefreshTTL                time.Duration
+	BlindIndexSecret             string
+	QRISSecret                   string
+	AESMasterKey                 string
+	AESKeyVersion                string
+	AESKeyID                     string
+	AESPreviousKeys              string
+	AllowedOrigins               []string
+	RateLimitRPS                 float64
+	RateLimitBurst               int
+	TrustedProxies               []string
+	MaxRateLimitClients          int
+	MaxBodyBytes                 int64
+	HTTPReadHeaderTimeout        time.Duration
+	HTTPReadTimeout              time.Duration
+	HTTPWriteTimeout             time.Duration
+	HTTPIdleTimeout              time.Duration
+	BcryptCost                   int
+	MFAIssuer                    string
+	MFAMaxAttempts               int
+	MFASessionTTL                time.Duration
+	MFASetupTTL                  time.Duration
+	LoginMaxAttempts             int
+	LoginLockoutDuration         time.Duration
+	QRISDynamicEnabled           bool
+	AllowPersonalPaymentPilot    bool
+	PilotDefaultMaxPerTx         int64
+	PilotDefaultMaxPerDay        int64
+	DualApprovalDefaultThreshold int64
+	StorageKYCDir                string
+	MaxKYCUploadBytes            int64
+	MetricsToken                 string
+	MetricsPreviousToken         string
 }
 
 func decodeSecretBytes(secret string) []byte {
-	if s, err := hex.DecodeString(secret); err == nil && len(s) >= 32 {
-		return s
+	return security.DecodeSecretMaterial(secret)
+}
+
+// ConfigFromAppConfig mengonversi config.AppConfig menjadi api.Config secara deterministik.
+func ConfigFromAppConfig(c config.AppConfig) Config {
+	return Config{
+		AppEnv:                       c.AppEnv,
+		AppTimezone:                  c.AppTimezone,
+		Port:                         c.APIPort,
+		MetricsPort:                  c.MetricsPort,
+		JWTSecret:                    c.JWTSecret,
+		JWTPreviousSecret:            c.JWTPreviousSecret,
+		JWTAlgorithm:                 c.JWTAlgorithm,
+		JWTIssuer:                    c.JWTIssuer,
+		JWTAccessTTL:                 c.JWTAccessTTL,
+		JWTRefreshTTL:                c.JWTRefreshTTL,
+		BlindIndexSecret:             c.BlindIndexSecret,
+		QRISSecret:                   c.QRISSecret,
+		AESMasterKey:                 c.AESMasterKey,
+		AESKeyVersion:                c.AESKeyVersion,
+		AESKeyID:                     c.AESKeyID,
+		AESPreviousKeys:              c.AESPreviousKeys,
+		AllowedOrigins:               c.AllowedOrigins,
+		RateLimitRPS:                 c.RateLimitRPS,
+		RateLimitBurst:               c.RateLimitBurst,
+		TrustedProxies:               c.TrustedProxies,
+		MaxRateLimitClients:          c.RateLimitMaxClients,
+		MaxBodyBytes:                 c.MaxBodyBytes,
+		HTTPReadHeaderTimeout:        c.HTTPReadHeaderTimeout,
+		HTTPReadTimeout:              c.HTTPReadTimeout,
+		HTTPWriteTimeout:             c.HTTPWriteTimeout,
+		HTTPIdleTimeout:              c.HTTPIdleTimeout,
+		BcryptCost:                   c.BcryptCost,
+		MFAIssuer:                    c.MFAIssuer,
+		MFAMaxAttempts:               c.MFAMaxAttempts,
+		MFASessionTTL:                c.MFASessionTTL,
+		MFASetupTTL:                  c.MFASetupTTL,
+		LoginMaxAttempts:             c.LoginMaxAttempts,
+		LoginLockoutDuration:         c.LoginLockoutDuration,
+		QRISDynamicEnabled:           c.QRISDynamicEnabled,
+		AllowPersonalPaymentPilot:    c.AllowPersonalPaymentPilot,
+		PilotDefaultMaxPerTx:         c.PilotDefaultMaxPerTx,
+		PilotDefaultMaxPerDay:        c.PilotDefaultMaxPerDay,
+		DualApprovalDefaultThreshold: c.DualApprovalDefaultThreshold,
+		StorageKYCDir:                c.StorageKYCDir,
+		MaxKYCUploadBytes:            c.MaxKYCUploadBytes,
+		MetricsToken:                 c.MetricsToken,
+		MetricsPreviousToken:         c.MetricsPreviousToken,
 	}
-	if s, err := base64.StdEncoding.DecodeString(secret); err == nil && len(s) >= 32 {
-		return s
-	}
-	return []byte(secret)
 }
 
 // Validate memastikan tidak ada secret default/kosong dan panjang memenuhi standar 32-byte
@@ -59,6 +130,13 @@ func (c *Config) Validate() error {
 	}
 	if err := security.ValidateSecretKey("METRICS_TOKEN", decodeSecretBytes(c.MetricsToken)); err != nil {
 		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(c.AppEnv), "production") {
+		for _, o := range c.AllowedOrigins {
+			if strings.TrimSpace(o) == "*" {
+				return errors.New("ALLOWED_ORIGINS tidak boleh berisi '*' pada mode production")
+			}
+		}
 	}
 	return nil
 }
@@ -83,31 +161,123 @@ func ValidateProductionDatabasePassword(appEnv, dbPassword, kopdesAppPassword st
 
 func DefaultConfig() Config {
 	return Config{
-		Port:                8080,
-		JWTSecret:           "",
-		BlindIndexSecret:    "",
-		QRISSecret:          "",
-		AESMasterKey:        "",
-		AllowedOrigins:      []string{"*"},
-		RateLimitRPS:        20.0,
-		RateLimitBurst:      40,
-		TrustedProxies:            nil,
-		MaxRateLimitClients:       10000,
-		QRISDynamicEnabled:        false,
-		AllowPersonalPaymentPilot: false,
+		AppEnv:                       "development",
+		AppTimezone:                  "Asia/Jakarta",
+		Port:                         8080,
+		MetricsPort:                  9100,
+		JWTSecret:                    "",
+		JWTPreviousSecret:            "",
+		JWTAlgorithm:                 "HS256",
+		JWTIssuer:                    "kopdes-merah-putih",
+		JWTAccessTTL:                 15 * time.Minute,
+		JWTRefreshTTL:                7 * 24 * time.Hour,
+		BlindIndexSecret:             "",
+		QRISSecret:                   "",
+		AESMasterKey:                 "",
+		AESKeyVersion:                "v1",
+		AESKeyID:                     "k1",
+		AllowedOrigins:               []string{"*"},
+		RateLimitRPS:                 20.0,
+		RateLimitBurst:               40,
+		TrustedProxies:               nil,
+		MaxRateLimitClients:          10000,
+		MaxBodyBytes:                 10 * 1024 * 1024,
+		HTTPReadHeaderTimeout:        5 * time.Second,
+		HTTPReadTimeout:              10 * time.Second,
+		HTTPWriteTimeout:             15 * time.Second,
+		HTTPIdleTimeout:              60 * time.Second,
+		BcryptCost:                   12,
+		MFAIssuer:                    "Kopdes Merah Putih",
+		MFAMaxAttempts:               3,
+		MFASessionTTL:                5 * time.Minute,
+		MFASetupTTL:                  15 * time.Minute,
+		LoginMaxAttempts:             5,
+		LoginLockoutDuration:         15 * time.Minute,
+		QRISDynamicEnabled:           false,
+		AllowPersonalPaymentPilot:    false,
+		PilotDefaultMaxPerTx:         1000000,
+		PilotDefaultMaxPerDay:        5000000,
+		DualApprovalDefaultThreshold: 5000000,
+		StorageKYCDir:                "./storage/kyc",
+		MaxKYCUploadBytes:            5 * 1024 * 1024,
 	}
 }
 
 type Server struct {
-	cfg         Config
-	pool        *pgxpool.Pool
-	keyProvider security.KeyProvider
-	httpServer  *http.Server
-	router      *http.ServeMux
+	cfg           Config
+	pool          *pgxpool.Pool
+	keyProvider   security.KeyProvider
+	httpServer    *http.Server
+	metricsServer *http.Server
+	router        *http.ServeMux
+	metricsRouter http.Handler
 }
 
 func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
-	tm := auth.NewTokenManager(cfg.JWTSecret, "kopdes-merah-putih-api")
+	def := DefaultConfig()
+	if cfg.Port <= 0 {
+		cfg.Port = def.Port
+	}
+	if cfg.MaxRateLimitClients <= 0 {
+		cfg.MaxRateLimitClients = def.MaxRateLimitClients
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = def.MaxBodyBytes
+	}
+	if cfg.HTTPReadHeaderTimeout <= 0 {
+		cfg.HTTPReadHeaderTimeout = def.HTTPReadHeaderTimeout
+	}
+	if cfg.HTTPReadTimeout <= 0 {
+		cfg.HTTPReadTimeout = def.HTTPReadTimeout
+	}
+	if cfg.HTTPWriteTimeout <= 0 {
+		cfg.HTTPWriteTimeout = def.HTTPWriteTimeout
+	}
+	if cfg.HTTPIdleTimeout <= 0 {
+		cfg.HTTPIdleTimeout = def.HTTPIdleTimeout
+	}
+	if cfg.LoginMaxAttempts <= 0 {
+		cfg.LoginMaxAttempts = def.LoginMaxAttempts
+	}
+	if cfg.LoginLockoutDuration <= 0 {
+		cfg.LoginLockoutDuration = def.LoginLockoutDuration
+	}
+	if cfg.MFAMaxAttempts <= 0 {
+		cfg.MFAMaxAttempts = def.MFAMaxAttempts
+	}
+	if cfg.MFASessionTTL <= 0 {
+		cfg.MFASessionTTL = def.MFASessionTTL
+	}
+	if cfg.MFASetupTTL <= 0 {
+		cfg.MFASetupTTL = def.MFASetupTTL
+	}
+	if strings.TrimSpace(cfg.MFAIssuer) == "" {
+		cfg.MFAIssuer = def.MFAIssuer
+	}
+	if cfg.JWTAccessTTL <= 0 {
+		cfg.JWTAccessTTL = def.JWTAccessTTL
+	}
+	if cfg.JWTRefreshTTL <= 0 {
+		cfg.JWTRefreshTTL = def.JWTRefreshTTL
+	}
+	if strings.TrimSpace(cfg.JWTAlgorithm) == "" {
+		cfg.JWTAlgorithm = def.JWTAlgorithm
+	}
+	if strings.TrimSpace(cfg.JWTIssuer) == "" {
+		cfg.JWTIssuer = def.JWTIssuer
+	}
+	if strings.TrimSpace(cfg.AESKeyVersion) == "" {
+		cfg.AESKeyVersion = def.AESKeyVersion
+	}
+	if strings.TrimSpace(cfg.AESKeyID) == "" {
+		cfg.AESKeyID = def.AESKeyID
+	}
+
+	tm, err := auth.NewTokenManagerWithConfig(cfg.JWTSecret, cfg.JWTPreviousSecret, cfg.JWTAlgorithm, cfg.JWTIssuer)
+	if err != nil {
+		// Fallback hanya bila tests langsung memanggil NewServer tanpa NewTokenManagerWithConfig valid; Start() tetap gagal bila config invalid
+		tm = auth.NewTokenManager(cfg.JWTSecret, cfg.JWTIssuer)
+	}
 	authMw := middleware.NewAuthMiddleware(tm)
 	rateLimiter := middleware.NewIPRateLimiterWithConfig(
 		cfg.RateLimitRPS,
@@ -116,25 +286,39 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		cfg.MaxRateLimitClients,
 	)
 	trustedMatcher := middleware.NewTrustedProxyMatcher(cfg.TrustedProxies)
-	loginLimiter := middleware.NewLoginRateLimiter(5, 15*time.Minute, 10000)
+	loginLimiter := middleware.NewLoginRateLimiter(cfg.LoginMaxAttempts, cfg.LoginLockoutDuration, cfg.MaxRateLimitClients)
 
 	var keyProvider security.KeyProvider
-	aesBytes := decodeSecretBytes(cfg.AESMasterKey)
-	if len(aesBytes) >= 32 {
-		kp, err := security.NewMasterKeyProvider("v1", "k1", aesBytes[:32])
-		if err == nil {
-			keyProvider = kp
+	if strings.TrimSpace(cfg.AESMasterKey) != "" {
+		if mkp, err := security.NewMultiKeyProviderFromConfig(cfg.AESKeyVersion, cfg.AESKeyID, cfg.AESMasterKey, cfg.AESPreviousKeys); err == nil {
+			keyProvider = mkp
 		}
 	}
 
 	// Inisialisasi Handlers
-	authH := handlers.NewAuthHandler(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher, keyProvider)
-	qrisH := handlers.NewQRISHandlerWithConfig(pool, []byte(cfg.QRISSecret), cfg.QRISDynamicEnabled, cfg.AllowPersonalPaymentPilot)
+	authH := handlers.NewAuthHandlerWithConfig(pool, tm, []byte(cfg.BlindIndexSecret), loginLimiter, trustedMatcher, keyProvider, handlers.AuthConfig{
+		AccessTTL:            cfg.JWTAccessTTL,
+		RefreshTTL:           cfg.JWTRefreshTTL,
+		MFASessionTTL:        cfg.MFASessionTTL,
+		MFASetupTTL:          cfg.MFASetupTTL,
+		MFAIssuer:            cfg.MFAIssuer,
+		MFAMaxAttempts:       cfg.MFAMaxAttempts,
+		LoginMaxAttempts:     cfg.LoginMaxAttempts,
+		LoginLockoutDuration: cfg.LoginLockoutDuration,
+	})
+	qrisH := handlers.NewQRISHandlerFull(pool, []byte(cfg.QRISSecret), handlers.QRISConfig{
+		DynamicQRISEnabled:           cfg.QRISDynamicEnabled,
+		AllowPersonalPaymentPilot:    cfg.AllowPersonalPaymentPilot,
+		PilotDefaultMaxPerTx:         cfg.PilotDefaultMaxPerTx,
+		PilotDefaultMaxPerDay:        cfg.PilotDefaultMaxPerDay,
+		DualApprovalDefaultThreshold: cfg.DualApprovalDefaultThreshold,
+		Timezone:                     cfg.AppTimezone,
+	})
 	iuranH := handlers.NewIuranHandler(pool)
 	katalogH := handlers.NewKatalogHandler(pool)
 	healthH := handlers.NewHealthHandler(pool)
-	metricsH := handlers.NewMetricsHandler(pool, cfg.MetricsToken, trustedMatcher)
-	pendaftaranH := handlers.NewPendaftaranHandler(pool, keyProvider, []byte(cfg.BlindIndexSecret))
+	metricsH := handlers.NewMetricsHandlerWithRotation(pool, cfg.MetricsToken, cfg.MetricsPreviousToken, trustedMatcher)
+	pendaftaranH := handlers.NewPendaftaranHandlerWithConfig(pool, keyProvider, []byte(cfg.BlindIndexSecret), cfg.StorageKYCDir, cfg.MaxKYCUploadBytes)
 	kasH := handlers.NewKasHandler(pool)
 	anggotaH := handlers.NewAnggotaHandler(pool)
 	tokoH := handlers.NewTokoHandler(pool)
@@ -279,7 +463,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	}
 
 	var handler http.Handler = mux
-	handler = middleware.BodyLimit(10 * 1024 * 1024)(handler) // Batasi payload maksimal 10 MB (S3)
+	handler = middleware.BodyLimit(cfg.MaxBodyBytes)(handler)
 	handler = middleware.RateLimit(rateLimiter)(handler)
 	handler = middleware.CORS(corsCfg)(handler)
 	handler = middleware.SecurityHeaders(handler)
@@ -288,18 +472,34 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,  // Anti-Slowloris attack (S3)
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout, // Anti-Slowloris attack (S3)
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+	}
+
+	metricsMux := http.NewServeMux()
+	metricsMux.HandleFunc("GET /metrics", metricsH.HandleMetrics)
+	var metricsSrv *http.Server
+	if cfg.MetricsPort > 0 && cfg.MetricsPort != cfg.Port {
+		metricsSrv = &http.Server{
+			Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
+			Handler:           middleware.Recovery(middleware.SecurityHeaders(metricsMux)),
+			ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+			ReadTimeout:       cfg.HTTPReadTimeout,
+			WriteTimeout:      cfg.HTTPWriteTimeout,
+			IdleTimeout:       cfg.HTTPIdleTimeout,
+		}
 	}
 
 	return &Server{
-		cfg:         cfg,
-		pool:        pool,
-		keyProvider: keyProvider,
-		httpServer:  httpSrv,
-		router:      mux,
+		cfg:           cfg,
+		pool:          pool,
+		keyProvider:   keyProvider,
+		httpServer:    httpSrv,
+		metricsServer: metricsSrv,
+		router:        mux,
+		metricsRouter: metricsMux,
 	}
 }
 
@@ -308,15 +508,47 @@ func (s *Server) Router() http.Handler {
 	return s.httpServer.Handler
 }
 
-// Start menjalankan HTTP server
+// MetricsRouter mengembalikan router khusus endpoint /metrics
+func (s *Server) MetricsRouter() http.Handler {
+	return s.metricsRouter
+}
+
+// MetricsAddr mengembalikan alamat listen port metrics terpisah (kosong bila berbagi port API)
+func (s *Server) MetricsAddr() string {
+	if s.metricsServer == nil {
+		return ""
+	}
+	return s.metricsServer.Addr
+}
+
+// KeyProvider mengembalikan active encryption key provider
+func (s *Server) KeyProvider() security.KeyProvider {
+	return s.keyProvider
+}
+
+// Start menjalankan HTTP server (serta listener terpisah METRICS_PORT bila diset berbeda dari API_PORT)
 func (s *Server) Start() error {
 	if err := s.cfg.Validate(); err != nil {
 		return fmt.Errorf("gagal memulai server: konfigurasi keamanan tidak valid: %w", err)
+	}
+	if s.metricsServer != nil {
+		go func() {
+			if err := s.metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("METRICS SERVER ERROR (%s): %v", s.metricsServer.Addr, err)
+			}
+		}()
 	}
 	return s.httpServer.ListenAndServe()
 }
 
 // Shutdown mematikan server secara graceful
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	var errMetrics error
+	if s.metricsServer != nil {
+		errMetrics = s.metricsServer.Shutdown(ctx)
+	}
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		return err
+	}
+	return errMetrics
 }

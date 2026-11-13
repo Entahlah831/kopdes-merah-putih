@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,19 +14,32 @@ import (
 )
 
 type MetricsHandler struct {
-	pool           *pgxpool.Pool
-	startTime      time.Time
-	metricsToken   string
-	trustedProxies *middleware.TrustedProxyMatcher
+	pool                 *pgxpool.Pool
+	startTime            time.Time
+	metricsToken         string
+	metricsPreviousToken string
+	trustedProxies       *middleware.TrustedProxyMatcher
 }
 
 func NewMetricsHandler(pool *pgxpool.Pool, metricsToken string, trustedProxies *middleware.TrustedProxyMatcher) *MetricsHandler {
+	return NewMetricsHandlerWithRotation(pool, metricsToken, "", trustedProxies)
+}
+
+func NewMetricsHandlerWithRotation(pool *pgxpool.Pool, metricsToken, metricsPreviousToken string, trustedProxies *middleware.TrustedProxyMatcher) *MetricsHandler {
 	return &MetricsHandler{
-		pool:           pool,
-		startTime:      time.Now(),
-		metricsToken:   metricsToken,
-		trustedProxies: trustedProxies,
+		pool:                 pool,
+		startTime:            time.Now(),
+		metricsToken:         metricsToken,
+		metricsPreviousToken: metricsPreviousToken,
+		trustedProxies:       trustedProxies,
 	}
+}
+
+func matchMetricsTokenConstantTime(expected, provided string) bool {
+	if expected == "" || provided == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1
 }
 
 // HandleMetrics mengembalikan metrik Prometheus operasional sistem (wajib token otentikasi internal)
@@ -39,7 +53,8 @@ func (h *MetricsHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		tokenProvided = customHeader
 	}
 
-	tokenValid := h.metricsToken != "" && tokenProvided == h.metricsToken
+	tokenValid := matchMetricsTokenConstantTime(h.metricsToken, tokenProvided) ||
+		matchMetricsTokenConstantTime(h.metricsPreviousToken, tokenProvided)
 
 	// Wajibkan token selalu, jangan pernah percaya "IP internal" dari RemoteAddr atau proxy
 	if !tokenValid {

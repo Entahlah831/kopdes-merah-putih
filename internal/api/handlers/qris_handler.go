@@ -24,11 +24,24 @@ import (
 	"github.com/kopdes/merah-putih/internal/qris"
 )
 
+type QRISConfig struct {
+	DynamicQRISEnabled           bool
+	AllowPersonalPaymentPilot    bool
+	PilotDefaultMaxPerTx         int64
+	PilotDefaultMaxPerDay        int64
+	DualApprovalDefaultThreshold int64
+	Timezone                     string
+}
+
 type QRISHandler struct {
 	pool                      *pgxpool.Pool
 	qrisSecret                []byte
 	dynamicQRISEnabled        bool
 	allowPersonalPaymentPilot bool
+	pilotMaxPerTx             int64
+	pilotMaxPerDay            int64
+	dualApprovalThreshold     int64
+	timezone                  string
 }
 
 func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
@@ -36,11 +49,38 @@ func NewQRISHandler(pool *pgxpool.Pool, qrisSecret []byte) *QRISHandler {
 }
 
 func NewQRISHandlerWithConfig(pool *pgxpool.Pool, qrisSecret []byte, dynamicQRISEnabled bool, allowPersonalPaymentPilot bool) *QRISHandler {
+	return NewQRISHandlerFull(pool, qrisSecret, QRISConfig{
+		DynamicQRISEnabled:           dynamicQRISEnabled,
+		AllowPersonalPaymentPilot:    allowPersonalPaymentPilot,
+		PilotDefaultMaxPerTx:         1000000,
+		PilotDefaultMaxPerDay:        5000000,
+		DualApprovalDefaultThreshold: 5000000,
+		Timezone:                     "Asia/Jakarta",
+	})
+}
+
+func NewQRISHandlerFull(pool *pgxpool.Pool, qrisSecret []byte, cfg QRISConfig) *QRISHandler {
+	if cfg.PilotDefaultMaxPerTx <= 0 {
+		cfg.PilotDefaultMaxPerTx = 1000000
+	}
+	if cfg.PilotDefaultMaxPerDay <= 0 {
+		cfg.PilotDefaultMaxPerDay = 5000000
+	}
+	if cfg.DualApprovalDefaultThreshold <= 0 {
+		cfg.DualApprovalDefaultThreshold = 5000000
+	}
+	if strings.TrimSpace(cfg.Timezone) == "" {
+		cfg.Timezone = "Asia/Jakarta"
+	}
 	return &QRISHandler{
 		pool:                      pool,
 		qrisSecret:                qrisSecret,
-		dynamicQRISEnabled:        dynamicQRISEnabled,
-		allowPersonalPaymentPilot: allowPersonalPaymentPilot,
+		dynamicQRISEnabled:        cfg.DynamicQRISEnabled,
+		allowPersonalPaymentPilot: cfg.AllowPersonalPaymentPilot,
+		pilotMaxPerTx:             cfg.PilotDefaultMaxPerTx,
+		pilotMaxPerDay:            cfg.PilotDefaultMaxPerDay,
+		dualApprovalThreshold:     cfg.DualApprovalDefaultThreshold,
+		timezone:                  cfg.Timezone,
 	}
 }
 
@@ -370,9 +410,9 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 
 		// Validasi batas pilot rekening pribadi perorangan pengurus (Task 6)
 		if jenisPemilik == "perorangan_pengurus" {
-			var maxPerTx int64 = 1000000
+			maxPerTx := h.pilotMaxPerTx
 			_ = tx.QueryRow(ctx, `
-				SELECT COALESCE((nilai_json->>'nominal')::bigint, 1000000)
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, $2)
 				FROM konfigurasi_aturan
 				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
 				  AND kunci_aturan = 'pilot_rekening_pribadi_max_per_transaksi'
@@ -380,15 +420,15 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				  AND deleted_at IS NULL
 				ORDER BY koperasi_id NULLS LAST, versi DESC
 				LIMIT 1;
-			`, claims.KoperasiID).Scan(&maxPerTx)
+			`, claims.KoperasiID, h.pilotMaxPerTx).Scan(&maxPerTx)
 
 			if totalNominalDasar > maxPerTx {
 				return fmt.Errorf("nominal pembayaran (Rp %d) melebihi batas maksimum per transaksi untuk rekening pilot perorangan (maksimal Rp %d)", totalNominalDasar, maxPerTx)
 			}
 
-			var maxPerHari int64 = 5000000
+			maxPerHari := h.pilotMaxPerDay
 			_ = tx.QueryRow(ctx, `
-				SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, $2)
 				FROM konfigurasi_aturan
 				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
 				  AND kunci_aturan = 'pilot_rekening_pribadi_max_per_hari'
@@ -396,7 +436,7 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				  AND deleted_at IS NULL
 				ORDER BY koperasi_id NULLS LAST, versi DESC
 				LIMIT 1;
-			`, claims.KoperasiID).Scan(&maxPerHari)
+			`, claims.KoperasiID, h.pilotMaxPerDay).Scan(&maxPerHari)
 
 			var akumulasiHariIni int64
 			err := tx.QueryRow(ctx, `
@@ -404,10 +444,10 @@ func (h *QRISHandler) HandleBuatQRIS(w http.ResponseWriter, r *http.Request) {
 				FROM pembayaran
 				WHERE rekening_qris_id = $1
 				  AND koperasi_id = $2
-				  AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::date AT TIME ZONE 'Asia/Jakarta'
+				  AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE $3::text)::date AT TIME ZONE $3::text
 				  AND status IN ('menunggu_pembayaran', 'menunggu_verifikasi', 'menunggu_persetujuan_kedua', 'disetujui')
 				  AND deleted_at IS NULL;
-			`, rekeningID, claims.KoperasiID).Scan(&akumulasiHariIni)
+			`, rekeningID, claims.KoperasiID, h.timezone).Scan(&akumulasiHariIni)
 			if err != nil {
 				return fmt.Errorf("gagal memeriksa batas harian rekening pilot: %w", err)
 			}
@@ -805,9 +845,9 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 
 		if req.Disetujui {
 			// Periksa ambang batas persetujuan ganda dari konfigurasi_aturan
-			var ambangGanda int64 = 5000000
+			ambangGanda := h.dualApprovalThreshold
 			_ = tx.QueryRow(ctx, `
-				SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+				SELECT COALESCE((nilai_json->>'nominal')::bigint, $2)
 				FROM konfigurasi_aturan
 				WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
 				  AND kunci_aturan = 'ambang_persetujuan_ganda_rp'
@@ -815,7 +855,7 @@ func (h *QRISHandler) HandleVerifikasiPembayaran(w http.ResponseWriter, r *http.
 				  AND deleted_at IS NULL
 				ORDER BY koperasi_id NULLS LAST, versi DESC
 				LIMIT 1;
-			`, claims.KoperasiID).Scan(&ambangGanda)
+			`, claims.KoperasiID, h.dualApprovalThreshold).Scan(&ambangGanda)
 
 			nomTotalFloat, _ := strconv.ParseFloat(nominalTotal, 64)
 			nomTotalInt := int64(nomTotalFloat)
@@ -1323,9 +1363,9 @@ func (h *QRISHandler) HandleImporMutasiBank(w http.ResponseWriter, r *http.Reque
 	var totalBaris, tercocokkan, anomali, belumCocok, duplikat int
 
 	err = middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
-		var ambangGanda int64 = 5000000
+		ambangGanda := h.dualApprovalThreshold
 		_ = tx.QueryRow(ctx, `
-			SELECT COALESCE((nilai_json->>'nominal')::bigint, 5000000)
+			SELECT COALESCE((nilai_json->>'nominal')::bigint, $2)
 			FROM konfigurasi_aturan
 			WHERE (koperasi_id = $1 OR koperasi_id IS NULL)
 			  AND kunci_aturan = 'ambang_persetujuan_ganda_rp'
@@ -1333,7 +1373,7 @@ func (h *QRISHandler) HandleImporMutasiBank(w http.ResponseWriter, r *http.Reque
 			  AND deleted_at IS NULL
 			ORDER BY koperasi_id NULLS LAST, versi DESC
 			LIMIT 1;
-		`, claims.KoperasiID).Scan(&ambangGanda)
+		`, claims.KoperasiID, h.dualApprovalThreshold).Scan(&ambangGanda)
 
 		// Konfigurasi auto-approve mutasi (default: false, butuh konfirmasi orang kedua)
 		var autoApproveEnabled bool = false

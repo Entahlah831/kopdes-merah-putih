@@ -19,6 +19,30 @@ import (
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
+type AuthConfig struct {
+	AccessTTL            time.Duration
+	RefreshTTL           time.Duration
+	MFASessionTTL        time.Duration
+	MFASetupTTL          time.Duration
+	MFAIssuer            string
+	MFAMaxAttempts       int
+	LoginMaxAttempts     int
+	LoginLockoutDuration time.Duration
+}
+
+func DefaultAuthConfig() AuthConfig {
+	return AuthConfig{
+		AccessTTL:            15 * time.Minute,
+		RefreshTTL:           7 * 24 * time.Hour,
+		MFASessionTTL:        5 * time.Minute,
+		MFASetupTTL:          15 * time.Minute,
+		MFAIssuer:            "Kopdes Merah Putih",
+		MFAMaxAttempts:       3,
+		LoginMaxAttempts:     5,
+		LoginLockoutDuration: 15 * time.Minute,
+	}
+}
+
 type AuthHandler struct {
 	pool             *pgxpool.Pool
 	tokenManager     *auth.TokenManager
@@ -26,6 +50,7 @@ type AuthHandler struct {
 	loginLimiter     *middleware.LoginRateLimiter
 	trustedProxies   *middleware.TrustedProxyMatcher
 	keyProvider      security.KeyProvider
+	cfg              AuthConfig
 }
 
 func NewAuthHandler(
@@ -36,8 +61,45 @@ func NewAuthHandler(
 	trustedProxies *middleware.TrustedProxyMatcher,
 	keyProvider security.KeyProvider,
 ) *AuthHandler {
+	return NewAuthHandlerWithConfig(pool, tm, blindIndexSecret, loginLimiter, trustedProxies, keyProvider, DefaultAuthConfig())
+}
+
+func NewAuthHandlerWithConfig(
+	pool *pgxpool.Pool,
+	tm *auth.TokenManager,
+	blindIndexSecret []byte,
+	loginLimiter *middleware.LoginRateLimiter,
+	trustedProxies *middleware.TrustedProxyMatcher,
+	keyProvider security.KeyProvider,
+	cfg AuthConfig,
+) *AuthHandler {
+	def := DefaultAuthConfig()
+	if cfg.AccessTTL <= 0 {
+		cfg.AccessTTL = def.AccessTTL
+	}
+	if cfg.RefreshTTL <= 0 {
+		cfg.RefreshTTL = def.RefreshTTL
+	}
+	if cfg.MFASessionTTL <= 0 {
+		cfg.MFASessionTTL = def.MFASessionTTL
+	}
+	if cfg.MFASetupTTL <= 0 {
+		cfg.MFASetupTTL = def.MFASetupTTL
+	}
+	if strings.TrimSpace(cfg.MFAIssuer) == "" {
+		cfg.MFAIssuer = def.MFAIssuer
+	}
+	if cfg.MFAMaxAttempts <= 0 {
+		cfg.MFAMaxAttempts = def.MFAMaxAttempts
+	}
+	if cfg.LoginMaxAttempts <= 0 {
+		cfg.LoginMaxAttempts = def.LoginMaxAttempts
+	}
+	if cfg.LoginLockoutDuration <= 0 {
+		cfg.LoginLockoutDuration = def.LoginLockoutDuration
+	}
 	if loginLimiter == nil {
-		loginLimiter = middleware.NewLoginRateLimiter(5, 15*time.Minute, 10000)
+		loginLimiter = middleware.NewLoginRateLimiter(cfg.LoginMaxAttempts, cfg.LoginLockoutDuration, 10000)
 	}
 	return &AuthHandler{
 		pool:             pool,
@@ -46,6 +108,7 @@ func NewAuthHandler(
 		loginLimiter:     loginLimiter,
 		trustedProxies:   trustedProxies,
 		keyProvider:      keyProvider,
+		cfg:              cfg,
 	}
 }
 
@@ -168,7 +231,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	isPrivileged := isSuperAdmin || roleName == "admin" || roleName == "bendahara" || roleName == "ketua"
 
 	if isPrivileged && !mfaEnabled {
-		setupToken, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, "mfa_setup", false, 15*time.Minute)
+		setupToken, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, "mfa_setup", false, h.cfg.MFASetupTTL)
 		if err != nil {
 			response.InternalServerError(w, "Gagal membuat token setup MFA")
 			return
@@ -207,11 +270,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			kopIDParam = &targetKoperasiID
 		}
 
+		mfaExpiresAt := time.Now().UTC().Add(h.cfg.MFASessionTTL)
 		_, err = h.pool.Exec(ctx, `
 			INSERT INTO mfa_login_sessions (
 				user_id, koperasi_id, role_name, is_super_admin, session_token, expires_at, attempts, is_locked
-			) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes', 0, false);
-		`, userID, kopIDParam, roleName, isSuperAdmin, sessionToken)
+			) VALUES ($1, $2, $3, $4, $5, $6, 0, false);
+		`, userID, kopIDParam, roleName, isSuperAdmin, sessionToken, mfaExpiresAt)
 		if err != nil {
 			response.InternalServerError(w, "Gagal mencatat sesi login MFA")
 			return
@@ -223,21 +287,21 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"user_id":           userID,
 			"koperasi_id":       targetKoperasiID,
 			"role":              roleName,
-			"expires_in":        300,
+			"expires_in":        int64(h.cfg.MFASessionTTL.Seconds()),
 			"message":           "Verifikasi MFA diperlukan. Masukkan kode 6 digit dari aplikasi autentikator.",
 		})
 		return
 	}
 
-	// Access Token 15 menit sesuai rekomendasi OWASP
-	ttl := 15 * time.Minute
+	// Access Token sesuai konfigurasi JWT_ACCESS_TTL
+	ttl := h.cfg.AccessTTL
 	tokenString, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, roleName, isSuperAdmin, ttl)
 	if err != nil {
 		response.InternalServerError(w, "Gagal membuat token otorisasi")
 		return
 	}
 
-	// Terbitkan refresh token terotasi (7 hari)
+	// Terbitkan refresh token terotasi sesuai JWT_REFRESH_TTL
 	plainRefresh, refreshHash, err := auth.GenerateRefreshToken()
 	if err != nil {
 		response.InternalServerError(w, "Gagal membuat refresh token")
@@ -249,11 +313,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		kopIDParam = &targetKoperasiID
 	}
 
+	refreshExpiresAt := time.Now().UTC().Add(h.cfg.RefreshTTL)
 	_, err = h.pool.Exec(ctx, `
 		INSERT INTO refresh_tokens (
 			user_id, token_hash, koperasi_id, role_name, is_platform_admin, expires_at
-		) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days');
-	`, userID, refreshHash, kopIDParam, roleName, isSuperAdmin)
+		) VALUES ($1, $2, $3, $4, $5, $6);
+	`, userID, refreshHash, kopIDParam, roleName, isSuperAdmin, refreshExpiresAt)
 	if err != nil {
 		response.InternalServerError(w, "Gagal menyimpan refresh token")
 		return
@@ -330,8 +395,8 @@ func (h *AuthHandler) HandleRefreshToken(w http.ResponseWriter, r *http.Request)
 		targetKoperasiID = koperasiID.UUID
 	}
 
-	// Buat access token baru (15 menit)
-	newAccessTTL := 15 * time.Minute
+	// Buat access token baru sesuai JWT_ACCESS_TTL
+	newAccessTTL := h.cfg.AccessTTL
 	newAccessToken, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, roleName, isPlatformAdmin, newAccessTTL)
 	if err != nil {
 		response.InternalServerError(w, "Gagal memperbarui access token")
@@ -370,11 +435,12 @@ func (h *AuthHandler) HandleRefreshToken(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Simpan token baru
+	refreshExpiresAt := time.Now().UTC().Add(h.cfg.RefreshTTL)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO refresh_tokens (
 			user_id, token_hash, koperasi_id, role_name, is_platform_admin, expires_at
-		) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days');
-	`, userID, newRefreshHash, kopIDParam, roleName, isPlatformAdmin)
+		) VALUES ($1, $2, $3, $4, $5, $6);
+	`, userID, newRefreshHash, kopIDParam, roleName, isPlatformAdmin, refreshExpiresAt)
 	if err != nil {
 		response.InternalServerError(w, "Gagal menyimpan refresh token rotasi")
 		return
@@ -469,7 +535,7 @@ func (h *AuthHandler) HandleMFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qrURI := security.GenerateTOTPURI(secret, claims.UserID.String(), "Kopdes Merah Putih")
+	qrURI := security.GenerateTOTPURI(secret, claims.UserID.String(), h.cfg.MFAIssuer)
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"secret": secret,
@@ -590,14 +656,14 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isLocked || attempts >= 3 {
+	if isLocked || attempts >= h.cfg.MFAMaxAttempts {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"error": map[string]interface{}{
 				"code":    "MFA_SESSION_LOCKED",
-				"message": "Sesi MFA terkunci karena melebihi batas percobaan (maksimal 3 kali). Silakan login ulang.",
+				"message": fmt.Sprintf("Sesi MFA terkunci karena melebihi batas percobaan (maksimal %d kali). Silakan login ulang.", h.cfg.MFAMaxAttempts),
 			},
 		})
 		return
@@ -609,19 +675,19 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		_ = h.pool.QueryRow(ctx, `
 			UPDATE mfa_login_sessions
 			SET attempts = attempts + 1,
-			    is_locked = (attempts + 1 >= 3)
+			    is_locked = (attempts + 1 >= $2)
 			WHERE id = $1
 			RETURNING attempts, is_locked;
-		`, sessionID).Scan(&newAttempts, &lockedNow)
+		`, sessionID, h.cfg.MFAMaxAttempts).Scan(&newAttempts, &lockedNow)
 
-		if lockedNow || newAttempts >= 3 {
+		if lockedNow || newAttempts >= h.cfg.MFAMaxAttempts {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
 				"error": map[string]interface{}{
 					"code":    "MFA_SESSION_LOCKED",
-					"message": "Sesi MFA terkunci karena melebihi batas percobaan (maksimal 3 kali). Silakan login ulang.",
+					"message": fmt.Sprintf("Sesi MFA terkunci karena melebihi batas percobaan (maksimal %d kali). Silakan login ulang.", h.cfg.MFAMaxAttempts),
 				},
 			})
 			return
@@ -737,7 +803,7 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		targetKoperasiID = koperasiID.UUID
 	}
 
-	ttl := 15 * time.Minute
+	ttl := h.cfg.AccessTTL
 	tokenString, err := h.tokenManager.GenerateToken(userID, targetKoperasiID, roleName, isSuperAdmin, ttl)
 	if err != nil {
 		response.InternalServerError(w, "Gagal membuat token otorisasi")
@@ -755,11 +821,12 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		kopIDParam = &targetKoperasiID
 	}
 
+	refreshExpiresAt := time.Now().UTC().Add(h.cfg.RefreshTTL)
 	_, err = h.pool.Exec(ctx, `
 		INSERT INTO refresh_tokens (
 			user_id, token_hash, koperasi_id, role_name, is_platform_admin, expires_at
-		) VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days');
-	`, userID, refreshHash, kopIDParam, roleName, isSuperAdmin)
+		) VALUES ($1, $2, $3, $4, $5, $6);
+	`, userID, refreshHash, kopIDParam, roleName, isSuperAdmin, refreshExpiresAt)
 	if err != nil {
 		response.InternalServerError(w, "Gagal menyimpan refresh token")
 		return

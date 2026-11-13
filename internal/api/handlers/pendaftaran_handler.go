@@ -41,17 +41,41 @@ func sanitizeLogCatatan(msg string) string {
 }
 
 type PendaftaranHandler struct {
-	pool             *pgxpool.Pool
-	keyProvider      security.KeyProvider
-	blindIndexSecret []byte
+	pool              *pgxpool.Pool
+	keyProvider       security.KeyProvider
+	blindIndexSecret  []byte
+	storageKYCDir     string
+	maxKYCUploadBytes int64
 }
 
 func NewPendaftaranHandler(pool *pgxpool.Pool, keyProvider security.KeyProvider, blindIndexSecret []byte) *PendaftaranHandler {
-	return &PendaftaranHandler{
-		pool:             pool,
-		keyProvider:      keyProvider,
-		blindIndexSecret: blindIndexSecret,
+	return NewPendaftaranHandlerWithConfig(pool, keyProvider, blindIndexSecret, "./storage/kyc", 5*1024*1024)
+}
+
+func NewPendaftaranHandlerWithConfig(pool *pgxpool.Pool, keyProvider security.KeyProvider, blindIndexSecret []byte, storageKYCDir string, maxKYCUploadBytes int64) *PendaftaranHandler {
+	if strings.TrimSpace(storageKYCDir) == "" {
+		storageKYCDir = "./storage/kyc"
 	}
+	if maxKYCUploadBytes <= 0 {
+		maxKYCUploadBytes = 5 * 1024 * 1024
+	}
+	return &PendaftaranHandler{
+		pool:              pool,
+		keyProvider:       keyProvider,
+		blindIndexSecret:  blindIndexSecret,
+		storageKYCDir:     storageKYCDir,
+		maxKYCUploadBytes: maxKYCUploadBytes,
+	}
+}
+
+func (h *PendaftaranHandler) resolveStorageKYCDir() string {
+	if dir := strings.TrimSpace(os.Getenv("STORAGE_KYC_DIR")); dir != "" {
+		return dir
+	}
+	if strings.TrimSpace(h.storageKYCDir) != "" {
+		return h.storageKYCDir
+	}
+	return "./storage/kyc"
 }
 
 type AjukanPendaftaranRequest struct {
@@ -590,10 +614,7 @@ func (h *PendaftaranHandler) HandleUploadDokumenPendaftaran(w http.ResponseWrite
 	storageKey := fmt.Sprintf("pendaftaran/%s/%s/%s_%s", claims.KoperasiID, pendaftaranID, dokumenID, header.Filename)
 
 	// Simpan berkas fisik ke penyimpanan lokal/volume
-	storageBase := os.Getenv("STORAGE_DIR")
-	if storageBase == "" {
-		storageBase = "storage"
-	}
+	storageBase := h.resolveStorageKYCDir()
 	targetPath := filepath.Join(storageBase, storageKey)
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0750); err != nil {
 		response.InternalServerError(w, "Gagal menyiapkan direktori penyimpanan dokumen")
@@ -704,10 +725,7 @@ func (h *PendaftaranHandler) HandlePurgeRejectedPendaftaran(w http.ResponseWrite
 	}
 
 	// 3. Hapus berkas KYC fisik dari penyimpanan lokal jika ada
-	storageBase := os.Getenv("STORAGE_DIR")
-	if storageBase == "" {
-		storageBase = "storage"
-	}
+	storageBase := h.resolveStorageKYCDir()
 	for _, sk := range storageKeys {
 		filePath := filepath.Join(storageBase, sk)
 		_ = os.Remove(filePath)

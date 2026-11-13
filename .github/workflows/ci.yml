@@ -45,7 +45,9 @@ jobs:
 
       - name: Trivy Config & Filesystem Scan
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.58.1
+          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
+          sudo tar -xz -C /usr/local/bin -f /tmp/trivy.tar.gz trivy
+          rm -f /tmp/trivy.tar.gz
           trivy config --severity HIGH,CRITICAL --exit-code 1 .
 
       - name: Gitleaks Secret Scanning

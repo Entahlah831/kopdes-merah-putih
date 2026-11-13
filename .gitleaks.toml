@@ -1,0 +1,11 @@
+title = "Konfigurasi Gitleaks — Kopdes Merah Putih"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Hanya izinkan nilai rahasia sintetis di dalam berkas profil uji .env.test dan .env.test.alt"
+paths = [
+  '''^\.env\.test$''',
+  '''^\.env\.test\.alt$''',
+]

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -17,61 +16,39 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kopdes "github.com/kopdes/merah-putih"
+	"github.com/kopdes/merah-putih/internal/db"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
 func getTestPool(t testing.TB) *pgxpool.Pool {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	candidates := []string{}
-	if envDSN := os.Getenv("DATABASE_URL"); envDSN != "" {
-		candidates = append(candidates, envDSN)
-	}
-	if envDSN := os.Getenv("POSTGRES_DSN"); envDSN != "" {
-		candidates = append(candidates, envDSN)
-	}
-	candidates = append(candidates,
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://postgres:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5432/kopdes_db?sslmode=disable",
-		"postgres://postgres:kopdes_dev_password@127.0.0.1:5432/kopdes_db?sslmode=disable",
-	)
-
-	var pool *pgxpool.Pool
-	var lastErr error
-
-	for _, dsn := range candidates {
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		cfg.MaxConns = 50
-		cfg.MinConns = 5
-		cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-			// Pastikan peran non-superuser kopdes_app selalu aktif agar FORCE RLS berlaku penuh
-			_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
-			return err
-		}
-
-		p, err := pgxpool.NewWithConfig(ctx, cfg)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if err := p.Ping(ctx); err == nil {
-			pool = p
-			break
-		} else {
-			lastErr = err
-			p.Close()
-		}
+	dsn, err := db.ResolveTestDatabaseDSN("", "")
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal: %v", err)
 	}
 
-	if pool == nil {
-		t.Fatalf("gagal terkoneksi ke PostgreSQL test database: %v", lastErr)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig gagal: %v", err)
+	}
+	cfg.MaxConns = 50
+	cfg.MinConns = 5
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		// Pastikan peran non-superuser kopdes_app selalu aktif agar FORCE RLS berlaku penuh
+		_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
+		return err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("gagal terkoneksi ke PostgreSQL test database: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("gagal ping PostgreSQL test database: %v", err)
 	}
 
 	return pool

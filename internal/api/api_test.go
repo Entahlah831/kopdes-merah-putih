@@ -27,49 +27,37 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/auth"
+	"github.com/kopdes/merah-putih/internal/db"
 	"github.com/kopdes/merah-putih/internal/qris"
 	"github.com/kopdes/merah-putih/internal/security"
 	"github.com/kopdes/merah-putih/internal/simkopdes"
 )
 
 func getTestPool(t testing.TB) *pgxpool.Pool {
-	candidates := []string{}
-	if envDSN := os.Getenv("DATABASE_URL"); envDSN != "" {
-		candidates = append(candidates, envDSN)
+	t.Helper()
+	dsn, err := db.ResolveTestDatabaseDSN("", "")
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal: %v", err)
 	}
-	if envDSN := os.Getenv("POSTGRES_DSN"); envDSN != "" {
-		candidates = append(candidates, envDSN)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig gagal: %v", err)
 	}
-	candidates = append(candidates,
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://postgres:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5432/kopdes_db?sslmode=disable",
-	)
+	cfg.MaxConns = 20
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
+		return err
+	}
 
-	for _, dsn := range candidates {
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
-			continue
-		}
-		cfg.MaxConns = 20
-		cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-			_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
-			return err
-		}
-
-		p, err := pgxpool.NewWithConfig(context.Background(), cfg)
-		if err != nil {
-			continue
-		}
-
-		if err := p.Ping(context.Background()); err == nil {
-			return p
-		}
+	p, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("gagal terkoneksi ke PostgreSQL database pengujian: %v", err)
+	}
+	if err := p.Ping(context.Background()); err != nil {
 		p.Close()
+		t.Fatalf("gagal ping PostgreSQL database pengujian: %v", err)
 	}
-
-	t.Fatalf("gagal terkoneksi ke PostgreSQL database pengujian")
-	return nil
+	return p
 }
 
 func hashSHA256(val string) string {
@@ -2993,23 +2981,40 @@ func TestTask8_RolePasswordFromEnv_NoProductionDefault(t *testing.T) {
 			psqlPath = `C:\Users\12\pgsql\bin\psql.exe`
 		}
 	}
-	dbPort := "5432"
-	if p := os.Getenv("PGPORT"); p != "" {
-		dbPort = p
-	} else if p := os.Getenv("DB_PORT"); p != "" {
-		dbPort = p
-	} else if _, err := os.Stat(`C:\Users\12\pgdata16`); err == nil {
-		dbPort = "5433"
+	testDSN, err := db.ResolveTestDatabaseDSN("", "")
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal: %v", err)
 	}
+	pgCfg, err := pgxpool.ParseConfig(testDSN)
+	if err != nil {
+		t.Fatalf("ParseConfig testDSN gagal: %v", err)
+	}
+	dbHost := pgCfg.ConnConfig.Host
+	dbPort := fmt.Sprintf("%d", pgCfg.ConnConfig.Port)
+	dbName := pgCfg.ConnConfig.Database
+	origPass := pgCfg.ConnConfig.Password
+	pgUser := db.GetTestEnv("POSTGRES_USER")
+	if pgUser == "" {
+		pgUser = "postgres"
+	}
+	pgPass := db.GetTestEnv("POSTGRES_PASSWORD")
 
 	rolesSqlPath := `../../db/docker-init/01_roles.sql`
 	if _, err := os.Stat(rolesSqlPath); err != nil {
 		rolesSqlPath = `db/docker-init/01_roles.sql`
 	}
 
+	baseEnv := func(extra ...string) []string {
+		env := append([]string{}, os.Environ()...)
+		if pgPass != "" {
+			env = append(env, "PGPASSWORD="+pgPass)
+		}
+		return append(env, extra...)
+	}
+
 	// 1. Kasus 1: APP_ENV=production tanpa password -> HARUS GAGAL
-	cmdFailNoPass := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", dbPort, "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
-	cmdFailNoPass.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=", "DB_PASSWORD=")
+	cmdFailNoPass := exec.Command(psqlPath, "-h", dbHost, "-p", dbPort, "-U", pgUser, "-d", dbName, "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdFailNoPass.Env = baseEnv("APP_ENV=production", "KOPDES_APP_PASSWORD=", "DB_PASSWORD=")
 	outFailNoPass, err := cmdFailNoPass.CombinedOutput()
 	if err == nil {
 		t.Fatalf("Expected 01_roles.sql to fail in production without password, but it succeeded! Output: %s", string(outFailNoPass))
@@ -3018,31 +3023,31 @@ func TestTask8_RolePasswordFromEnv_NoProductionDefault(t *testing.T) {
 		t.Errorf("Expected error message to mention KOPDES_APP_PASSWORD in production, got: %s", string(outFailNoPass))
 	}
 
-	// 2. Kasus 2: APP_ENV=production dengan password default dev -> HARUS DITOLAK
-	cmdFailDevPass := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", dbPort, "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
-	cmdFailDevPass.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=kopdes_dev_password")
+	// 2. Kasus 2: APP_ENV=production dengan password bawaan lemah -> HARUS DITOLAK
+	cmdFailDevPass := exec.Command(psqlPath, "-h", dbHost, "-p", dbPort, "-U", pgUser, "-d", dbName, "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdFailDevPass.Env = baseEnv("APP_ENV=production", "KOPDES_APP_PASSWORD=kopdes_dev_password")
 	outFailDevPass, err := cmdFailDevPass.CombinedOutput()
 	if err == nil {
-		t.Fatalf("Expected 01_roles.sql to fail in production with dev password default, but it succeeded! Output: %s", string(outFailDevPass))
+		t.Fatalf("Expected 01_roles.sql to fail in production with weak dev password, but it succeeded! Output: %s", string(outFailDevPass))
 	}
 	if !strings.Contains(string(outFailDevPass), "default") {
 		t.Errorf("Expected error message to mention default password, got: %s", string(outFailDevPass))
 	}
 
 	// 3. Kasus 3: APP_ENV=production dengan password kuat -> HARUS SUKSES
-	cmdSuccessProd := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", dbPort, "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
-	cmdSuccessProd.Env = append(os.Environ(), "APP_ENV=production", "KOPDES_APP_PASSWORD=P@ssw0rdProdKopdes2026!")
+	cmdSuccessProd := exec.Command(psqlPath, "-h", dbHost, "-p", dbPort, "-U", pgUser, "-d", dbName, "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdSuccessProd.Env = baseEnv("APP_ENV=production", "KOPDES_APP_PASSWORD=P@ssw0rdProdKopdes2026!")
 	outSuccessProd, err := cmdSuccessProd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Expected 01_roles.sql to succeed in production with strong password, got error: %v, output: %s", err, string(outSuccessProd))
 	}
 
-	// 4. Kembalikan password ke dev agar tes lain tetap berjalan lancar
-	cmdResetDev := exec.Command(psqlPath, "-h", "127.0.0.1", "-p", dbPort, "-U", "postgres", "-d", "kopdes_db", "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
-	cmdResetDev.Env = append(os.Environ(), "APP_ENV=development", "KOPDES_APP_PASSWORD=kopdes_dev_password")
-	outReset, err := cmdResetDev.CombinedOutput()
+	// 4. Kembalikan password ke password aktif pengujian agar tes lain tetap berjalan lancar
+	cmdResetTest := exec.Command(psqlPath, "-h", dbHost, "-p", dbPort, "-U", pgUser, "-d", dbName, "-v", "ON_ERROR_STOP=1", "-f", rolesSqlPath)
+	cmdResetTest.Env = baseEnv("APP_ENV=test", "KOPDES_APP_PASSWORD="+origPass)
+	outReset, err := cmdResetTest.CombinedOutput()
 	if err != nil {
-		t.Fatalf("Reset password dev failed: %v, output: %s", err, string(outReset))
+		t.Fatalf("Reset password test failed: %v, output: %s", err, string(outReset))
 	}
 }
 
@@ -4254,7 +4259,7 @@ func TestItem7_Pilot_AsiaJakarta_And_Purge_PhysicalFiles_PIIFree(t *testing.T) {
 
 	// Set storage directory ke temp dir untuk pengujian berkas fisik
 	tempStorageDir := t.TempDir()
-	t.Setenv("STORAGE_DIR", tempStorageDir)
+	t.Setenv("STORAGE_KYC_DIR", tempStorageDir)
 
 	// ==========================================
 	// BAGIAN A: Batas Harian Rekening Pribadi (Asia/Jakarta & Status Aktif/Disetujui)

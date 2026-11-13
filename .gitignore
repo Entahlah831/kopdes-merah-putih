@@ -11,10 +11,16 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.test
+!.env.test.alt
+.env.local
+.env.production
+.env.live
 
 # Test outputs
 *.out
 *.test
+!.env.test
 coverage.txt
 
 # OS & Editor files

@@ -10,34 +10,36 @@ import (
 )
 
 func getDBPool(t *testing.T, user, password string) *pgxpool.Pool {
-	candidates := []string{
-		"postgres://" + user + ":" + password + "@localhost:5432/kopdes_db?sslmode=disable",
-		"postgres://" + user + ":" + password + "@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://" + user + ":" + password + "@127.0.0.1:5432/kopdes_db?sslmode=disable",
+	t.Helper()
+	if user == "postgres" && password == "" {
+		password = internaldb.GetTestEnv("POSTGRES_PASSWORD")
+	} else if password == "" {
+		password = internaldb.GetTestEnv("DB_PASSWORD")
 	}
-
-	for _, dsn := range candidates {
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
-			continue
-		}
-		pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-		if err == nil && pool.Ping(context.Background()) == nil {
-			return pool
-		}
-		if pool != nil {
-			pool.Close()
-		}
+	dsn, err := internaldb.ResolveTestDatabaseDSN(user, password)
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal untuk user %s: %v", user, err)
 	}
-	t.Fatalf("Connect error for user %s: no reachable postgres instance on port 5432 or 5433", user)
-	return nil
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig gagal untuk user %s: %v", user, err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Connect error for user %s: %v", user, err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Fatalf("Ping error for user %s: %v", user, err)
+	}
+	return pool
 }
 
 func TestK1_SuperuserRejectedOnStartup(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Koneksi sebagai superuser 'postgres'
-	poolSuper := getDBPool(t, "postgres", "kopdes_dev_password")
+	poolSuper := getDBPool(t, "postgres", internaldb.GetTestEnv("POSTGRES_PASSWORD"))
 	defer poolSuper.Close()
 
 	// Saat allowSuperuser = false, fungsi wajib MENOLAK koneksi superuser
@@ -57,7 +59,7 @@ func TestK1_AppRole_NativeRLS_WithoutSetRole(t *testing.T) {
 	ctx := context.Background()
 
 	// 2. Koneksi sebagai non-superuser 'kopdes_app' APA ADANYA (tanpa SET ROLE)
-	poolApp := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	poolApp := getDBPool(t, "kopdes_app", internaldb.GetTestEnv("DB_PASSWORD"))
 	defer poolApp.Close()
 
 	// Periksa role

@@ -12,31 +12,28 @@ import (
 )
 
 func getTestPoolForRLS(t testing.TB) *pgxpool.Pool {
-	candidates := []string{
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5432/kopdes_db?sslmode=disable",
+	t.Helper()
+	dsn, err := ResolveTestDatabaseDSN("", "")
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal: %v", err)
 	}
-
-	for _, dsn := range candidates {
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
-			continue
-		}
-		cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-			_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
-			return err
-		}
-		p, err := pgxpool.NewWithConfig(context.Background(), cfg)
-		if err != nil {
-			continue
-		}
-		if err := p.Ping(context.Background()); err == nil {
-			return p
-		}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig gagal: %v", err)
+	}
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE kopdes_app;")
+		return err
+	}
+	p, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("gagal terkoneksi ke PostgreSQL test pool: %v", err)
+	}
+	if err := p.Ping(context.Background()); err != nil {
 		p.Close()
+		t.Fatalf("gagal ping PostgreSQL test pool: %v", err)
 	}
-	t.Fatalf("gagal terkoneksi ke PostgreSQL test pool")
-	return nil
+	return p
 }
 
 func TestT4_RLS_AuditLog_And_JobLog_Isolation(t *testing.T) {

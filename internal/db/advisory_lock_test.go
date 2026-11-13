@@ -17,7 +17,7 @@ func TestAdvisoryLock_CanonicalSorting(t *testing.T) {
 	expected := []string{"audit_log", "kas_mutasi", "pembayaran_verifikasi_log", "stok_mutasi"}
 
 	// Panggil AcquireOrderedAdvisoryLocks dalam dry-run / koneksi DB
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	ctx := context.Background()
@@ -40,7 +40,7 @@ func TestAdvisoryLock_CanonicalSorting(t *testing.T) {
 }
 
 func TestAdvisoryLock_Ordered_PreventsDeadlock_UnderParallelLoad(t *testing.T) {
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	ctx := context.Background()
@@ -107,7 +107,7 @@ func TestAdvisoryLock_Ordered_PreventsDeadlock_UnderParallelLoad(t *testing.T) {
 }
 
 func TestAdvisoryLock_ReverseOrder_CausesDeadlockOrTimeout(t *testing.T) {
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	ctx := context.Background()

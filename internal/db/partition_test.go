@@ -11,7 +11,7 @@ import (
 
 func TestK2_InsertOutsidePartition_SucceedsAfterMigration(t *testing.T) {
 	ctx := context.Background()
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	conn, err := pool.Acquire(ctx)
@@ -62,7 +62,7 @@ func TestK2_InsertOutsidePartition_SucceedsAfterMigration(t *testing.T) {
 
 func TestK2_EnsurePartitionsAhead_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	pool := getDBPool(t, "postgres", "kopdes_dev_password")
+	pool := getDBPool(t, "postgres", "")
 	defer pool.Close()
 
 	// Pastikan partisi 3 bulan ke depan selalu ada
@@ -81,7 +81,7 @@ func TestK2_EnsurePartitionsAhead_Idempotent(t *testing.T) {
 func TestTask2_SQLFunction_EnsureFuturePartitions(t *testing.T) {
 	ctx := context.Background()
 	// Wajib dapat dijalankan oleh role kopdes_app non-superuser
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	// 1. Eksekusi fungsi SQL idempoten fn_ensure_future_partitions(3)
@@ -117,7 +117,7 @@ func TestTask2_SQLFunction_EnsureFuturePartitions(t *testing.T) {
 
 func TestTask2_PartitionMetrics_And_Alert(t *testing.T) {
 	ctx := context.Background()
-	pool := getDBPool(t, "kopdes_app", "kopdes_dev_password")
+	pool := getDBPool(t, "kopdes_app", "")
 	defer pool.Close()
 
 	// Verifikasi helper metrik kalkulasi partisi

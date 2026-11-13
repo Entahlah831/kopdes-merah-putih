@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kopdes/merah-putih/internal/db"
 	"github.com/kopdes/merah-putih/internal/outbox"
 )
 
@@ -27,25 +27,20 @@ func (m *MockNotifier) SendNotification(ctx context.Context, koperasiID uuid.UUI
 }
 
 func getTestPool(t testing.TB) *pgxpool.Pool {
-	candidates := []string{
-		"postgres://kopdes_app:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
-		"postgres://postgres:kopdes_dev_password@127.0.0.1:5433/kopdes_db?sslmode=disable",
+	t.Helper()
+	dsn, err := db.ResolveTestDatabaseDSN("", "")
+	if err != nil {
+		t.Fatalf("ResolveTestDatabaseDSN gagal: %v", err)
 	}
-	if envDSN := os.Getenv("DATABASE_URL"); envDSN != "" {
-		candidates = append([]string{envDSN}, candidates...)
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("Database test tidak dapat diakses: %v", err)
 	}
-
-	for _, dsn := range candidates {
-		pool, err := pgxpool.New(context.Background(), dsn)
-		if err == nil && pool.Ping(context.Background()) == nil {
-			return pool
-		}
-		if pool != nil {
-			pool.Close()
-		}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Fatalf("Database test ping gagal: %v", err)
 	}
-	t.Fatalf("Database test tidak dapat diakses")
-	return nil
+	return pool
 }
 
 func TestOutboxWorker_ProcessBatch(t *testing.T) {

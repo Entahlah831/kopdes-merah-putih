@@ -123,12 +123,8 @@ func ResolveTestDatabaseDSN(overrideUser, overridePassword string) (string, erro
 
 	host := getTestVar("DB_HOST", fileMap)
 	if host == "" || host == "postgres" {
-		// Saat tes Go dijalankan langsung di host (di luar container compose), pakai DB_TEST_HOST / 127.0.0.1
-		if h := getTestVar("DB_TEST_HOST", fileMap); h != "" {
-			host = h
-		} else {
-			host = "127.0.0.1"
-		}
+		// Saat tes Go dijalankan langsung di host (di luar container compose), pakai loopback 127.0.0.1
+		host = "127.0.0.1"
 	}
 
 	port := getTestVar("DB_HOST_PORT", fileMap)

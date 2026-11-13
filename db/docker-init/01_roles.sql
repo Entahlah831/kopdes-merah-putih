@@ -26,19 +26,14 @@ DECLARE
     v_env text := current_setting('app.env', true);
     v_pass text := current_setting('app.app_pass', true);
 BEGIN
-    -- Validasi ketat profil produksi: WAJIB variabel lingkungan dan DILARANG default dev
-    IF v_env = 'production' THEN
-        IF v_pass IS NULL OR v_pass = '' THEN
-            RAISE EXCEPTION 'FATAL: Pada profil produksi, variabel lingkungan KOPDES_APP_PASSWORD (atau DB_PASSWORD) wajib disetel!';
-        END IF;
+    -- Validasi ketat di SEMUA lingkungan: WAJIB mengisi KOPDES_APP_PASSWORD / DB_PASSWORD dari env (tanpa fallback tersembunyi)
+    IF v_pass IS NULL OR v_pass = '' THEN
+        RAISE EXCEPTION 'FATAL: Variabel lingkungan KOPDES_APP_PASSWORD (atau DB_PASSWORD) wajib disetel (APP_ENV=%).', COALESCE(v_env, '');
+    END IF;
 
+    IF v_env = 'production' THEN
         IF v_pass = 'kopdes_dev_password' THEN
-            RAISE EXCEPTION 'FATAL: Pada profil produksi, dilarang menggunakan password default dev ("kopdes_dev_password")!';
-        END IF;
-    ELSE
-        -- Profil non-produksi / development: fallback ke dev password jika tidak diisi
-        IF v_pass IS NULL OR v_pass = '' THEN
-            v_pass := 'kopdes_dev_password';
+            RAISE EXCEPTION 'FATAL: Pada profil produksi, dilarang menggunakan password default lemah!';
         END IF;
     END IF;
 

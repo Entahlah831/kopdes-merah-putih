@@ -257,9 +257,9 @@
     </thead>
     <tbody>
       <tr>
-        <td><code>PORT</code> / <code>APP_PORT</code></td>
-        <td><code>8080</code></td>
-        <td>Port HTTP Server API (Bebas diubah ke 3000, 5000, 8080 sesuai kebutuhan front-end).</td>
+        <td><code>API_PORT</code> / <code>API_HOST_PORT</code></td>
+        <td><code>Dikonfigurasi di .env</code></td>
+        <td>Port HTTP Server API & port publik host Docker (misal Set A vs Set B `18080`, dikonfigurasi via <code>.env</code>).</td>
       </tr>
       <tr>
         <td><code>DB_PORT</code></td>
@@ -289,7 +289,7 @@
   <pre><code># 1. Pastikan PostgreSQL 16 menyala
 # 2. Jalankan server API
 go run ./cmd/server
-# Server otomatis aktif pada port yang ditentukan di .env (misal http://0.0.0.0:8080)</code></pre>
+# Server aktif pada port yang diset di API_PORT (misal http://0.0.0.0:${API_PORT})</code></pre>
 
   <p><strong>B. Mode Server / VPS Produksi (Docker Compose):</strong></p>
   <pre><code># Kloning repo, salin konfigurasi, dan nyalakan dalam 1 perintah
@@ -655,7 +655,7 @@ docker compose up -d --build</code></pre>
     <div class="endpoint-header">
       <span class="method-badge method-post">POST</span>
       <span class="endpoint-path">/api/v1/pendaftaran/purge-ditolak</span>
-      <span class="auth-badge">Role: Admin / Pengurus</span>
+      <span class="auth-badge">Role: Admin / Pengurus (UU PDP)</span>
     </div>
     <div class="endpoint-body">
       <p>Menjalankan prosedur pembersihan berkas fisik dan enkripsi PII bagi formulir pendaftaran yang ditolak lebih dari masa retensi terkonfigurasi (default 30 hari; catatan: perlu verifikasi hukum formal).</p>
@@ -678,10 +678,10 @@ docker compose up -d --build</code></pre>
     <div class="endpoint-header">
       <span class="method-badge method-get">GET</span>
       <span class="endpoint-path">/metrics</span>
-      <span class="auth-badge">Publik (Monitoring)</span>
+      <span class="auth-badge">Bearer METRICS_TOKEN (&gt;= 32 byte)</span>
     </div>
     <div class="endpoint-body">
-      <p>Eksposisi metrik operasional standar Prometheus (uptime, antrean verifikasi pembayaran, slot kode unik QRIS aktif, total job gagal, dan status partisi database).</p>
+      <p>Eksposisi metrik operasional Prometheus (uptime, antrean verifikasi pembayaran, slot kode unik QRIS aktif, total job gagal, dan status partisi database). Wajib menyertakan <code>Authorization: Bearer &lt;METRICS_TOKEN&gt;</code>; akses tanpa token ditolak <code>401</code>.</p>
     </div>
   </div>
 
@@ -695,7 +695,10 @@ docker compose up -d --build</code></pre>
 
   <h3>A. Modul Klien API (TypeScript / Fetch)</h3>
   <pre><code>// lib/apiClient.ts
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+if (!BASE_URL) {
+  throw new Error("NEXT_PUBLIC_API_URL wajib diisi di .env.local");
+}
 
 export async function kopdesAPI&lt;T&gt;(endpoint: string, options: RequestInit = {}): Promise&lt;T&gt; {
   const token = typeof window !== "undefined" ? localStorage.getItem("kopdes_token") : null;
@@ -719,30 +722,31 @@ export async function kopdesAPI&lt;T&gt;(endpoint: string, options: RequestInit 
 import QRCode from "qrcode.react"; // npm install qrcode.react
 import { kopdesAPI } from "../lib/apiClient";
 
-export function PembayaranQRIS({ nominalDasar }: { nominalDasar: number }) {
+export function PembayaranQRIS({ tagihanIds }: { tagihanIds: string[] }) {
   const [data, setData] = useState&lt;any&gt;(null);
   const [lunas, setLunas] = useState(false);
 
   useEffect(() =&gt; {
-    // 1. Buat alokasi QRIS
+    // 1. Buat alokasi QRIS dengan Idempotency-Key
     kopdesAPI("/api/v1/pembayaran/qris", {
       method: "POST",
-      body: JSON.stringify({ nominal_dasar: nominalDasar, jenis_transaksi: "iuran_bulanan" })
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({ jenis_transaksi: "iuran_bulanan", tagihan_iuran_id: tagihanIds })
     }).then(res =&gt; setData(res));
-  }, [nominalDasar]);
+  }, [tagihanIds]);
 
-  // 2. Polling status pelunasan setiap 4 detik
+  // 2. Polling status pelunasan setiap 10 detik
   useEffect(() =&gt; {
     if (!data || lunas) return;
     const interval = setInterval(async () =&gt; {
       try {
         const res: any = await kopdesAPI(`/api/v1/pembayaran/${data.pembayaran_id}`);
-        if (res.status === "berhasil_diverifikasi") {
+        if (res.status === "disetujui") {
           setLunas(true);
           clearInterval(interval);
         }
       } catch (_) {}
-    }, 4000);
+    }, 10000);
     return () =&gt; clearInterval(interval);
   }, [data, lunas]);
 

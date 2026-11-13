@@ -1,71 +1,118 @@
 openapi: 3.0.3
 info:
   title: API Kopdes Merah Putih
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Spesifikasi API Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go).
-    Menerapkan Multi-Tenancy berbasis Row Level Security (FORCE RLS), MFA TOTP,
-    Anti-IDOR, Idempotensi Database, dan Ledger Append-Only Hash Chain.
+    Spesifikasi OpenAPI 3.0.3 untuk API Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go).
+    Mendukung Multi-Tenant Row Level Security (FORCE RLS via app.current_koperasi_id dari JWT),
+    rotasi refresh token dengan deteksi reuse, MFA TOTP wajib untuk peran manajemen,
+    Anti-IDOR pembayaran, idempotensi berbasis database, serta ledger append-only hash chain.
+    Catatan kepatuhan/retensi: parameter hukum seperti masa retensi data pendaftaran ditolak (30 hari default) ditandai PERLU VERIFIKASI HUKUM.
 servers:
-  - url: http://localhost:8080
-    description: Lingkungan Lokal / Development
+  - url: http://{host}:{port}
+    description: Base URL API diisi dari konfigurasi lingkungan (API_PORT / VITE_API_BASE_URL; jangan hardcode)
+    variables:
+      host:
+        default: 127.0.0.1
+      port:
+        default: "${API_PORT}"
+tags:
+  - name: Health & Metrics
+  - name: Auth & MFA
+  - name: Pendaftaran & KYC
+  - name: Anggota
+  - name: Users & RBAC
+  - name: Iuran
+  - name: Katalog & Promo
+  - name: Toko & Checkout
+  - name: Pembayaran QRIS
+  - name: Rekonsiliasi & Mutasi Bank
+  - name: Rekening QRIS Koperasi
+  - name: Kas & Laporan
 paths:
   /healthz:
     get:
+      tags: [Health & Metrics]
+      operationId: getHealthz
       summary: Liveness Probe
       responses:
         '200':
           description: Server aktif
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIResponseGeneric'
   /readyz:
     get:
-      summary: Readiness Probe
+      tags: [Health & Metrics]
+      operationId: getReadyz
+      summary: Readiness Probe (koneksi PostgreSQL 16)
       responses:
         '200':
           description: Database siap melayani lalu lintas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIResponseGeneric'
+        '503':
+          description: Database tidak siap
   /metrics:
     get:
-      summary: Metrik Operasional Prometheus
+      tags: [Health & Metrics]
+      operationId: getMetrics
+      summary: Metrik Operasional Prometheus (dilindungi Bearer METRICS_TOKEN; juga tersedia pada METRICS_PORT)
       security:
-        - BearerAuth: []
+        - MetricsBearerAuth: []
       responses:
         '200':
           description: Format metrik Prometheus text/plain
+          content:
+            text/plain:
+              schema:
+                type: string
         '401':
-          description: Unauthorized (Token metrik internal wajib)
+          description: Token metrik tidak valid atau tidak disertakan
   /api/v1/auth/login:
     post:
-      summary: Autentikasi Pengguna Tahap 1
+      tags: [Auth & MFA]
+      operationId: authLogin
+      summary: Autentikasi Pengguna Tahap 1 (Email + Password)
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [email, password]
-              properties:
-                email:
-                  type: string
-                  format: email
-                password:
-                  type: string
+              $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Login berhasil (langsung jika anggota, atau mfa_required jika MFA aktif)
+          description: Login berhasil (Access & Refresh Token untuk peran biasa, atau challenge mfa_required=true bila MFA aktif)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIResponseGeneric'
         '401':
-          description: Kredensial tidak sah
+          description: Kredensial salah
         '403':
-          description: MFA wajib untuk peran admin/bendahara/ketua (mengembalikan setup_token)
+          description: Kode MFA_MANDATORY_SETUP_REQUIRED dengan setup_token enrollment-only untuk admin/bendahara/ketua yang belum mengaktifkan MFA
+        '429':
+          description: Terlalu banyak percobaan gagal (rate/lockout limit)
   /api/v1/auth/mfa/setup:
     post:
-      summary: Permintaan Secret TOTP Baru
+      tags: [Auth & MFA]
+      operationId: authMfaSetup
+      summary: Permintaan Secret TOTP & URI otpauth baru (menerima access token atau setup_token enrollment-only)
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Mengembalikan secret Base32 dan otpauth URI
+          description: Mengembalikan secret Base32 dan URI otpauth://
+        '401':
+          description: Unauthorized
   /api/v1/auth/mfa/enable:
     post:
-      summary: Pengaktifan MFA TOTP & Pembuatan Recovery Codes
+      tags: [Auth & MFA]
+      operationId: authMfaEnable
+      summary: Aktivasi MFA TOTP & Penerbitan 8 Recovery Codes sekali pakai (menerima access token atau setup_token)
       security:
         - BearerAuth: []
       requestBody:
@@ -73,51 +120,73 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [secret, totp_code]
-              properties:
-                secret:
-                  type: string
-                totp_code:
-                  type: string
+              $ref: '#/components/schemas/MFAEnableRequest'
       responses:
         '200':
-          description: MFA aktif & 8 kode pemulihan sekali pakai diterbitkan
+          description: MFA berhasil diaktifkan beserta recovery_codes (wajib disimpan pengguna)
+        '400':
+          description: Secret/kode TOTP tidak valid
   /api/v1/auth/mfa/verify:
     post:
-      summary: Verifikasi MFA Tahap 2 Login
+      tags: [Auth & MFA]
+      operationId: authMfaVerify
+      summary: Verifikasi MFA Tahap 2 Login (TOTP atau Recovery Code sekali pakai)
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [mfa_session_token]
-              properties:
-                mfa_session_token:
-                  type: string
-                totp_code:
-                  type: string
-                recovery_code:
-                  type: string
+              $ref: '#/components/schemas/MFAVerifyRequest'
       responses:
         '200':
-          description: Token Access & Refresh diterbitkan
+          description: Verifikasi MFA sukses; menerbitkan Access & Refresh Token
         '401':
-          description: Kode TOTP/recovery tidak valid atau replay terdeteksi
-        '429':
-          description: Sesi terkunci karena melebihi batas percobaan (maks 3 kali)
+          description: Kode TOTP/recovery tidak valid, terpakai ulang dalam jendela sama, atau mfa_session_token habis percobaan
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth & MFA]
+      operationId: authRefresh
+      summary: Rotasi Refresh Token & Penerbitan Access Token Baru (deteksi reuse mencabut seluruh sesi)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Pasangan access_token dan refresh_token baru
+        '401':
+          description: Refresh token tidak sah, kedaluwarsa, atau terdeteksi reuse
+  /api/v1/auth/revoke:
+    post:
+      tags: [Auth & MFA]
+      operationId: authRevoke
+      summary: Logout / Pencabutan Refresh Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Sesi berhasil dicabut
   /api/v1/auth/me:
     get:
-      summary: Profil Pengguna Aktif
+      tags: [Auth & MFA]
+      operationId: authMe
+      summary: Profil Pengguna Terotentikasi
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Data profil pengguna
-  /api/v1/pembayaran/qris:
+          description: Profil user_id, koperasi_id, nama_lengkap, role, dan status MFA
+  /api/v1/pendaftaran:
     post:
-      summary: Pembuatan Pembayaran Tagihan via QRIS
+      tags: [Pendaftaran & KYC]
+      operationId: createPendaftaran
+      summary: Pengajuan Pendaftaran Anggota Baru (AES-256-GCM AAD + HKDF Blind Index NIK)
       security:
         - BearerAuth: []
       requestBody:
@@ -125,21 +194,539 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [metode_pembayaran_id, jenis_transaksi]
-              properties:
-                metode_pembayaran_id:
-                  type: string
-                  format: uuid
-                jenis_transaksi:
-                  type: string
-                  enum: [iuran_bulanan, pesanan_katalog, gabungan]
+              $ref: '#/components/schemas/AjukanPendaftaranRequest'
       responses:
         '201':
-          description: QRIS berhasil dibuat dengan slot kode unik
+          description: Pendaftaran berhasil dibuat dengan status diajukan
+        '400':
+          description: Payload atau NIK tidak valid
+        '409':
+          description: NIK sudah terdaftar pada koperasi ini
+  /api/v1/pendaftaran/{id}:
+    get:
+      tags: [Pendaftaran & KYC]
+      operationId: getPendaftaran
+      summary: Status & Detail Pendaftaran (NIK tersamar 4+4 digit)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Data pendaftaran dengan nik_tersamar
+        '404':
+          description: Pendaftaran tidak ditemukan atau bukan milik pengguna
+  /api/v1/pendaftaran/{id}/dokumen:
+    post:
+      tags: [Pendaftaran & KYC]
+      operationId: uploadDokumenPendaftaran
+      summary: Unggah Berkas KYC (KTP/KK/Foto; validasi magic bytes JPEG/PNG/PDF max 5MB + checksum SHA-256)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [dokumen]
+              properties:
+                dokumen:
+                  type: string
+                  format: binary
+                jenis_dokumen:
+                  type: string
+                  enum: [ktp, kk, foto_diri, surat_domisili]
+      responses:
+        '201':
+          description: Dokumen berhasil disimpan dengan hash SHA-256
+        '400':
+          description: Format/magic bytes ditolak atau melebihi batas ukuran
+  /api/v1/pendaftaran/{id}/verifikasi:
+    post:
+      tags: [Pendaftaran & KYC]
+      operationId: verifikasiPendaftaran
+      summary: Verifikasi Pendaftaran Anggota (Maker-Checker; admin/pengurus/ketua/sekretaris)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifikasiPendaftaranRequest'
+      responses:
+        '200':
+          description: Keputusan tercatat; bila disetujui menerbitkan no_anggota atomik
+        '403':
+          description: Pelanggaran RBAC atau Maker-Checker
+  /api/v1/pendaftaran/purge-ditolak:
+    post:
+      tags: [Pendaftaran & KYC]
+      operationId: purgePendaftaranDitolak
+      summary: Pembersihan Pendaftaran Ditolak Melewati Retensi & Berkas KYC Fisik (PERLU VERIFIKASI HUKUM)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Jumlah pendaftaran dan berkas fisik yang dibersihkan
+  /api/v1/anggota:
+    get:
+      tags: [Anggota]
+      operationId: listAnggota
+      summary: Daftar Anggota Koperasi (admin/pengurus/operator/pengawas/bendahara/ketua)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar anggota dalam koperasi aktif
+  /api/v1/anggota/{id}:
+    get:
+      tags: [Anggota]
+      operationId: getAnggota
+      summary: Detail Anggota Koperasi
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Detail anggota
+        '404':
+          description: Anggota tidak ditemukan
+  /api/v1/anggota/{id}/status:
+    patch:
+      tags: [Anggota]
+      operationId: updateAnggotaStatus
+      summary: Pembaruan Status Keanggotaan + Log Append-Only (admin/pengurus/ketua)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusAnggotaRequest'
+      responses:
+        '200':
+          description: Status anggota diperbarui
+  /api/v1/users:
+    get:
+      tags: [Users & RBAC]
+      operationId: listUsers
+      summary: Daftar Pengguna & Peran dalam Koperasi (admin/pengurus/ketua)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar user beserta peran aktif
+  /api/v1/users/{id}:
+    get:
+      tags: [Users & RBAC]
+      operationId: getUserDetail
+      summary: Detail Pengguna (admin/pengurus/ketua)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Detail pengguna
+  /api/v1/users/{id}/role:
+    patch:
+      tags: [Users & RBAC]
+      operationId: updateUserRole
+      summary: Pembaruan Peran Pengguna (dilarang ubah peran sendiri atau eskalasi melebihi peran pemberi)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRoleRequest'
+      responses:
+        '200':
+          description: Peran pengguna diperbarui
+        '403':
+          description: Pelanggaran anti-eskalasi atau larangan ubah peran sendiri
+  /api/v1/iuran/jenis:
+    get:
+      tags: [Iuran]
+      operationId: listJenisIuran
+      summary: Daftar Jenis Iuran & Keterangan Klasifikasi (KEPUTUSAN AKUNTAN)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar jenis iuran aktif
+    post:
+      tags: [Iuran]
+      operationId: createJenisIuran
+      summary: Pembuatan Jenis Iuran Baru (admin/pengurus/bendahara)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJenisIuranRequest'
+      responses:
+        '201':
+          description: Jenis iuran berhasil dibuat dengan klasifikasi netral & catatan KEPUTUSAN AKUNTAN
+  /api/v1/iuran/tagihan/saya:
+    get:
+      tags: [Iuran]
+      operationId: getTagihanSaya
+      summary: Daftar Tagihan Iuran Milik Anggota yang Sedang Login
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar tagihan iuran saya
+  /api/v1/iuran/generate:
+    post:
+      tags: [Iuran]
+      operationId: generateTagihanIuran
+      summary: Generator Idempoten Tagihan Iuran Bulanan Seluruh Anggota Aktif (admin/pengurus/bendahara)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateTagihanRequest'
+      responses:
+        '200':
+          description: Jumlah tagihan baru yang diterbitkan (idempoten per periode)
+  /api/v1/iuran/menunggak:
+    get:
+      tags: [Iuran]
+      operationId: listIuranMenunggak
+      summary: Rekapitulasi Anggota Penunggak Iuran
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar tagihan belum lunas
+  /api/v1/katalog/stok:
+    get:
+      tags: [Katalog & Promo]
+      operationId: listKatalogStok
+      summary: Ketersediaan Stok Gudang Toko Koperasi
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar stok produk saat ini
+  /api/v1/katalog/harga:
+    get:
+      tags: [Katalog & Promo]
+      operationId: getHargaAnggota
+      summary: Kalkulasi Harga Akhir Produk dengan Harga Anggota / Diskon
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: produk_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Informasi harga anggota vs umum
+  /api/v1/katalog/produk:
+    get:
+      tags: [Katalog & Promo]
+      operationId: listProduk
+      summary: Daftar Produk E-Katalog Koperasi
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar produk beserta harga dan stok tersedia
+    post:
+      tags: [Katalog & Promo]
+      operationId: createProduk
+      summary: Tambah Produk Katalog Baru (admin/pengurus)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProdukRequest'
+      responses:
+        '201':
+          description: Produk & stok awal berhasil dicatat
+  /api/v1/katalog/produk/{id}:
+    put:
+      tags: [Katalog & Promo]
+      operationId: updateProduk
+      summary: Pembaruan Produk Katalog (admin/pengurus)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProdukRequest'
+      responses:
+        '200':
+          description: Produk diperbarui
+    delete:
+      tags: [Katalog & Promo]
+      operationId: deleteProduk
+      summary: Soft Delete Produk Katalog (admin/pengurus)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Produk dihapus (soft delete)
+  /api/v1/katalog/promo:
+    get:
+      tags: [Katalog & Promo]
+      operationId: listPromo
+      summary: Daftar Promo Aktif
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar promo yang sedang berlaku
+    post:
+      tags: [Katalog & Promo]
+      operationId: createPromo
+      summary: Buat Promo Diskon Baru (admin/pengurus)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePromoRequest'
+      responses:
+        '201':
+          description: Promo berhasil dibuat
+  /api/v1/toko/keranjang:
+    get:
+      tags: [Toko & Checkout]
+      operationId: getKeranjang
+      summary: Ambil Isi Keranjang Belanja Pengguna
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar item dalam keranjang beserta total estimasi
+    post:
+      tags: [Toko & Checkout]
+      operationId: addToCart
+      summary: Tambah atau Perbarui Kuantitas Produk di Keranjang
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddToCartRequest'
+      responses:
+        '200':
+          description: Item keranjang berhasil disimpan
+  /api/v1/toko/keranjang/{produk_id}:
+    delete:
+      tags: [Toko & Checkout]
+      operationId: removeFromCart
+      summary: Hapus Item Produk dari Keranjang
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: produk_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Item dihapus dari keranjang
+  /api/v1/toko/checkout:
+    post:
+      tags: [Toko & Checkout]
+      operationId: checkoutToko
+      summary: Checkout Keranjang Menjadi Pesanan (kunci stok FOR UPDATE, catat stok_mutasi, terapkan promo)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '201':
+          description: Pesanan berhasil dibuat dengan status menunggu_pembayaran
+        '400':
+          description: Keranjang kosong, promo tidak valid, atau stok tidak mencukupi
+  /api/v1/toko/pesanan:
+    get:
+      tags: [Toko & Checkout]
+      operationId: listPesanan
+      summary: Daftar Pesanan Toko (anggota hanya melihat miliknya; pengurus/admin melihat koperasi)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar pesanan
+  /api/v1/toko/pesanan/{id}/batal:
+    post:
+      tags: [Toko & Checkout]
+      operationId: batalPesanan
+      summary: Batalkan Pesanan & Lepaskan Stok/Kuota Promo
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Pesanan dibatalkan, stok dan kuota promo dipulihkan
+  /api/v1/toko/pesanan/{id}/expire:
+    post:
+      tags: [Toko & Checkout]
+      operationId: expirePesanan
+      summary: Kedaluwarsakan Pesanan Melewati Batas Waktu & Pulihkan Stok/Kuota Promo
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Pesanan menjadi kedaluwarsa dan stok dipulihkan
+  /api/v1/pembayaran/qris:
+    post:
+      tags: [Pembayaran QRIS]
+      operationId: createPembayaranQRIS
+      summary: Buat Alokasi Pembayaran QRIS (Statis+Kode Unik atau Dinamis Auto-Lock jika QRIS_DYNAMIC_ENABLED=true)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Kunci idempotensi (disimpan di DB idempotency_keys; payload berbeda dengan kunci sama mengembalikan 422 IDEMPOTENCY_CONFLICT)
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuatQRISRequest'
+      responses:
+        '201':
+          description: Transaksi pembayaran terbuat dengan kode_unik, nominal_total, qris_payload, dan TTL
+        '400':
+          description: Input invalid atau melampaui batas transaksi/harian pilot rekening pribadi
+        '409':
+          description: Seluruh slot kode unik penuh untuk nominal tersebut
+        '422':
+          description: IDEMPOTENCY_CONFLICT (kunci sama, isi request berbeda)
+  /api/v1/pembayaran/{id}:
+    get:
+      tags: [Pembayaran QRIS]
+      operationId: getPembayaranStatus
+      summary: Status & Detail Transaksi Pembayaran (Anti-IDOR untuk anggota)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Detail pembayaran, warning_banner pilot (untuk admin jika rekening pribadi), serta indikator anomali
+        '404':
+          description: Pembayaran tidak ditemukan atau akses ditolak
+  /api/v1/pembayaran/{id}/bukti:
+    post:
+      tags: [Pembayaran QRIS]
+      operationId: klaimBuktiPembayaran
+      summary: Ajukan Klaim Bukti Pembayaran QRIS (menunggu_pembayaran -> menunggu_verifikasi)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KlaimBuktiRequest'
+      responses:
+        '200':
+          description: Pembayaran masuk antrean verifikasi
+  /api/v1/pembayaran/antrean:
+    get:
+      tags: [Pembayaran QRIS]
+      operationId: listAntreanVerifikasi
+      summary: Antrean Transaksi Menunggu Verifikasi & Persetujuan Kedua
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar transaksi menunggu verifikasi
+  /api/v1/pembayaran/{id}/verifikasi:
+    post:
+      tags: [Pembayaran QRIS]
+      operationId: verifikasiPembayaran
+      summary: Verifikasi & Persetujuan Pembayaran (Maker-Checker & Persetujuan Ganda di atas ambang)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifikasiRequest'
+      responses:
+        '200':
+          description: Status menjadi disetujui, ditolak, atau menunggu_persetujuan_kedua
+        '403':
+          description: Pelanggaran Maker-Checker / penyetuju ganda sama / penyetuju = pengimpor mutasi
   /api/v1/pembayaran/mutasi-bank/impor:
     post:
-      summary: Impor Berkas Mutasi Bank CSV (Maker-Checker Rekonsiliasi)
+      tags: [Rekonsiliasi & Mutasi Bank]
+      operationId: imporMutasiBank
+      summary: Impor Mutasi Rekening Bank (CSV) & Pencocokan Otomatis nominal_total
       security:
         - BearerAuth: []
       requestBody:
@@ -148,118 +735,388 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [file]
               properties:
                 file:
                   type: string
                   format: binary
+          text/csv:
+            schema:
+              type: string
       responses:
         '200':
-          description: Hasil rekonsiliasi dan pencocokan 1-to-1
-  /api/v1/pembayaran/verifikasi:
-    post:
-      summary: Verifikasi dan Persetujuan Pembayaran
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [pembayaran_id, disetujui]
-              properties:
-                pembayaran_id:
-                  type: string
-                  format: uuid
-                disetujui:
-                  type: boolean
-      responses:
-        '200':
-          description: Pembayaran diverifikasi / disetujui
-  /api/v1/toko/keranjang:
-    post:
-      summary: Tambah Item ke Keranjang Belanja
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [produk_id, qty]
-              properties:
-                produk_id:
-                  type: string
-                  format: uuid
-                qty:
-                  type: number
-      responses:
-        '200':
-          description: Item ditambahkan ke keranjang
-  /api/v1/toko/checkout:
-    post:
-      summary: Checkout Pesanan, Pemotongan Stok Transaksional & Aplikasi Promo
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                metode_serah_terima:
-                  type: string
-                  enum: [ambil_di_koperasi, kirim_alamat]
-                kode_promo:
-                  type: string
-                catatan:
-                  type: string
-      responses:
-        '201':
-          description: Pesanan draft dibuat, stok dipotong via stok_mutasi
-        '400':
-          description: Stok tidak mencukupi atau promo tidak valid
-  /api/v1/users/{id}/role:
-    patch:
-      summary: Perbarui Peranan Pengguna (Proteksi Anti-Eskalasi)
+          description: Ringkasan impor (total_baris, tercocokkan, anomali, belum_cocok, duplikat)
+  /api/v1/pembayaran/rekonsiliasi/harian:
+    get:
+      tags: [Rekonsiliasi & Mutasi Bank]
+      operationId: laporanRekonsiliasiHarian
+      summary: Laporan Rekonsiliasi Harian Sistem vs Mutasi Bank CSV
       security:
         - BearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
+        - name: tanggal
+          in: query
+          description: Format YYYY-MM-DD (default hari ini Asia/Jakarta)
           schema:
             type: string
-            format: uuid
+            format: date
+      responses:
+        '200':
+          description: Ringkasan total_pembayaran_sistem, total_mutasi_bank_cr, dan total_tercocokkan
+  /api/v1/koperasi/rekening-qris:
+    get:
+      tags: [Rekening QRIS Koperasi]
+      operationId: listRekeningQRIS
+      summary: Daftar Rekening QRIS Koperasi
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Daftar rekening QRIS
+    post:
+      tags: [Rekening QRIS Koperasi]
+      operationId: createRekeningQRIS
+      summary: Daftarkan Rekening & Payload EMVCo QRIS Statis Koperasi (wajib badan hukum kecuali pilot)
+      security:
+        - BearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [role]
-              properties:
-                role:
-                  type: string
+              $ref: '#/components/schemas/AdminDaftarRekeningQRISRequest'
+      responses:
+        '201':
+          description: Rekening QRIS divalidasi CRC16 EMVCo dan didaftarkan
+        '400':
+          description: CRC16/Tag 00/duplikasi tag invalid atau rekening perorangan ditolak tanpa ALLOW_PERSONAL_PAYMENT_PILOT=true
+  /api/v1/koperasi/rekening-qris/{id}:
+    delete:
+      tags: [Rekening QRIS Koperasi]
+      operationId: deactivateRekeningQRIS
+      summary: Nonaktifkan Rekening QRIS Koperasi
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathID'
       responses:
         '200':
-          description: Peranan berhasil diubah
-        '403':
-          description: Dilarang mengubah peran sendiri atau memberi peran di atas perannya
-  /api/v1/iuran/jenis:
+          description: Rekening QRIS dinonaktifkan
+  /api/v1/kas/mutasi:
     get:
-      summary: Daftar Jenis Iuran Keanggotaan (Label Netral / KEPUTUSAN AKUNTAN)
+      tags: [Kas & Laporan]
+      operationId: listKasMutasi
+      summary: Buku Mutasi Kas Ringan Append-Only Hash Chain
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Daftar jenis iuran beserta tag KEPUTUSAN AKUNTAN
+          description: Daftar entri kas_mutasi berantai hash SHA-256
+  /api/v1/laporan/keuangan:
+    get:
+      tags: [Kas & Laporan]
+      operationId: getLaporanKeuangan
+      summary: Ringkasan Laporan Keuangan Koperasi
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Agregat pemasukan, pengeluaran, dan saldo kas
+  /api/v1/laporan/anggota:
+    get:
+      tags: [Kas & Laporan]
+      operationId: getLaporanAnggota
+      summary: Rekapitulasi Data Anggota Koperasi
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Statistik jumlah anggota menurut status
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    MetricsBearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details: {}
+    APIResponseGeneric:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        data: {}
+        meta: {}
+        error:
+          $ref: '#/components/schemas/APIError'
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        koperasi_id:
+          type: string
+          format: uuid
+    MFAEnableRequest:
+      type: object
+      required: [secret, totp_code]
+      properties:
+        secret:
+          type: string
+        totp_code:
+          type: string
+    MFAVerifyRequest:
+      type: object
+      required: [mfa_session_token]
+      properties:
+        mfa_session_token:
+          type: string
+        totp_code:
+          type: string
+        recovery_code:
+          type: string
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+    AjukanPendaftaranRequest:
+      type: object
+      required: [nik, nama_lengkap, tempat_lahir, tanggal_lahir, jenis_kelamin, alamat_ktp, wilayah_desa_id]
+      properties:
+        nik:
+          type: string
+          example: "3201010101900001"
+        nama_lengkap:
+          type: string
+        tempat_lahir:
+          type: string
+        tanggal_lahir:
+          type: string
+          format: date
+        jenis_kelamin:
+          type: string
+          enum: [L, P]
+        pekerjaan:
+          type: string
+        alamat_ktp:
+          type: string
+        wilayah_desa_id:
+          type: string
+          format: uuid
+    VerifikasiPendaftaranRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [disetujui, ditolak, perbaikan]
+        catatan_perbaikan:
+          type: string
+        alasan_ditolak:
+          type: string
+    UpdateStatusAnggotaRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [aktif, nonaktif, dibekukan, keluar]
+        alasan:
+          type: string
+        catatan:
+          type: string
+    UpdateUserRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [anggota, operator, pengawas, pengurus, bendahara, ketua, admin]
+    CreateJenisIuranRequest:
+      type: object
+      required: [kode, nama]
+      properties:
+        kode:
+          type: string
+        nama:
+          type: string
+        tipe:
+          type: string
+          enum: [pokok, wajib, sukarela]
+          description: Label netral; klasifikasi akuntansi resmi merupakan KEPUTUSAN AKUNTAN
+        nominal_standar:
+          type: integer
+          format: int64
+        nominal:
+          type: integer
+          format: int64
+    GenerateTagihanRequest:
+      type: object
+      required: [jenis_iuran_id, periode]
+      properties:
+        jenis_iuran_id:
+          type: string
+          format: uuid
+        periode:
+          type: string
+          example: "2026-11"
+    CreateProdukRequest:
+      type: object
+      required: [nama, sku]
+      properties:
+        nama:
+          type: string
+        sku:
+          type: string
+        deskripsi:
+          type: string
+        satuan_dasar:
+          type: string
+        harga_umum:
+          type: integer
+          format: int64
+        harga_anggota:
+          type: integer
+          format: int64
+        stok_awal:
+          type: integer
+          format: int64
+    CreatePromoRequest:
+      type: object
+      required: [kode, nama, tipe_promo, nilai_diskon]
+      properties:
+        kode:
+          type: string
+        nama:
+          type: string
+        tipe_promo:
+          type: string
+          enum: [nominal, persen]
+        nilai_diskon:
+          type: number
+        minimal_belanja:
+          type: integer
+          format: int64
+        durasi_hari:
+          type: integer
+    AddToCartRequest:
+      type: object
+      required: [produk_id, qty]
+      properties:
+        produk_id:
+          type: string
+          format: uuid
+        qty:
+          type: number
+    CheckoutRequest:
+      type: object
+      required: [metode_serah_terima]
+      properties:
+        metode_serah_terima:
+          type: string
+          enum: [ambil_di_koperasi, kirim_alamat]
+        catatan:
+          type: string
+        kode_promo:
+          type: string
+    BuatQRISRequest:
+      type: object
+      properties:
+        nominal_dasar:
+          type: integer
+          format: int64
+        tagihan_iuran_id:
+          type: array
+          items:
+            type: string
+            format: uuid
+        tagihan_iuran_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        pesanan_id:
+          type: string
+          format: uuid
+        jenis_transaksi:
+          type: string
+          enum: [iuran_bulanan, belanja_toko, campuran]
+        anggota_id:
+          type: string
+          format: uuid
+        metode_pembayaran_id:
+          type: string
+          format: uuid
+        rekening_qris_id:
+          type: string
+          format: uuid
+    KlaimBuktiRequest:
+      type: object
+      properties:
+        referensi_rrn:
+          type: string
+        catatan:
+          type: string
+    VerifikasiRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [disetujui, ditolak]
+        disetujui:
+          type: boolean
+        nominal_aktual:
+          type: integer
+          format: int64
+        alasan_tolak:
+          type: string
+        referensi_rrn:
+          type: string
+        catatan:
+          type: string
+    AdminDaftarRekeningQRISRequest:
+      type: object
+      required: [nama_merchant, nmid, nama_bank_pjp, no_rekening_settlement, nama_pemilik_rekening, qris_payload_statis]
+      properties:
+        nama_merchant:
+          type: string
+        nmid:
+          type: string
+        nama_bank_pjp:
+          type: string
+        no_rekening_settlement:
+          type: string
+        nama_pemilik_rekening:
+          type: string
+        is_atas_nama_badan_hukum:
+          type: boolean
+        jenis_pemilik:
+          type: string
+          enum: [badan_hukum_koperasi, perorangan_pengurus]
+        qris_payload_statis:
+          type: string

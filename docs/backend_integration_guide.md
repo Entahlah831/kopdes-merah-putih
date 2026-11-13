@@ -310,7 +310,10 @@ Untuk membangun aplikasi front-end yang aman, cepat, dan mudah di-maintain, beri
 ### A. Modul Klien API (TypeScript / Fetch)
 ```typescript
 // lib/apiClient.ts
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+if (!BASE_URL) {
+  throw new Error("NEXT_PUBLIC_API_URL wajib dikonfigurasi di .env.local (lihat API_HOST_PORT pada .env backend)");
+}
 
 export interface APIEnvelope<T> {
   success: boolean;
@@ -445,5 +448,5 @@ Untuk menjalankan backend di VPS Ubuntu/Debian produksi:
 4. **Periksa Status Kontainer:**
    ```bash
    docker compose ps
-   curl http://localhost:8080/healthz
+   curl "http://127.0.0.1:${API_HOST_PORT:?API_HOST_PORT belum diset}/healthz"
    ```

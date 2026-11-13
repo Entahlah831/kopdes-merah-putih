@@ -1,0 +1,1826 @@
+{
+  "info": {
+    "name": "API Kopdes Merah Putih",
+    "description": "Spesifikasi OpenAPI 3.0.3 untuk API Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go).\nMendukung Multi-Tenant Row Level Security (FORCE RLS via app.current_koperasi_id dari JWT),\nrotasi refresh token dengan deteksi reuse, MFA TOTP wajib untuk peran manajemen,\nAnti-IDOR pembayaran, idempotensi berbasis database, serta ledger append-only hash chain.\nCatatan kepatuhan/retensi: parameter hukum seperti masa retensi data pendaftaran ditolak (30 hari default) ditandai PERLU VERIFIKASI HUKUM.\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_kopdes_version": "1.1.0"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:${API_PORT}"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "metricsToken",
+      "value": ""
+    },
+    {
+      "key": "Idempotency-Key",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Metrics",
+      "item": [
+        {
+          "name": "GET /healthz",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": "Liveness Probe"
+          }
+        },
+        {
+          "name": "GET /readyz",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/readyz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "readyz"
+              ]
+            },
+            "description": "Readiness Probe (koneksi PostgreSQL 16)"
+          }
+        },
+        {
+          "name": "GET /metrics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{metricsToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            },
+            "description": "Metrik Operasional Prometheus (dilindungi Bearer METRICS_TOKEN; juga tersedia pada METRICS_PORT)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth & MFA",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Autentikasi Pengguna Tahap 1 (Email + Password)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.invalid\",\n  \"password\": \"<password>\",\n  \"koperasi_id\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/setup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/setup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "setup"
+              ]
+            },
+            "description": "Permintaan Secret TOTP & URI otpauth baru (menerima access token atau setup_token enrollment-only)"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/enable",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/enable",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "enable"
+              ]
+            },
+            "description": "Aktivasi MFA TOTP & Penerbitan 8 Recovery Codes sekali pakai (menerima access token atau setup_token)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"secret\": \"<secret>\",\n  \"totp_code\": \"<totp_code>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/verify",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "verify"
+              ]
+            },
+            "description": "Verifikasi MFA Tahap 2 Login (TOTP atau Recovery Code sekali pakai)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mfa_session_token\": \"<mfa_session_token>\",\n  \"totp_code\": \"<totp_code>\",\n  \"recovery_code\": \"<recovery_code>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Rotasi Refresh Token & Penerbitan Access Token Baru (deteksi reuse mencabut seluruh sesi)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"<refresh_token>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/revoke",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/revoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "revoke"
+              ]
+            },
+            "description": "Logout / Pencabutan Refresh Token",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"<refresh_token>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Profil Pengguna Terotentikasi"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pendaftaran & KYC",
+      "item": [
+        {
+          "name": "POST /api/v1/pendaftaran",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pendaftaran",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pendaftaran"
+              ]
+            },
+            "description": "Pengajuan Pendaftaran Anggota Baru (AES-256-GCM AAD + HKDF Blind Index NIK)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nik\": \"3201010101900001\",\n  \"nama_lengkap\": \"<nama_lengkap>\",\n  \"tempat_lahir\": \"<tempat_lahir>\",\n  \"tanggal_lahir\": \"2026-11-13\",\n  \"jenis_kelamin\": \"L\",\n  \"pekerjaan\": \"<pekerjaan>\",\n  \"alamat_ktp\": \"<alamat_ktp>\",\n  \"wilayah_desa_id\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/pendaftaran/{id}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pendaftaran/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pendaftaran",
+                "{id}"
+              ]
+            },
+            "description": "Status & Detail Pendaftaran (NIK tersamar 4+4 digit)"
+          }
+        },
+        {
+          "name": "POST /api/v1/pendaftaran/{id}/dokumen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pendaftaran/:id/dokumen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pendaftaran",
+                "{id}",
+                "dokumen"
+              ]
+            },
+            "description": "Unggah Berkas KYC (KTP/KK/Foto; validasi magic bytes JPEG/PNG/PDF max 5MB + checksum SHA-256)"
+          }
+        },
+        {
+          "name": "POST /api/v1/pendaftaran/{id}/verifikasi",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pendaftaran/:id/verifikasi",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pendaftaran",
+                "{id}",
+                "verifikasi"
+              ]
+            },
+            "description": "Verifikasi Pendaftaran Anggota (Maker-Checker; admin/pengurus/ketua/sekretaris)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"disetujui\",\n  \"catatan_perbaikan\": \"<catatan_perbaikan>\",\n  \"alasan_ditolak\": \"<alasan_ditolak>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/pendaftaran/purge-ditolak",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pendaftaran/purge-ditolak",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pendaftaran",
+                "purge-ditolak"
+              ]
+            },
+            "description": "Pembersihan Pendaftaran Ditolak Melewati Retensi & Berkas KYC Fisik (PERLU VERIFIKASI HUKUM)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anggota",
+      "item": [
+        {
+          "name": "GET /api/v1/anggota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/anggota",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "anggota"
+              ]
+            },
+            "description": "Daftar Anggota Koperasi (admin/pengurus/operator/pengawas/bendahara/ketua)"
+          }
+        },
+        {
+          "name": "GET /api/v1/anggota/{id}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/anggota/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "anggota",
+                "{id}"
+              ]
+            },
+            "description": "Detail Anggota Koperasi"
+          }
+        },
+        {
+          "name": "PATCH /api/v1/anggota/{id}/status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/anggota/:id/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "anggota",
+                "{id}",
+                "status"
+              ]
+            },
+            "description": "Pembaruan Status Keanggotaan + Log Append-Only (admin/pengurus/ketua)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"aktif\",\n  \"alasan\": \"<alasan>\",\n  \"catatan\": \"<catatan>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users & RBAC",
+      "item": [
+        {
+          "name": "GET /api/v1/users",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ]
+            },
+            "description": "Daftar Pengguna & Peran dalam Koperasi (admin/pengurus/ketua)"
+          }
+        },
+        {
+          "name": "GET /api/v1/users/{id}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{id}"
+              ]
+            },
+            "description": "Detail Pengguna (admin/pengurus/ketua)"
+          }
+        },
+        {
+          "name": "PATCH /api/v1/users/{id}/role",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/:id/role",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{id}",
+                "role"
+              ]
+            },
+            "description": "Pembaruan Peran Pengguna (dilarang ubah peran sendiri atau eskalasi melebihi peran pemberi)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"anggota\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Iuran",
+      "item": [
+        {
+          "name": "GET /api/v1/iuran/jenis",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/iuran/jenis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "iuran",
+                "jenis"
+              ]
+            },
+            "description": "Daftar Jenis Iuran & Keterangan Klasifikasi (KEPUTUSAN AKUNTAN)"
+          }
+        },
+        {
+          "name": "POST /api/v1/iuran/jenis",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/iuran/jenis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "iuran",
+                "jenis"
+              ]
+            },
+            "description": "Pembuatan Jenis Iuran Baru (admin/pengurus/bendahara)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kode\": \"<kode>\",\n  \"nama\": \"<nama>\",\n  \"tipe\": \"pokok\",\n  \"nominal_standar\": 1,\n  \"nominal\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/iuran/tagihan/saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/iuran/tagihan/saya",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "iuran",
+                "tagihan",
+                "saya"
+              ]
+            },
+            "description": "Daftar Tagihan Iuran Milik Anggota yang Sedang Login"
+          }
+        },
+        {
+          "name": "POST /api/v1/iuran/generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/iuran/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "iuran",
+                "generate"
+              ]
+            },
+            "description": "Generator Idempoten Tagihan Iuran Bulanan Seluruh Anggota Aktif (admin/pengurus/bendahara)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jenis_iuran_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"periode\": \"2026-11\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/iuran/menunggak",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/iuran/menunggak",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "iuran",
+                "menunggak"
+              ]
+            },
+            "description": "Rekapitulasi Anggota Penunggak Iuran"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Katalog & Promo",
+      "item": [
+        {
+          "name": "GET /api/v1/katalog/stok",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/stok",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "stok"
+              ]
+            },
+            "description": "Ketersediaan Stok Gudang Toko Koperasi"
+          }
+        },
+        {
+          "name": "GET /api/v1/katalog/harga",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/harga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "harga"
+              ]
+            },
+            "description": "Kalkulasi Harga Akhir Produk dengan Harga Anggota / Diskon"
+          }
+        },
+        {
+          "name": "GET /api/v1/katalog/produk",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/produk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "produk"
+              ]
+            },
+            "description": "Daftar Produk E-Katalog Koperasi"
+          }
+        },
+        {
+          "name": "POST /api/v1/katalog/produk",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/produk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "produk"
+              ]
+            },
+            "description": "Tambah Produk Katalog Baru (admin/pengurus)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nama\": \"<nama>\",\n  \"sku\": \"<sku>\",\n  \"deskripsi\": \"<deskripsi>\",\n  \"satuan_dasar\": \"<satuan_dasar>\",\n  \"harga_umum\": 1,\n  \"harga_anggota\": 1,\n  \"stok_awal\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "PUT /api/v1/katalog/produk/{id}",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/produk/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "produk",
+                "{id}"
+              ]
+            },
+            "description": "Pembaruan Produk Katalog (admin/pengurus)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nama\": \"<nama>\",\n  \"sku\": \"<sku>\",\n  \"deskripsi\": \"<deskripsi>\",\n  \"satuan_dasar\": \"<satuan_dasar>\",\n  \"harga_umum\": 1,\n  \"harga_anggota\": 1,\n  \"stok_awal\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/v1/katalog/produk/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/produk/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "produk",
+                "{id}"
+              ]
+            },
+            "description": "Soft Delete Produk Katalog (admin/pengurus)"
+          }
+        },
+        {
+          "name": "GET /api/v1/katalog/promo",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/promo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "promo"
+              ]
+            },
+            "description": "Daftar Promo Aktif"
+          }
+        },
+        {
+          "name": "POST /api/v1/katalog/promo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/katalog/promo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "katalog",
+                "promo"
+              ]
+            },
+            "description": "Buat Promo Diskon Baru (admin/pengurus)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kode\": \"<kode>\",\n  \"nama\": \"<nama>\",\n  \"tipe_promo\": \"nominal\",\n  \"nilai_diskon\": 1,\n  \"minimal_belanja\": 1,\n  \"durasi_hari\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Toko & Checkout",
+      "item": [
+        {
+          "name": "GET /api/v1/toko/keranjang",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/keranjang",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "keranjang"
+              ]
+            },
+            "description": "Ambil Isi Keranjang Belanja Pengguna"
+          }
+        },
+        {
+          "name": "POST /api/v1/toko/keranjang",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/keranjang",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "keranjang"
+              ]
+            },
+            "description": "Tambah atau Perbarui Kuantitas Produk di Keranjang",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"produk_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"qty\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/v1/toko/keranjang/{produk_id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/keranjang/:produk_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "keranjang",
+                "{produk_id}"
+              ]
+            },
+            "description": "Hapus Item Produk dari Keranjang"
+          }
+        },
+        {
+          "name": "POST /api/v1/toko/checkout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "checkout"
+              ]
+            },
+            "description": "Checkout Keranjang Menjadi Pesanan (kunci stok FOR UPDATE, catat stok_mutasi, terapkan promo)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"metode_serah_terima\": \"ambil_di_koperasi\",\n  \"catatan\": \"<catatan>\",\n  \"kode_promo\": \"<kode_promo>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/toko/pesanan",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/pesanan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "pesanan"
+              ]
+            },
+            "description": "Daftar Pesanan Toko (anggota hanya melihat miliknya; pengurus/admin melihat koperasi)"
+          }
+        },
+        {
+          "name": "POST /api/v1/toko/pesanan/{id}/batal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/pesanan/:id/batal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "pesanan",
+                "{id}",
+                "batal"
+              ]
+            },
+            "description": "Batalkan Pesanan & Lepaskan Stok/Kuota Promo"
+          }
+        },
+        {
+          "name": "POST /api/v1/toko/pesanan/{id}/expire",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/toko/pesanan/:id/expire",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "toko",
+                "pesanan",
+                "{id}",
+                "expire"
+              ]
+            },
+            "description": "Kedaluwarsakan Pesanan Melewati Batas Waktu & Pulihkan Stok/Kuota Promo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pembayaran QRIS",
+      "item": [
+        {
+          "name": "POST /api/v1/pembayaran/qris",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{Idempotency-Key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/qris",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "qris"
+              ]
+            },
+            "description": "Buat Alokasi Pembayaran QRIS (Statis+Kode Unik atau Dinamis Auto-Lock jika QRIS_DYNAMIC_ENABLED=true)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nominal_dasar\": 1,\n  \"tagihan_iuran_id\": [],\n  \"tagihan_iuran_ids\": [],\n  \"pesanan_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"jenis_transaksi\": \"iuran_bulanan\",\n  \"anggota_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"metode_pembayaran_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"rekening_qris_id\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/pembayaran/{id}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "{id}"
+              ]
+            },
+            "description": "Status & Detail Transaksi Pembayaran (Anti-IDOR untuk anggota)"
+          }
+        },
+        {
+          "name": "POST /api/v1/pembayaran/{id}/bukti",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/:id/bukti",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "{id}",
+                "bukti"
+              ]
+            },
+            "description": "Ajukan Klaim Bukti Pembayaran QRIS (menunggu_pembayaran -> menunggu_verifikasi)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referensi_rrn\": \"<referensi_rrn>\",\n  \"catatan\": \"<catatan>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/pembayaran/antrean",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/antrean",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "antrean"
+              ]
+            },
+            "description": "Antrean Transaksi Menunggu Verifikasi & Persetujuan Kedua"
+          }
+        },
+        {
+          "name": "POST /api/v1/pembayaran/{id}/verifikasi",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/:id/verifikasi",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "{id}",
+                "verifikasi"
+              ]
+            },
+            "description": "Verifikasi & Persetujuan Pembayaran (Maker-Checker & Persetujuan Ganda di atas ambang)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"disetujui\",\n  \"disetujui\": false,\n  \"nominal_aktual\": 1,\n  \"alasan_tolak\": \"<alasan_tolak>\",\n  \"referensi_rrn\": \"<referensi_rrn>\",\n  \"catatan\": \"<catatan>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rekonsiliasi & Mutasi Bank",
+      "item": [
+        {
+          "name": "POST /api/v1/pembayaran/mutasi-bank/impor",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/mutasi-bank/impor",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "mutasi-bank",
+                "impor"
+              ]
+            },
+            "description": "Impor Mutasi Rekening Bank (CSV) & Pencocokan Otomatis nominal_total"
+          }
+        },
+        {
+          "name": "GET /api/v1/pembayaran/rekonsiliasi/harian",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pembayaran/rekonsiliasi/harian",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pembayaran",
+                "rekonsiliasi",
+                "harian"
+              ]
+            },
+            "description": "Laporan Rekonsiliasi Harian Sistem vs Mutasi Bank CSV"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rekening QRIS Koperasi",
+      "item": [
+        {
+          "name": "GET /api/v1/koperasi/rekening-qris",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/koperasi/rekening-qris",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "koperasi",
+                "rekening-qris"
+              ]
+            },
+            "description": "Daftar Rekening QRIS Koperasi"
+          }
+        },
+        {
+          "name": "POST /api/v1/koperasi/rekening-qris",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/koperasi/rekening-qris",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "koperasi",
+                "rekening-qris"
+              ]
+            },
+            "description": "Daftarkan Rekening & Payload EMVCo QRIS Statis Koperasi (wajib badan hukum kecuali pilot)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nama_merchant\": \"<nama_merchant>\",\n  \"nmid\": \"<nmid>\",\n  \"nama_bank_pjp\": \"<nama_bank_pjp>\",\n  \"no_rekening_settlement\": \"<no_rekening_settlement>\",\n  \"nama_pemilik_rekening\": \"<nama_pemilik_rekening>\",\n  \"is_atas_nama_badan_hukum\": false,\n  \"jenis_pemilik\": \"badan_hukum_koperasi\",\n  \"qris_payload_statis\": \"<qris_payload_statis>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/v1/koperasi/rekening-qris/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/koperasi/rekening-qris/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "koperasi",
+                "rekening-qris",
+                "{id}"
+              ]
+            },
+            "description": "Nonaktifkan Rekening QRIS Koperasi"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Kas & Laporan",
+      "item": [
+        {
+          "name": "GET /api/v1/kas/mutasi",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kas/mutasi",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kas",
+                "mutasi"
+              ]
+            },
+            "description": "Buku Mutasi Kas Ringan Append-Only Hash Chain"
+          }
+        },
+        {
+          "name": "GET /api/v1/laporan/keuangan",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/laporan/keuangan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "laporan",
+                "keuangan"
+              ]
+            },
+            "description": "Ringkasan Laporan Keuangan Koperasi"
+          }
+        },
+        {
+          "name": "GET /api/v1/laporan/anggota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/laporan/anggota",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "laporan",
+                "anggota"
+              ]
+            },
+            "description": "Rekapitulasi Data Anggota Koperasi"
+          }
+        }
+      ]
+    }
+  ]
+}

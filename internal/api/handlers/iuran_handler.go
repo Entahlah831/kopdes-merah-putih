@@ -245,13 +245,16 @@ func (h *IuranHandler) HandleGetTagihanSaya(w http.ResponseWriter, r *http.Reque
 	var tagihanList []map[string]interface{}
 
 	err := middleware.WithTenantTx(ctx, h.pool, claims.KoperasiID, claims.IsPlatformAdmin, func(tx pgx.Tx) error {
-		// Cari anggota_id dari user_id login
+		// Cari anggota_id dari user_id login; jika user bukan anggota (mis. admin/pengurus), kembalikan daftar kosong
 		var anggotaID uuid.UUID
 		err := tx.QueryRow(ctx, `
 			SELECT id FROM anggota WHERE user_id = $1 AND koperasi_id = $2 AND deleted_at IS NULL LIMIT 1;
 		`, claims.UserID, claims.KoperasiID).Scan(&anggotaID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		if err != nil {
-			return errors.New("pengguna tidak terdaftar sebagai anggota koperasi")
+			return err
 		}
 
 		rows, err := tx.Query(ctx, `

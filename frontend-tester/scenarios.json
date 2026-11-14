@@ -1,0 +1,1249 @@
+{
+  "version": "1.0.0",
+  "description": "Skenario verifikasi langsung 1-to-1 untuk setiap klaim perilaku di docs/FRONTEND_GUIDE.md dan docs/BACKEND_GUIDE.md.",
+  "scenarios": [
+    {
+      "claim_id": "CLAIM-HEALTH-01",
+      "title": "Liveness & Readiness Probes (/healthz, /readyz)",
+      "operation": "GET /healthz + GET /readyz",
+      "steps": [
+        {
+          "name": "GET /healthz",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/healthz",
+          "expect_status": [200],
+          "expect_json_contains": ["status", "UP"]
+        },
+        {
+          "name": "GET /readyz",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/readyz",
+          "expect_status": [200],
+          "expect_json_contains": ["status"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-METRICS-01",
+      "title": "Proteksi Bearer Token /metrics (401 tanpa/JWT, 200 dengan METRICS_TOKEN)",
+      "operation": "GET /metrics",
+      "requires_metrics_token": true,
+      "steps": [
+        {
+          "name": "GET /metrics tanpa token ditolak 401",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/metrics",
+          "expect_status": [401]
+        },
+        {
+          "name": "GET /metrics dengan JWT anggota ditolak 401",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/metrics",
+          "expect_status": [401]
+        },
+        {
+          "name": "GET /metrics dengan METRICS_TOKEN berhasil 200",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/metrics",
+          "headers": {
+            "Authorization": "Bearer {{metrics_token}}"
+          },
+          "expect_status": [200]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-HTTP-HARDENING-01",
+      "title": "HTTP Hardening: X-Request-ID header dan penolakan JSON rusak",
+      "operation": "GET /healthz + malformed JSON POST /api/v1/auth/login",
+      "steps": [
+        {
+          "name": "X-Request-ID tersedia di header respons",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/healthz",
+          "expect_status": [200],
+          "expect_header_present": ["X-Request-ID"]
+        },
+        {
+          "name": "JSON terpotong ditolak HTTP 400 BAD_REQUEST",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "raw_body": "{\"email\":",
+          "expect_status": [400],
+          "expect_json_contains": ["BAD_REQUEST"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-VALIDATION-400-01",
+      "title": "Envelope Error Validasi Input HTTP 400 BAD_REQUEST",
+      "operation": "POST /api/v1/auth/login (payload kosong)",
+      "steps": [
+        {
+          "name": "Payload kosong menghasilkan 400 BAD_REQUEST",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {},
+          "expect_status": [400],
+          "expect_json_contains": ["BAD_REQUEST", "\"success\":false"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-LOGIN-01",
+      "title": "Login Non-MFA 200 dan Kredensial Salah 401 UNAUTHORIZED",
+      "operation": "POST /api/v1/auth/login",
+      "steps": [
+        {
+          "name": "Sandi salah ditolak 401 UNAUTHORIZED",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "wrong.login@kopdes.test",
+            "password": "SalahPassword123!"
+          },
+          "expect_status": [401],
+          "expect_json_contains": ["UNAUTHORIZED"]
+        },
+        {
+          "name": "Login anggota non-MFA berhasil 200 dengan JWT + Refresh Token",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "anggota_a@kopdes-test.local",
+            "password": "{{seed_password}}"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["access_token", "refresh_token", "\"token_type\":\"Bearer\""]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-ME-01",
+      "title": "Profil Pengguna Terotentikasi (/auth/me)",
+      "operation": "GET /api/v1/auth/me",
+      "steps": [
+        {
+          "name": "Tanpa JWT ditolak 401",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/api/v1/auth/me",
+          "expect_status": [401]
+        },
+        {
+          "name": "Dengan JWT anggota_a mengembalikan profil 200",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/auth/me",
+          "expect_status": [200],
+          "expect_json_contains": ["\"role\":\"anggota\"", "koperasi_id"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-MFA-VERIFY-01",
+      "title": "Alur Login 2 Langkah MFA TOTP (/auth/login -> /auth/mfa/verify)",
+      "operation": "POST /api/v1/auth/mfa/verify",
+      "steps": [
+        {
+          "name": "Login ketua_a memicu mfa_required=true",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "ketua_a@kopdes-test.local",
+            "password": "{{seed_password}}"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["\"mfa_required\":true", "mfa_session_token"],
+          "save_json": {
+            "mfa_sess": "data.mfa_session_token"
+          }
+        },
+        {
+          "name": "Hitung kode TOTP jendela +30 detik",
+          "action": "totp_for_email",
+          "email": "ketua_a@kopdes-test.local",
+          "offset_seconds": 30,
+          "save_as": "ketua_totp"
+        },
+        {
+          "name": "Verifikasi MFA mengembalikan access_token",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/mfa/verify",
+          "body": {
+            "mfa_session_token": "{{mfa_sess}}",
+            "totp_code": "{{ketua_totp}}"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["access_token", "refresh_token"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-MFA-MANDATORY-01",
+      "title": "Paksa Enrollment MFA Akun Istimewa (403 -> setup -> enable)",
+      "operation": "POST /api/v1/auth/mfa/setup + /enable",
+      "steps": [
+        {
+          "name": "Login admin_nomfa_a ditolak 403 MFA_MANDATORY_SETUP_REQUIRED",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "admin_nomfa_a@kopdes-test.local",
+            "password": "{{seed_password}}"
+          },
+          "expect_status": [403],
+          "expect_json_contains": ["MFA_MANDATORY_SETUP_REQUIRED", "setup_token"],
+          "save_json": {
+            "setup_tok": "data.setup_token"
+          }
+        },
+        {
+          "name": "Setup MFA dengan setup_token mengembalikan secret Base32",
+          "method": "POST",
+          "path": "/api/v1/auth/mfa/setup",
+          "token_var": "setup_tok",
+          "body": {},
+          "expect_status": [200],
+          "expect_json_contains": ["secret", "qr_uri"],
+          "save_json": {
+            "mfa_sec": "data.secret"
+          }
+        },
+        {
+          "name": "Hitung kode TOTP dari secret baru",
+          "action": "totp_for_secret",
+          "secret_var": "mfa_sec",
+          "save_as": "enable_code"
+        },
+        {
+          "name": "Aktifkan MFA dan terima recovery_codes sekali pakai",
+          "method": "POST",
+          "path": "/api/v1/auth/mfa/enable",
+          "token_var": "setup_tok",
+          "body": {
+            "secret": "{{mfa_sec}}",
+            "totp_code": "{{enable_code}}"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["recovery_codes"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-REFRESH-REUSE-01",
+      "title": "Rotasi Refresh Token & Pencabutan Sesi Saat Reuse Terdeteksi",
+      "operation": "POST /api/v1/auth/refresh",
+      "steps": [
+        {
+          "name": "Login operator_a memperoleh rt1",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "operator_a@kopdes-test.local",
+            "password": "{{seed_password}}"
+          },
+          "expect_status": [200],
+          "save_json": {
+            "rt1": "data.refresh_token"
+          }
+        },
+        {
+          "name": "Rotasi rt1 -> rt2 berhasil 200",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/refresh",
+          "body": {
+            "refresh_token": "{{rt1}}"
+          },
+          "expect_status": [200],
+          "save_json": {
+            "rt2": "data.refresh_token"
+          }
+        },
+        {
+          "name": "Replay rt1 ditolak 401 dan mencabut keluarga sesi",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/refresh",
+          "body": {
+            "refresh_token": "{{rt1}}"
+          },
+          "expect_status": [401]
+        },
+        {
+          "name": "rt2 ikut tertolak 401 setelah deteksi reuse",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/refresh",
+          "body": {
+            "refresh_token": "{{rt2}}"
+          },
+          "expect_status": [401]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-REVOKE-01",
+      "title": "Pencabutan Sesi (/auth/revoke)",
+      "operation": "POST /api/v1/auth/revoke",
+      "steps": [
+        {
+          "name": "Login pengawas_a memperoleh sesi untuk dicabut",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": {
+            "email": "pengawas_a@kopdes-test.local",
+            "password": "{{seed_password}}"
+          },
+          "expect_status": [200],
+          "save_json": {
+            "rev_acc": "data.access_token",
+            "rev_rt": "data.refresh_token"
+          }
+        },
+        {
+          "name": "Cabut refresh_token pengawas_a berhasil 200",
+          "method": "POST",
+          "path": "/api/v1/auth/revoke",
+          "token_var": "rev_acc",
+          "body": {
+            "refresh_token": "{{rev_rt}}"
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "Refresh token pasca-revoke ditolak 401",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/refresh",
+          "body": {
+            "refresh_token": "{{rev_rt}}"
+          },
+          "expect_status": [401]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-PENDAFTARAN-KYC-01",
+      "title": "Pendaftaran NIK, Upload KYC Magic Bytes (PNG 201 / Teks 400), & Masking PII",
+      "operation": "POST /api/v1/pendaftaran + /dokumen + GET /pendaftaran/{id}",
+      "steps": [
+        {
+          "name": "Ajukan pendaftaran calon anggota baru",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran",
+          "body": {
+            "nik": "{{new_nik}}",
+            "nama_lengkap": "Calon Uji KYC {{unix_ts}}",
+            "tempat_lahir": "Bogor",
+            "tanggal_lahir": "1995-05-15",
+            "jenis_kelamin": "L",
+            "pekerjaan": "Petani",
+            "alamat_ktp": "Jl. Kopdes Uji No. 10"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pend_kyc_id": "data.pendaftaran_id"
+          }
+        },
+        {
+          "name": "Upload file teks palsu ditolak 400 oleh validasi magic bytes",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/{{pend_kyc_id}}/dokumen?jenis_dokumen=ktp",
+          "file_field": "file",
+          "multipart_csv": "INI_BUKAN_GAMBAR_PNG_OR_PDF",
+          "expect_status": [400]
+        },
+        {
+          "name": "Upload gambar PNG valid diterima 201",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/{{pend_kyc_id}}/dokumen?jenis_dokumen=ktp",
+          "file_field": "file",
+          "multipart_png": true,
+          "expect_status": [201],
+          "expect_json_contains": ["checksum_sha256", "image/png"]
+        },
+        {
+          "name": "Detail pendaftaran mengembalikan nik_masked & pendaftaran_id",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/pendaftaran/{{pend_kyc_id}}",
+          "expect_status": [200],
+          "expect_json_contains": ["nik_masked", "pendaftaran_id", "*"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-PENDAFTARAN-CHECKER-01",
+      "title": "Maker-Checker Verifikasi Pendaftaran & Penerbitan no_anggota",
+      "operation": "POST /api/v1/pendaftaran/{id}/verifikasi",
+      "steps": [
+        {
+          "name": "pengurus_a mengajukan pendaftaran (sebagai maker)",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran",
+          "body": {
+            "nik": "{{new_nik}}",
+            "nama_lengkap": "Calon MakerChecker {{unix_ts}}",
+            "tempat_lahir": "Bandung",
+            "tanggal_lahir": "1994-03-10",
+            "jenis_kelamin": "P",
+            "pekerjaan": "Pedagang",
+            "alamat_ktp": "Jl. Merdeka Kopdes No. 22"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pend_chk_id": "data.pendaftaran_id"
+          }
+        },
+        {
+          "name": "Self-approve oleh pengurus_a ditolak 403",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/{{pend_chk_id}}/verifikasi",
+          "body": {
+            "status": "disetujui"
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "Approval oleh pengurus2_a berhasil 200 dan menerbitkan no_anggota",
+          "as_account": "pengurus2_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/{{pend_chk_id}}/verifikasi",
+          "body": {
+            "status": "disetujui"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["no_anggota", "disetujui"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-PENDAFTARAN-PURGE-01",
+      "title": "Purge Pendaftaran Ditolak UU PDP (pengurus/admin 200, non-berwenang 403)",
+      "operation": "POST /api/v1/pendaftaran/purge-ditolak",
+      "steps": [
+        {
+          "name": "anggota_a ditolak 403",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/purge-ditolak",
+          "body": {},
+          "expect_status": [403]
+        },
+        {
+          "name": "bendahara_a ditolak 403",
+          "as_account": "bendahara_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/purge-ditolak",
+          "body": {},
+          "expect_status": [403]
+        },
+        {
+          "name": "pengurus_a berhasil menjalankan purge-ditolak 200",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pendaftaran/purge-ditolak",
+          "body": {},
+          "expect_status": [200],
+          "expect_json_contains": ["jumlah_dibersihkan", "PERLU VERIFIKASI HUKUM"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-ANGGOTA-RBAC-01",
+      "title": "Pemisahan RBAC Anggota: Read-Only pengawas/operator vs Mutasi Status",
+      "operation": "GET /anggota + PATCH /anggota/{id}/status",
+      "steps": [
+        {
+          "name": "pengawas_a dapat melihat daftar anggota 200",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/anggota",
+          "expect_status": [200]
+        },
+        {
+          "name": "operator_a dapat melihat detail anggota 200",
+          "as_account": "operator_a",
+          "method": "GET",
+          "path": "/api/v1/anggota/{{anggota_a_id}}",
+          "expect_status": [200]
+        },
+        {
+          "name": "anggota_a ditolak mengakses daftar anggota 403",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/anggota",
+          "expect_status": [403]
+        },
+        {
+          "name": "bendahara_a ditolak mutasi status anggota 403",
+          "as_account": "bendahara_a",
+          "method": "PATCH",
+          "path": "/api/v1/anggota/{{anggota_a_id}}/status",
+          "body": {
+            "status": "aktif",
+            "alasan": "Uji RBAC"
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "operator_a ditolak mutasi status anggota 403",
+          "as_account": "operator_a",
+          "method": "PATCH",
+          "path": "/api/v1/anggota/{{anggota_a_id}}/status",
+          "body": {
+            "status": "aktif",
+            "alasan": "Uji RBAC"
+          },
+          "expect_status": [403]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-USERS-ESCALATION-01",
+      "title": "Anti-Self-Change dan Anti-Privilege-Escalation pada PATCH /users/{id}/role",
+      "operation": "PATCH /api/v1/users/{id}/role",
+      "steps": [
+        {
+          "name": "Ambil user_id pengurus_a",
+          "as_account": "pengurus_a",
+          "method": "GET",
+          "path": "/api/v1/auth/me",
+          "expect_status": [200],
+          "save_json": {
+            "uid_pengurus_a": "data.user_id"
+          }
+        },
+        {
+          "name": "Ambil user_id operator_a",
+          "as_account": "operator_a",
+          "method": "GET",
+          "path": "/api/v1/auth/me",
+          "expect_status": [200],
+          "save_json": {
+            "uid_operator_a": "data.user_id"
+          }
+        },
+        {
+          "name": "pengurus_a dilarang mengubah perannya sendiri (403)",
+          "as_account": "pengurus_a",
+          "method": "PATCH",
+          "path": "/api/v1/users/{{uid_pengurus_a}}/role",
+          "body": {
+            "role": "pengurus"
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "pengurus_a dilarang menaikkan operator ke admin di atas perannya (403)",
+          "as_account": "pengurus_a",
+          "method": "PATCH",
+          "path": "/api/v1/users/{{uid_operator_a}}/role",
+          "body": {
+            "role": "admin"
+          },
+          "expect_status": [403]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-IURAN-AKUNTAN-01",
+      "title": "Iuran Netral (KEPUTUSAN AKUNTAN) & Generate Tagihan Idempoten",
+      "operation": "GET /iuran/tagihan/saya + POST /iuran/jenis + POST /iuran/generate",
+      "steps": [
+        {
+          "name": "anggota_a melihat tagihan miliknya",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/iuran/tagihan/saya",
+          "expect_status": [200]
+        },
+        {
+          "name": "Buat jenis iuran baru mengembalikan KEPUTUSAN AKUNTAN",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/iuran/jenis",
+          "body": {
+            "kode": "IUR-{{unix_ts}}",
+            "nama": "Iuran Skenario {{unix_ts}}",
+            "tipe": "wajib",
+            "nominal_standar": 25000,
+            "nominal": 25000
+          },
+          "expect_status": [201],
+          "expect_json_contains": ["KEPUTUSAN AKUNTAN"],
+          "save_json": {
+            "new_ji_id": "data.id"
+          }
+        },
+        {
+          "name": "Generate tagihan idempoten berhasil 200",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/iuran/generate",
+          "body": {
+            "jenis_iuran_id": "{{new_ji_id}}",
+            "periode": "2026-11"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["jumlah_tagihan_baru"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-KATALOG-TOKO-01",
+      "title": "Katalog, Harga Anggota (produk_id+anggota_id wajib, 404 lintas tenant), Keranjang, Checkout & Batal",
+      "operation": "GET /katalog/harga + POST /toko/keranjang + /checkout + /batal",
+      "steps": [
+        {
+          "name": "List produk katalog oleh anggota_a",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/produk",
+          "expect_status": [200]
+        },
+        {
+          "name": "Cek harga tanpa parameter anggota_id ditolak 400",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/harga?produk_id={{produk_a_id}}",
+          "expect_status": [400]
+        },
+        {
+          "name": "Cek harga anggota Kop A pada produk Kop A valid 200",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/harga?produk_id={{produk_a_id}}&anggota_id={{anggota_a_id}}",
+          "expect_status": [200]
+        },
+        {
+          "name": "Cek harga produk Kop B lintas tenant mengembalikan 404 (RLS)",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/harga?produk_id={{produk_b_id}}&anggota_id={{anggota_b_id}}",
+          "expect_status": [404]
+        },
+        {
+          "name": "Cek harga produk Kop A dengan anggota_id Kop B hanya beri harga umum (berhak_harga_anggota=false)",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/harga?produk_id={{produk_a_id}}&anggota_id={{anggota_b_id}}",
+          "expect_status": [200],
+          "expect_json_contains": ["\"berhak_harga_anggota\":false"]
+        },
+        {
+          "name": "List promo aktif",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/katalog/promo",
+          "expect_status": [200]
+        },
+        {
+          "name": "Tambah produk ke keranjang anggota_a",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "Checkout dengan promo mengembalikan 201 pesanan_id",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Uji batal skenario {{unix_ts}}",
+            "kode_promo": "{{promo_a_kode}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_batal_id": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "Batalkan pesanan memulihkan stok & promo (200)",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/pesanan/{{pesanan_batal_id}}/batal",
+          "body": {},
+          "expect_status": [200],
+          "expect_json_contains": ["\"status\":\"batal\""]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-TOKO-EXPIRE-01",
+      "title": "Kedaluwarsa Pesanan: operator diizinkan 200, pengawas ditolak 403",
+      "operation": "POST /api/v1/toko/pesanan/{id}/expire",
+      "steps": [
+        {
+          "name": "anggota_a tambah keranjang",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "anggota_a checkout pesanan untuk uji expire",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Uji expire {{unix_ts}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_exp_id": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "pengawas_a ditolak 403 memanggil expire",
+          "as_account": "pengawas_a",
+          "method": "POST",
+          "path": "/api/v1/toko/pesanan/{{pesanan_exp_id}}/expire",
+          "body": {},
+          "expect_status": [403]
+        },
+        {
+          "name": "operator_a berhasil menandai kedaluwarsa 200",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/toko/pesanan/{{pesanan_exp_id}}/expire",
+          "body": {},
+          "expect_status": [200],
+          "expect_json_contains": ["kedaluwarsa"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-QRIS-IDEMPOTENCY-01",
+      "title": "Idempotency-Key QRIS: Replay Identik 201 vs Body Berbeda 422 IDEMPOTENCY_CONFLICT",
+      "operation": "POST /api/v1/pembayaran/qris (Idempotency-Key)",
+      "steps": [
+        {
+          "name": "Keranjang & checkout pesanan #1 (anggota_a)",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "Checkout pesanan #1",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Idem 1 {{unix_ts}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_idem_1": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "Keranjang & checkout pesanan #2 (body pembanding)",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "Checkout pesanan #2",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Idem 2 {{unix_ts}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_idem_2": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "Buat QRIS pertama kali dengan Idempotency-Key",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/qris",
+          "headers": {
+            "Idempotency-Key": "idem-{{pesanan_idem_1}}"
+          },
+          "body": {
+            "pesanan_id": "{{pesanan_idem_1}}",
+            "anggota_id": "{{anggota_a_id}}",
+            "metode_pembayaran_id": "{{metode_pembayaran_a_id}}",
+            "rekening_qris_id": "{{rekening_qris_a_id}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pay_idem_1": "data.pembayaran_id"
+          }
+        },
+        {
+          "name": "Replay Idempotency-Key & body persis mengembalikan pembayaran_id yang sama",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/qris",
+          "headers": {
+            "Idempotency-Key": "idem-{{pesanan_idem_1}}"
+          },
+          "body": {
+            "pesanan_id": "{{pesanan_idem_1}}",
+            "anggota_id": "{{anggota_a_id}}",
+            "metode_pembayaran_id": "{{metode_pembayaran_a_id}}",
+            "rekening_qris_id": "{{rekening_qris_a_id}}"
+          },
+          "expect_status": [201],
+          "expect_json_contains": ["{{pay_idem_1}}"]
+        },
+        {
+          "name": "Idempotency-Key sama dengan pesanan_id berbeda ditolak 422 IDEMPOTENCY_CONFLICT",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/qris",
+          "headers": {
+            "Idempotency-Key": "idem-{{pesanan_idem_1}}"
+          },
+          "body": {
+            "pesanan_id": "{{pesanan_idem_2}}",
+            "anggota_id": "{{anggota_a_id}}",
+            "metode_pembayaran_id": "{{metode_pembayaran_a_id}}",
+            "rekening_qris_id": "{{rekening_qris_a_id}}"
+          },
+          "expect_status": [422],
+          "expect_json_contains": ["IDEMPOTENCY_CONFLICT"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-QRIS-MAKER-CHECKER-01",
+      "title": "Maker-Checker Verifikasi Pembayaran QRIS (Klaim Bukti -> Self-Verify 403 -> Verifikasi Lain 200)",
+      "operation": "POST /pembayaran/{id}/bukti + /verifikasi",
+      "steps": [
+        {
+          "name": "anggota_a tambah keranjang",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "anggota_a checkout pesanan segar",
+          "as_account": "anggota_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Uji MakerChecker {{unix_ts}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_mc_id": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "pengurus_a buat QRIS atas nama anggota_a",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/qris",
+          "body": {
+            "pesanan_id": "{{pesanan_mc_id}}",
+            "anggota_id": "{{anggota_a_id}}",
+            "metode_pembayaran_id": "{{metode_pembayaran_a_id}}",
+            "rekening_qris_id": "{{rekening_qris_a_id}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pay_mc_id": "data.pembayaran_id"
+          }
+        },
+        {
+          "name": "Ajukan bukti klaim menggeser status ke menunggu_verifikasi",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/{{pay_mc_id}}/bukti",
+          "body": {
+            "referensi_rrn": "RRN-MC-{{unix_ts}}",
+            "catatan": "Sudah bayar"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["menunggu_verifikasi"]
+        },
+        {
+          "name": "Self-verify oleh pembuat (pengurus_a) ditolak 403",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/{{pay_mc_id}}/verifikasi",
+          "body": {
+            "disetujui": true,
+            "catatan": "Uji tolak diri sendiri"
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "Verifikasi oleh pengurus2_a (berbeda) berhasil 200",
+          "as_account": "pengurus2_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/{{pay_mc_id}}/verifikasi",
+          "body": {
+            "disetujui": true,
+            "catatan": "Disetujui pemeriksa berbeda"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["\"disetujui\":true"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-QRIS-MUTASI-DUAL-01",
+      "title": "Impor Mutasi Bank CSV: Menunggu Persetujuan Kedua, Cek Duplikat, & Segregasi Pengimpor",
+      "operation": "POST /api/v1/pembayaran/mutasi-bank/impor",
+      "steps": [
+        {
+          "name": "operator_a tambah keranjang",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/toko/keranjang",
+          "body": {
+            "produk_id": "{{produk_a_id}}",
+            "qty": 1
+          },
+          "expect_status": [200]
+        },
+        {
+          "name": "operator_a checkout pesanan untuk uji mutasi",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/toko/checkout",
+          "body": {
+            "metode_serah_terima": "ambil_di_koperasi",
+            "catatan": "Uji Mutasi Dual {{unix_ts}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pesanan_mut_id": "data.pesanan_id"
+          }
+        },
+        {
+          "name": "operator_a buat tagihan QRIS atas nama anggota_a",
+          "as_account": "operator_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/qris",
+          "body": {
+            "pesanan_id": "{{pesanan_mut_id}}",
+            "anggota_id": "{{anggota_a_id}}",
+            "metode_pembayaran_id": "{{metode_pembayaran_a_id}}",
+            "rekening_qris_id": "{{rekening_qris_a_id}}"
+          },
+          "expect_status": [201],
+          "save_json": {
+            "pay_mut_id": "data.pembayaran_id",
+            "nom_mut": "data.nominal_total"
+          }
+        },
+        {
+          "name": "pengurus_a impor CSV CR persis nominal_total",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/mutasi-bank/impor",
+          "file_field": "file",
+          "multipart_csv": "tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-14 10:00:00,SETTLEMENT {{pay_mut_id}},CR,{{nom_mut}},111222333A\n",
+          "expect_status": [200],
+          "expect_json_contains": ["\"total_baris\":1"]
+        },
+        {
+          "name": "Status pembayaran berpindah ke menunggu_persetujuan_kedua (auto-approve nonaktif)",
+          "as_account": "operator_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/{{pay_mut_id}}",
+          "expect_status": [200],
+          "expect_json_contains": ["menunggu_persetujuan_kedua"]
+        },
+        {
+          "name": "Impor ulang CSV identik terdeteksi sebagai duplikat (duplikat: 1)",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/mutasi-bank/impor",
+          "file_field": "file",
+          "multipart_csv": "tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-14 10:00:00,SETTLEMENT {{pay_mut_id}},CR,{{nom_mut}},111222333A\n",
+          "expect_status": [200],
+          "expect_json_contains": ["\"duplikat\":1"]
+        },
+        {
+          "name": "Pengimpor (pengurus_a) ditolak 403 menyetujui sebagai verifikator kedua",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/{{pay_mut_id}}/verifikasi",
+          "body": {
+            "disetujui": true
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "pengurus2_a menyelesaikan persetujuan kedua (200)",
+          "as_account": "pengurus2_a",
+          "method": "POST",
+          "path": "/api/v1/pembayaran/{{pay_mut_id}}/verifikasi",
+          "body": {
+            "disetujui": true,
+            "catatan": "Konfirmasi kedua terpisah dari pengimpor"
+          },
+          "expect_status": [200],
+          "expect_json_contains": ["\"disetujui\":true"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-QRIS-REKENING-01",
+      "title": "Validasi CRC16 EMVCo, Larangan Rekening Pribadi Saat Pilot Nonaktif, & List Rekening",
+      "operation": "POST/GET /api/v1/koperasi/rekening-qris",
+      "steps": [
+        {
+          "name": "Payload QRIS statis dengan CRC16 rusak ditolak 400",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/koperasi/rekening-qris",
+          "body": {
+            "nama_merchant": "Bad CRC Uji",
+            "nmid": "ID99999999",
+            "nama_bank_pjp": "Bank Mandiri",
+            "no_rekening_settlement": "1234567890",
+            "nama_pemilik_rekening": "Koperasi Kopdes",
+            "is_atas_nama_badan_hukum": true,
+            "jenis_pemilik": "badan_hukum_koperasi",
+            "qris_payload_statis": "0002010102115802ID5906KOPDES6005BOGOR6304DEAD"
+          },
+          "expect_status": [400]
+        },
+        {
+          "name": "Rekening perorangan_pengurus ditolak 403 saat ALLOW_PERSONAL_PAYMENT_PILOT=false",
+          "as_account": "pengurus_a",
+          "method": "POST",
+          "path": "/api/v1/koperasi/rekening-qris",
+          "body": {
+            "nama_merchant": "Pribadi Ditolak",
+            "nmid": "ID99999998",
+            "nama_bank_pjp": "BRI",
+            "no_rekening_settlement": "0987654321",
+            "nama_pemilik_rekening": "Pengurus Pribadi",
+            "is_atas_nama_badan_hukum": false,
+            "jenis_pemilik": "perorangan_pengurus",
+            "qris_payload_statis": "{{sample_static_qris}}"
+          },
+          "expect_status": [403]
+        },
+        {
+          "name": "pengawas_a ditolak 403 membaca konfigurasi rekening QRIS",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/koperasi/rekening-qris",
+          "expect_status": [403]
+        },
+        {
+          "name": "List rekening QRIS koperasi oleh pengurus_a berhasil 200",
+          "as_account": "pengurus_a",
+          "method": "GET",
+          "path": "/api/v1/koperasi/rekening-qris",
+          "expect_status": [200]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-REKONSILIASI-LAPORAN-01",
+      "title": "Akses Read-Only Rekonsiliasi, Kas, Antrean & Laporan untuk Pengawas vs Anggota 403",
+      "operation": "GET /rekonsiliasi/harian, /kas/mutasi, /laporan/*, /pembayaran/antrean, /iuran/menunggak",
+      "steps": [
+        {
+          "name": "pengawas_a dapat melihat rekonsiliasi harian 200",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/rekonsiliasi/harian?tanggal=2026-11-14",
+          "expect_status": [200]
+        },
+        {
+          "name": "pengawas_a dapat melihat mutasi kas 200",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/kas/mutasi",
+          "expect_status": [200]
+        },
+        {
+          "name": "pengawas_a dapat melihat laporan keuangan & anggota 200",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/laporan/keuangan",
+          "expect_status": [200]
+        },
+        {
+          "name": "pengawas_a dapat melihat antrean pembayaran & penunggak iuran 200",
+          "as_account": "pengawas_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/antrean",
+          "expect_status": [200]
+        },
+        {
+          "name": "anggota_a ditolak 403 mengakses rekonsiliasi harian",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/rekonsiliasi/harian?tanggal=2026-11-14",
+          "expect_status": [403]
+        },
+        {
+          "name": "anggota_a ditolak 403 mengakses laporan keuangan",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/laporan/keuangan",
+          "expect_status": [403]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-TENANT-ISOLATION-01",
+      "title": "Isolasi Multi-Tenant PostgreSQL FORCE RLS Lintas Koperasi (404)",
+      "operation": "GET /anggota/{B}, /users/{B}, /pembayaran/{B} dari Koperasi A",
+      "steps": [
+        {
+          "name": "pengurus_a membaca anggota Kop B -> 404",
+          "as_account": "pengurus_a",
+          "method": "GET",
+          "path": "/api/v1/anggota/{{anggota_b_id}}",
+          "expect_status": [404]
+        },
+        {
+          "name": "admin_a membaca user admin Kop B -> 404",
+          "as_account": "admin_a",
+          "method": "GET",
+          "path": "/api/v1/users/{{user_admin_b_id}}",
+          "expect_status": [404]
+        },
+        {
+          "name": "pengurus_a membaca pembayaran Kop B -> 404",
+          "as_account": "pengurus_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/{{pembayaran_b_id}}",
+          "expect_status": [404]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-PAYMENT-IDOR-01",
+      "title": "Anti-IDOR Pembayaran Anggota (Akses Pembayaran Lain Ditolak 404)",
+      "operation": "GET /api/v1/pembayaran/{id_lain}",
+      "steps": [
+        {
+          "name": "anggota_a mengakses pembayaran Kop B ditolak 404 NOT_FOUND",
+          "as_account": "anggota_a",
+          "method": "GET",
+          "path": "/api/v1/pembayaran/{{pembayaran_b_id}}",
+          "expect_status": [404],
+          "expect_json_contains": ["NOT_FOUND"]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-AUTH-BRUTEFORCE-429",
+      "title": "Lockout Brute-Force Login (5x Gagal -> Percobaan Ke-6 HTTP 429 + Retry-After)",
+      "operation": "POST /api/v1/auth/login (6x salah beruntun - JALANKAN TERAKHIR)",
+      "steps": [
+        {
+          "name": "Gagal #1 (401)",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah1!" },
+          "expect_status": [401]
+        },
+        {
+          "name": "Gagal #2 (401)",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah2!" },
+          "expect_status": [401]
+        },
+        {
+          "name": "Gagal #3 (401)",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah3!" },
+          "expect_status": [401]
+        },
+        {
+          "name": "Gagal #4 (401)",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah4!" },
+          "expect_status": [401]
+        },
+        {
+          "name": "Percobaan #5 (401 jika uji mandiri, atau 429 bila terakumulasi IP dari skenario sebelumnya)",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah5!" },
+          "expect_status": [401, 429]
+        },
+        {
+          "name": "Percobaan #6 ditolak HTTP 429 TOO_MANY_REQUESTS + header Retry-After",
+          "as_account": "unauthenticated",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "body": { "email": "bruteforce.target@kopdes.test", "password": "Salah6!" },
+          "expect_status": [429],
+          "expect_header_present": ["Retry-After"],
+          "expect_json_contains": ["TOO_MANY_REQUESTS"]
+        }
+      ]
+    }
+  ]
+}

@@ -161,8 +161,9 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) 
 		}
 
 		var req struct {
-			SecretBase32 string `json:"secret_base32"`
-			Email        string `json:"email"`
+			SecretBase32  string `json:"secret_base32"`
+			Email         string `json:"email"`
+			OffsetSeconds int    `json:"offset_seconds,omitempty"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
 			http.Error(w, `{"error":"JSON tidak valid"}`, http.StatusBadRequest)
@@ -225,7 +226,8 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) 
 			http.Error(w, `{"error":"Sertakan secret_base32 atau email akun uji"}`, http.StatusBadRequest)
 			return
 		}
-		code, err := security.GenerateTOTPCode(secret, time.Now().UTC())
+		targetTime := time.Now().UTC().Add(time.Duration(req.OffsetSeconds) * time.Second)
+		code, err := security.GenerateTOTPCode(secret, targetTime)
 		if err != nil {
 			http.Error(w, `{"error":"Gagal menghasilkan kode TOTP"}`, http.StatusBadRequest)
 			return

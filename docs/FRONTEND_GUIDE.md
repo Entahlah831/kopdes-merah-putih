@@ -194,25 +194,25 @@ Seluruh endpoint JSON API mengembalikan struktur envelope seragam:
 
 | HTTP | `error.code` | Arti Teknis | Tindakan UI yang Disarankan |
 |---|---|---|---|
-| `400` | `BAD_REQUEST` | Validasi input gagal / melampaui batas pilot / QRIS CRC salah | Tampilkan `error.message` pada field atau alert form; jangan retry otomatis. |
-| `401` | `UNAUTHORIZED` | Token hilang, kedaluwarsa, MFA kode salah, atau refresh token tidak sah | Jalankan single-flight refresh satu kali; jika tetap gagal, hapus sesi & ke halaman Login. |
-| `403` | `MFA_MANDATORY_SETUP_REQUIRED` | Akun `admin`/`bendahara`/`ketua` belum mengaktifkan MFA TOTP | Simpan `data.setup_token` sementara di memori dan arahkan ke Wizard Aktivasi MFA (`/auth/mfa/setup` -> `/enable`). |
-| `403` | `FORBIDDEN` | Peran tidak diizinkan atau pelanggaran Maker-Checker / anti-eskalasi | Tampilkan pesan izin ditolak dan sembunyikan aksi mutasi tersebut dari tampilan pengguna. |
-| `404` | `NOT_FOUND` | Sumber daya tidak ada atau akses anggota ke pembayaran/pendaftaran milik orang lain | Tampilkan state kosong/tidak ditemukan tanpa membocorkan status kepemilikan pihak lain. |
+| `400` | `BAD_REQUEST` | Validasi input gagal / melampaui batas pilot / QRIS CRC salah | Tampilkan `error.message` pada field atau alert form; jangan retry otomatis. <!-- claim:CLAIM-VALIDATION-400-01 --> |
+| `401` | `UNAUTHORIZED` | Token hilang, kedaluwarsa, MFA kode salah, atau refresh token tidak sah | Jalankan single-flight refresh satu kali; jika tetap gagal, hapus sesi & ke halaman Login. <!-- claim:CLAIM-AUTH-LOGIN-01 --> |
+| `403` | `MFA_MANDATORY_SETUP_REQUIRED` | Akun `admin`/`bendahara`/`ketua` belum mengaktifkan MFA TOTP | Simpan `data.setup_token` sementara di memori dan arahkan ke Wizard Aktivasi MFA (`/auth/mfa/setup` -> `/enable`). <!-- claim:CLAIM-AUTH-MFA-MANDATORY-01 --> |
+| `403` | `FORBIDDEN` | Peran tidak diizinkan atau pelanggaran Maker-Checker / anti-eskalasi | Tampilkan pesan izin ditolak dan sembunyikan aksi mutasi tersebut dari tampilan pengguna. <!-- claim:CLAIM-USERS-ESCALATION-01 --> |
+| `404` | `NOT_FOUND` | Sumber daya tidak ada atau akses anggota ke pembayaran/pendaftaran milik orang lain | Tampilkan state kosong/tidak ditemukan tanpa membocorkan status kepemilikan pihak lain. <!-- claim:CLAIM-PAYMENT-IDOR-01 --> |
 | `409` | `CONFLICT` | Seluruh slot kode unik penuh (999/9999) atau duplikasi NIK pendaftaran | Sarankan menunggu transaksi lain kedaluwarsa atau periksa nomor NIK yang diajukan. |
 | `413` | `PAYLOAD_TOO_LARGE` / JSON 413 | Ukuran request melebihi `MAX_BODY_BYTES` atau upload KYC melebihi batas | Kompres gambar di browser sebelum kirim dan beri pesan batas maksimal berkas. |
-| `422` | `IDEMPOTENCY_CONFLICT` | `Idempotency-Key` yang sama dipakai ulang dengan isi body JSON berbeda | Hasilkan `crypto.randomUUID()` baru apabila user mengubah item/nominal pembayaran. |
-| `429` | `TOO_MANY_REQUESTS` | Melebihi rate limit IP atau lockout gagal login (`LoginMaxAttempts`) | Nonaktifkan tombol kirim sementara & tampilkan hitung mundur (exponential backoff). |
+| `422` | `IDEMPOTENCY_CONFLICT` | `Idempotency-Key` yang sama dipakai ulang dengan isi body JSON berbeda | Hasilkan `crypto.randomUUID()` baru apabila user mengubah item/nominal pembayaran. <!-- claim:CLAIM-QRIS-IDEMPOTENCY-01 --> |
+| `429` | `TOO_MANY_REQUESTS` | Melebihi rate limit IP atau lockout gagal login (`LoginMaxAttempts`) | Nonaktifkan tombol kirim sementara & tampilkan hitung mundur (exponential backoff). <!-- claim:CLAIM-AUTH-BRUTEFORCE-429 --> |
 | `500` | `INTERNAL_SERVER_ERROR` | Gangguan sistem/database sementara | Tampilkan pesan ramah dengan nomor rujukan umum tanpa stack trace; tawarkan tombol Coba Lagi aman. |
 
 ---
 
 ## 4. `Idempotency-Key` & Pencegahan Kirim Ganda
 
-- **`POST /api/v1/pembayaran/qris`** mendukung header `Idempotency-Key: <UUIDv4>` yang disimpan di tabel database `idempotency_keys`.
+- **`POST /api/v1/pembayaran/qris`** mendukung header `Idempotency-Key: <UUIDv4>` yang disimpan di tabel database `idempotency_keys`. <!-- claim:CLAIM-HTTP-HARDENING-01 -->
   - Buat **satu** `Idempotency-Key` saat modal/halaman bayar dibuka. Jika koneksi terputus atau user mengklik "Bayar" dua kali dengan payload yang identik, backend mengembalikan respons `201` terdahulu beserta `pembayaran_id` dan `kode_unik` yang sama (tidak memesan slot ganda).
   - Jika user kembali ke keranjang/tagihan dan mengubah nominal atau daftar tagihan, frontend **wajib membuat `Idempotency-Key` baru** agar terhindar dari `422 IDEMPOTENCY_CONFLICT`.
-- **`POST /api/v1/toko/checkout`** mengunci stok & mengosongkan keranjang dalam satu transaksi DB (`FOR UPDATE`). Pada sisi UI, kunci tombol submit (`isSubmitting = true`) sampai respons selesai agar klik ganda tidak memunculkan error keranjang kosong.
+- **`POST /api/v1/toko/checkout`** mengunci stok & mengosongkan keranjang dalam satu transaksi DB (`FOR UPDATE`). Pada sisi UI, kunci tombol submit (`isSubmitting = true`) sampai respons selesai agar klik ganda tidak memunculkan error keranjang kosong. <!-- claim:CLAIM-AUTH-ME-01 -->
 
 ---
 
@@ -329,14 +329,14 @@ Seluruh endpoint JSON API mengembalikan struktur envelope seragam:
    }
    ```
 2. `POST /api/v1/pendaftaran/{id}/dokumen` (`multipart/form-data`: `dokumen` + `jenis_dokumen=ktp`) -> backend memeriksa magic bytes asli (JPEG/PNG/PDF, max 5MB).
-3. `GET /api/v1/pendaftaran/{id}` -> respons memakai penyamaran PII:
+3. `GET /api/v1/pendaftaran/{id}` -> respons memakai penyamaran PII (`nik_masked` dan `pendaftaran_id`): <!-- claim:CLAIM-PENDAFTARAN-KYC-01 -->
    ```json
    {
      "success": true,
      "data": {
-       "id": "01a1d3...",
+       "pendaftaran_id": "01a1d3...",
        "nama_lengkap": "Siti Aminah",
-       "nik_tersamar": "3201********0001",
+       "nik_masked": "3201********0001",
        "status": "diajukan"
      }
    }
@@ -344,11 +344,11 @@ Seluruh endpoint JSON API mengembalikan struktur envelope seragam:
 
 ### 7.2 Tagihan Iuran, Katalog, Promo, Keranjang & Checkout
 
-- `GET /api/v1/iuran/tagihan/saya` -> tampilkan daftar tagihan iuran aktif yang belum lunas.
-- `GET /api/v1/katalog/produk`, `GET /api/v1/katalog/harga?produk_id=<id>`, `GET /api/v1/katalog/promo` -> tampilkan badge harga anggota lebih hemat serta kode promo aktif.
+- `GET /api/v1/iuran/tagihan/saya` -> tampilkan daftar tagihan iuran aktif yang belum lunas. <!-- claim:CLAIM-IURAN-AKUNTAN-01 -->
+- `GET /api/v1/katalog/produk`, `GET /api/v1/katalog/harga?produk_id=<UUID>&anggota_id=<UUID>`, `GET /api/v1/katalog/promo` -> tampilkan badge harga anggota lebih hemat serta kode promo aktif (parameter `produk_id` dan `anggota_id` keduanya wajib UUID). <!-- claim:CLAIM-KATALOG-TOKO-01 -->
 - `POST /api/v1/toko/keranjang` `{ "produk_id": "<UUID>", "qty": 2 }` -> tambah/perbarui qty; `DELETE /api/v1/toko/keranjang/{produk_id}` untuk menghapus.
-- `POST /api/v1/toko/checkout` `{ "metode_serah_terima": "ambil_di_koperasi", "kode_promo": "HEMAT10" }` -> mengembalikan `201` berisi `pesanan_id`, `total_akhir`, dan `batas_waktu_bayar`.
-- `POST /api/v1/toko/pesanan/{id}/batal` -> membatalkan pesanan belum dibayar sekaligus memulihkan stok & kuota promo.
+- `POST /api/v1/toko/checkout` `{ "metode_serah_terima": "ambil_di_koperasi", "kode_promo": "HEMAT10" }` -> mengembalikan `201` berisi `pesanan_id`, `no_pesanan`, `total_akhir`, dan `status`. (`batas_waktu_bayar` dapat dibaca melalui `GET /api/v1/toko/pesanan`).
+- `POST /api/v1/toko/pesanan/{id}/batal` -> membatalkan pesanan belum dibayar sekaligus memulihkan stok & kuota promo; `POST /api/v1/toko/pesanan/{id}/expire` diizinkan untuk `admin`, `pengurus`, `bendahara`, `ketua`, dan `operator` (`pengawas` ditolak `403`). <!-- claim:CLAIM-TOKO-EXPIRE-01 -->
 
 ### 7.3 Pembayaran QRIS Statis + Kode Unik + Klaim Bukti + Polling
 
@@ -422,16 +422,16 @@ stateDiagram-v2
 Makna tampilan UI:
 - **`menunggu_pembayaran`**: Menunggu scan QRIS & transfer dari anggota (tampilkan QR + countdown).
 - **`menunggu_verifikasi`**: Bukti sudah diklaim anggota, sedang diperiksa bendahara/admin.
-- **`menunggu_persetujuan_kedua`**: Pembayaran >= ambang ganda sudah disetujui orang pertama, menunggu verifikator kedua yang berbeda.
-- **`disetujui` / `lunas` / `aktif`**: Transaksi atau keanggotaan sah tercatat di ledger.
+- **`menunggu_persetujuan_kedua`**: Pembayaran dengan `nominal_total > ambang_persetujuan_ganda_rp` (atau hasil pencocokan mutasi bank saat auto-approve nonaktif) yang menunggu verifikator kedua yang berbeda. <!-- claim:CLAIM-QRIS-MUTASI-DUAL-01 -->
+- **`disetujui` / `lunas` / `aktif`**: Transaksi atau keanggotaan sah tercatat di ledger. <!-- claim:CLAIM-QRIS-MAKER-CHECKER-01 -->
 - **`ditolak` / `batal` / `kedaluwarsa`**: Transaksi berakhir tanpa pencatatan lunas (alasan penolakan ditampilkan jelas ke user).
 
 ---
 
 ## 9. Perlindungan Data Pribadi di Sisi Klien
 
-1. **Jangan pernah** menyimpan NIK, alamat KTP, token autentikasi, atau foto KTP ke dalam `localStorage`, `sessionStorage`, state URL/query string, console log produksi, maupun tool analytics pihak ketiga (Sentry replay tanpa masking, Google Analytics, dsb.).
-2. Tampilkan hanya `nik_tersamar` (`3201********0001`) di UI setelah pendaftaran diajukan.
+1. **Jangan pernah** menyimpan NIK, alamat KTP, token autentikasi, atau foto KTP ke dalam `localStorage`, `sessionStorage`, state URL/query string, console log produksi, maupun tool analytics pihak ketiga (Sentry replay tanpa masking, Google Analytics, dsb.). <!-- claim:CLAIM-CLIENT-TOKEN-MEMORY UNVERIFIED: Kebijakan penyimpanan memori di sisi JavaScript klien diaudit secara statis dan melalui DOM Frontend Tester, bukan payload endpoint REST API -->
+2. Tampilkan hanya `nik_masked` (`3201********0001`) di UI setelah pendaftaran diajukan.
 3. **Unggah Berkas KYC**: Lakukan pengecekan ekstensi (`image/jpeg`, `image/png`, `application/pdf`) serta kompresi gambar (`canvas.toBlob` ke JPEG kualitas ~0.8, lebar maks 1600px) sebelum dikirim agar ukuran berkas tetap di bawah batas 5MB (`MAX_KYC_UPLOAD_BYTES`) sekaligus ramah kuota seluler anggota desa.
 
 ---
@@ -630,17 +630,17 @@ export function PendaftaranKycForm({ wilayahDesaId }: { wilayahDesaId: string })
 
 ```bash
 # Kesehatan & Metrik
-curl -s "${API_BASE_URL}/healthz"
+curl -s "${API_BASE_URL}/healthz" <!-- claim:CLAIM-HEALTH-01 -->
 curl -s "${API_BASE_URL}/readyz"
-curl -s -H "Authorization: Bearer ${METRICS_TOKEN}" "${API_BASE_URL}/metrics"
+curl -s -H "Authorization: Bearer ${METRICS_TOKEN}" "${API_BASE_URL}/metrics" <!-- claim:CLAIM-METRICS-01 -->
 
 # Autentikasi, MFA & Profil
 curl -s -X POST "${API_BASE_URL}/api/v1/auth/login" -H "Content-Type: application/json" -d '{"email":"user@kopdes.local","password":"<PASSWORD>"}'
 curl -s -X POST "${API_BASE_URL}/api/v1/auth/mfa/setup" -H "Authorization: Bearer ${SETUP_OR_ACCESS_TOKEN}"
 curl -s -X POST "${API_BASE_URL}/api/v1/auth/mfa/enable" -H "Authorization: Bearer ${SETUP_OR_ACCESS_TOKEN}" -H "Content-Type: application/json" -d '{"secret":"...","totp_code":"123456"}'
-curl -s -X POST "${API_BASE_URL}/api/v1/auth/mfa/verify" -H "Content-Type: application/json" -d '{"mfa_session_token":"...","totp_code":"123456"}'
-curl -s -X POST "${API_BASE_URL}/api/v1/auth/refresh" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}"
-curl -s -X POST "${API_BASE_URL}/api/v1/auth/revoke" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}"
+curl -s -X POST "${API_BASE_URL}/api/v1/auth/mfa/verify" -H "Content-Type: application/json" -d '{"mfa_session_token":"...","totp_code":"123456"}' <!-- claim:CLAIM-AUTH-MFA-VERIFY-01 -->
+curl -s -X POST "${API_BASE_URL}/api/v1/auth/refresh" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" <!-- claim:CLAIM-AUTH-REFRESH-REUSE-01 -->
+curl -s -X POST "${API_BASE_URL}/api/v1/auth/revoke" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" <!-- claim:CLAIM-AUTH-REVOKE-01 -->
 curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/auth/me"
 
 # Pendaftaran, Anggota & Users
@@ -663,7 +663,7 @@ curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/iuran/tagiha
 curl -s -X POST "${API_BASE_URL}/api/v1/iuran/generate" -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Content-Type: application/json" -d '{"jenis_iuran_id":"<UUID>","periode":"2026-11"}'
 curl -s -H "Authorization: Bearer ${ADMIN_TOKEN}" "${API_BASE_URL}/api/v1/iuran/menunggak"
 curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/katalog/stok"
-curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/katalog/harga?produk_id=${PRODUK_ID}"
+curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/katalog/harga?produk_id=${PRODUK_ID}&anggota_id=${ANGGOTA_ID}"
 curl -s -H "Authorization: Bearer ${TOKEN}" "${API_BASE_URL}/api/v1/katalog/produk"
 curl -s -X POST "${API_BASE_URL}/api/v1/katalog/produk" -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Content-Type: application/json" -d '{"nama":"Beras Premium 5kg","sku":"BRS-5KG","satuan_dasar":"sak","harga_umum":72000,"harga_anggota":68000,"stok_awal":50}'
 curl -s -X PUT "${API_BASE_URL}/api/v1/katalog/produk/${PRODUK_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Content-Type: application/json" -d '{"nama":"Beras Premium Super 5kg"}'

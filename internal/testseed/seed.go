@@ -80,6 +80,7 @@ type ResourceIDs struct {
 	TagihanIuranAID      string `json:"tagihan_iuran_a_id"`
 	TagihanIuranAID2     string `json:"tagihan_iuran_a2_id"`
 	ProdukAID            string `json:"produk_a_id"`
+	ProdukBID            string `json:"produk_b_id"`
 	PromoAID             string `json:"promo_a_id"`
 	PromoAKode           string `json:"promo_a_kode"`
 	AnggotaAID           string `json:"anggota_a_id"`
@@ -240,6 +241,7 @@ func Resources() ResourceIDs {
 		TagihanIuranAID:     TagihanIuranAID.String(),
 		TagihanIuranAID2:    TagihanIuranAID2.String(),
 		ProdukAID:           ProdukAID.String(),
+		ProdukBID:           ProdukBID.String(),
 		PromoAID:            PromoAID.String(),
 		PromoAKode:          PromoAKode,
 		AnggotaAID:          AnggotaAID.String(),

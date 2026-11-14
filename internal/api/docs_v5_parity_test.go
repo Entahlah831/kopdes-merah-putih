@@ -190,3 +190,93 @@ func TestDoc_RolesMatrix_Parity(t *testing.T) {
 		}
 	}
 }
+
+func TestDoc_ClaimsAndScenariosParity(t *testing.T) {
+	root := filepath.Join("..", "..")
+	claimRe := regexp.MustCompile(`<!--\s*claim:([A-Za-z0-9_.-]+)(?:\s+UNVERIFIED:\s*([^>]+?))?\s*-->`)
+
+	testableClaims := make(map[string]bool)
+	unverifiedClaims := make(map[string]string)
+
+	for _, rel := range []string{filepath.Join("docs", "FRONTEND_GUIDE.md"), filepath.Join("docs", "BACKEND_GUIDE.md")} {
+		raw, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("gagal baca %s: %v", rel, err)
+		}
+		matches := claimRe.FindAllStringSubmatch(string(raw), -1)
+		if len(matches) == 0 {
+			t.Errorf("%s belum memiliki penanda <!-- claim:ID -->", rel)
+		}
+		for _, m := range matches {
+			id := m[1]
+			reason := strings.TrimSpace(m[2])
+			if reason != "" {
+				unverifiedClaims[id] = reason
+			} else {
+				testableClaims[id] = true
+			}
+		}
+	}
+
+	if len(testableClaims) < 20 {
+		t.Fatalf("jumlah claim teruji (%d) terlalu sedikit; pastikan FRONTEND_GUIDE dan BACKEND_GUIDE teranotasi lengkap", len(testableClaims))
+	}
+
+	scPath := filepath.Join(root, "frontend-tester", "scenarios.json")
+	rawSC, err := os.ReadFile(scPath)
+	if err != nil {
+		t.Fatalf("frontend-tester/scenarios.json belum ada atau gagal dibaca: %v", err)
+	}
+	var sf struct {
+		Version   string `json:"version"`
+		Scenarios []struct {
+			ClaimID string        `json:"claim_id"`
+			Title   string        `json:"title"`
+			Steps   []interface{} `json:"steps"`
+		} `json:"scenarios"`
+	}
+	if err := json.Unmarshal(rawSC, &sf); err != nil {
+		t.Fatalf("frontend-tester/scenarios.json bukan JSON valid: %v", err)
+	}
+
+	scenarioMap := make(map[string]bool)
+	for _, sc := range sf.Scenarios {
+		if sc.ClaimID == "" {
+			t.Errorf("ada skenario tanpa claim_id")
+			continue
+		}
+		if scenarioMap[sc.ClaimID] {
+			t.Errorf("duplikasi claim_id pada scenarios.json: %s", sc.ClaimID)
+		}
+		if len(sc.Steps) == 0 {
+			t.Errorf("skenario %s tidak memiliki langkah steps", sc.ClaimID)
+		}
+		scenarioMap[sc.ClaimID] = true
+		if !testableClaims[sc.ClaimID] {
+			if _, isUnv := unverifiedClaims[sc.ClaimID]; isUnv {
+				t.Errorf("skenario %s berstatus UNVERIFIED di dokumen tetapi memiliki skenario uji; selaraskan", sc.ClaimID)
+			} else {
+				t.Errorf("skenario yatim %s pada scenarios.json tidak ditemukan di FRONTEND_GUIDE.md / BACKEND_GUIDE.md", sc.ClaimID)
+			}
+		}
+	}
+
+	for id := range testableClaims {
+		if !scenarioMap[id] {
+			t.Errorf("klaim terdokumentasi <!-- claim:%s --> belum memiliki skenario di frontend-tester/scenarios.json", id)
+		}
+	}
+
+	discPath := filepath.Join(root, "docs", "DOC_DISCREPANCIES.md")
+	rawDisc, err := os.ReadFile(discPath)
+	if err != nil {
+		t.Fatalf("docs/DOC_DISCREPANCIES.md belum ada: %v", err)
+	}
+	discText := string(rawDisc)
+	for i := 1; i <= 8; i++ {
+		code := "DISC-0" + string(rune('0'+i))
+		if !strings.Contains(discText, code) {
+			t.Errorf("docs/DOC_DISCREPANCIES.md belum mendokumentasikan %s", code)
+		}
+	}
+}

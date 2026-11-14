@@ -1,6 +1,6 @@
 # Panduan Developer Backend — Kopdes Merah Putih
 
-Versi Dokumen: `1.1.0` | Tanggal: `2026-11-13` | Target Runtime: `Go 1.25+ / PostgreSQL 16`
+Versi Dokumen: `1.1.0` | Tanggal: `2026-11-14` | Target Runtime: `Go 1.27+ / PostgreSQL 16`
 
 > Dokumen ini menjelaskan arsitektur, alur keamanan, kontrak basis data, dan runbook operasional kode backend Kopdes Merah Putih secara faktual berdasarkan kode sumber terverifikasi di repositori ini. Tidak ada klaim kepatuhan hukum otomatis pada dokumen ini; parameter retensi dan akuntansi yang memerlukan peninjauan ditandai secara eksplisit (`PERLU VERIFIKASI HUKUM` / `KEPUTUSAN AKUNTAN`).
 
@@ -21,7 +21,7 @@ Aplikasi menggunakan arsitektur **modular monolith** berbasis Go `net/http` stan
 | `internal/api/middleware` | Middleware OWASP headers, CORS tersanitasi, recovery, rate limiter berbasis IP + trusted proxy, `BodyLimit`, `RequireAuth`/`RequireRoles`, `WithTenantTx`. |
 | `internal/api/response` | Envelope standar JSON `APIResponse` (`success`, `data`, `meta`, `error`) dan helper status HTTP (`400`–`500`). |
 | `internal/auth` | Pembuatan & verifikasi JWT (`HS256`/`HS512`) dengan klaim `jti`, `koperasi_id`, `role`, `token_use`, serta rotasi/pengecekan key sebelumnya. *(Dilindungi aturan kunci `AGENTS.md`)*. |
-| `internal/config` | Loader `.env` yang ketat, `AppConfig` terstruktur (79 variabel), katalog dokumentasi otomatis [ENV_REFERENCE.md](ENV_REFERENCE.md), dan audit hardcoded port. |
+| `internal/config` | Loader `.env` yang ketat, `AppConfig` terstruktur (83 variabel), katalog dokumentasi otomatis [ENV_REFERENCE.md](ENV_REFERENCE.md), dan audit hardcoded port. |
 | `internal/db` | Helper `AcquireOrderedAdvisoryLocks`, `CheckDatabaseRole` (tolak superuser), partisi bulanan (`partition_manager.go`), `idempotency_keys`, dan worker `pdp_worker.go`. |
 | `internal/outbox` | Antrean notifikasi transaksional (`outbox_notifications`) dan worker pengirim beserta interface mock/SMS/WhatsApp adapter. |
 | `internal/qris` | Parser EMVCo QRIS ketat (CRC16 Tag 63, validasi Tag 00 `'01'`, tolak duplikasi tag, hapus Tag 55–57 saat Tag 54 dipasang). |
@@ -64,8 +64,8 @@ flowchart TD
 
 ### Mekanisme Isolasi Tenant
 
-1. **Ekstraksi Koperasi murni dari JWT**: Nilai `koperasi_id` hanya diambil dari klaim `claims.KoperasiID` token JWT yang sudah diverifikasi signature-nya—**dilarang** mengambil `koperasi_id` dari URL parameter, body JSON, atau header HTTP klien seperti `X-Koperasi-ID` (mitigasi BOLA OWASP API1:2023).
-2. **Role Database Non-Superuser**: Server aplikasi wajib terkoneksi sebagai role `kopdes_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`). Pada saat startup (`cmd/server/main.go`), `db.CheckDatabaseRole` memeriksa `pg_roles` dan menolak menyalakan server apabila `rolsuper = true` atau `rolbypassrls = true`.
+1. **Ekstraksi Koperasi murni dari JWT**: Nilai `koperasi_id` hanya diambil dari klaim `claims.KoperasiID` token JWT yang sudah diverifikasi signature-nya—**dilarang** mengambil `koperasi_id` dari URL parameter, body JSON, atau header HTTP klien seperti `X-Koperasi-ID` (mitigasi BOLA OWASP API1:2023). <!-- claim:CLAIM-TENANT-ISOLATION-01 -->
+2. **Role Database Non-Superuser**: Server aplikasi wajib terkoneksi sebagai role `kopdes_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`). Pada saat startup (`cmd/server/main.go`), `db.CheckDatabaseRole` memeriksa `pg_roles` dan menolak menyalakan server apabila `rolsuper = true` atau `rolbypassrls = true`. <!-- claim:CLAIM-INFRA-NONSUPERUSER UNVERIFIED: Memerlukan proses startup / koneksi Postgres langsung sebagai superuser; terverifikasi oleh unit test db.CheckDatabaseRole dan startup guard cmd/server -->
 3. **Transaksi Terikat Tenant**: Wrapper `middleware.WithTenantTx` memulai transaksi `pgx.Tx` dan mengeksekusi `SELECT set_config('app.current_koperasi_id', $1, true)` (`is_local = true` sehingga hanya berlaku untuk transaksi tersebut dan aman saat connection pooling).
 4. **Lookup Pra-Autentikasi**: Sebelum login menghasilkan JWT, `HandleLogin` memanggil fungsi `SECURITY DEFINER` terkunci `fn_lookup_user_login(p_email_hash, p_koperasi_id)` untuk mencari user lintas tenant secara terbatas tanpa menyalakan bypass platform admin.
 
@@ -126,7 +126,7 @@ sequenceDiagram
 
 - **Rotasi Refresh Token**: Setiap `POST /api/v1/auth/refresh` menandai `refresh_tokens` lama telah terpakai (`revoked_at`) dalam satu transaksi dan menerbitkan pasangan baru. Bila token yang sudah pernah berotasi dikirim ulang (**token reuse**), server menganggap sesi dikompromikan dan mencabut seluruh refresh token aktif pengguna tersebut.
 - **Anti-Eskalasi Peran**: Pada `PATCH /api/v1/users/{id}/role`, `user_management_handler.go` menetapkan peringkat `roleRank` (`anggota:10`, `operator:40`, `pengawas:50`, `pengurus:60`, `bendahara:70`, `ketua:100`, `admin:80` kecuali aturan platform): pengguna dilarang mengubah perannya sendiri maupun memberikan peran lebih tinggi daripada peringkatnya.
-- **Pemisahan Read-Only vs Mutasi**: `pengawas` dan `operator` hanya diperbolehkan mengakses endpoint GET baca-saja (antrean, anggota, kas, laporan), sedangkan mutasi verifikasi pembayaran dan generate tagihan dibatasi ke peran pengurus berwenang.
+- **Pemisahan Read-Only vs Mutasi**: `pengawas` dan `operator` hanya diperbolehkan mengakses endpoint GET baca-saja (antrean, anggota, kas, laporan), sedangkan mutasi verifikasi pembayaran dan generate tagihan dibatasi ke peran pengurus berwenang. <!-- claim:CLAIM-REKONSILIASI-LAPORAN-01 --> <!-- claim:CLAIM-ANGGOTA-RBAC-01 -->
 
 ---
 
@@ -146,6 +146,8 @@ stateDiagram-v2
     menunggu_persetujuan_kedua --> ditolak : Penyetuju ke-2 tolak
 ```
 
+*(Catatan pembanding ambang: logika persetujuan ganda di `qris_handler.go` memicu `menunggu_persetujuan_kedua` ketika `nominal_total > ambang_persetujuan_ganda_rp` atau saat pencocokan mutasi bank dengan `mutasi_auto_approve_enabled=false`.)*
+
 ### Algoritma Kode Unik & Kapasitas Slot
 
 1. **`HitungKodeUnikAwalWithSlots`** (`service.go`) menurunkan angka awal `1..maxSlots` secara deterministik per kombinasi `(secret, anggota_id, koperasi_id)` menggunakan HMAC-SHA256. Default `maxSlots = 999` (3 digit), atau `9999` bila `KodeUnikDigits = 4`.
@@ -154,14 +156,14 @@ stateDiagram-v2
 
 ### QRIS Statis vs Dinamis (`QRIS_DYNAMIC_ENABLED`)
 
-- Saat `QRIS_DYNAMIC_ENABLED=false` (default saat ini), sistem mengembalikan `qris_payload_statis` apa adanya (`is_autolock_nominal: false`) dan mengandalkan transfer tepat hingga `nominal_total = nominal_dasar + kode_unik`.
+- Saat `QRIS_DYNAMIC_ENABLED=false` (default saat ini), sistem mengembalikan `qris_payload_statis` apa adanya (`is_autolock_nominal: false`) dan mengandalkan transfer tepat hingga `nominal_total = nominal_dasar + kode_unik`. <!-- claim:CLAIM-QRIS-REKENING-01 -->
 - Saat `QRIS_DYNAMIC_ENABLED=true`, parser `internal/qris` mengonversi payload EMVCo statis menjadi dinamis: memvalidasi Tag 00 == `'01'`, menolak tag duplikat, menghapus Tag 55–57, menyuntikkan Tag 54 (`nominal_total`), dan menghitung ulang CRC16 CCITT-FALSE (Tag 63).
 
 ### Mutasi Bank CSV, Persetujuan Ganda & Mode Pilot Rekening Pribadi
 
 - **Impor Mutasi CSV** (`POST /api/v1/pembayaran/mutasi-bank/impor`): Menghitung hash unik per baris CSV agar impor ulang tidak menggandakan pencocokan, mencocokkan `nominal_total` transaksi aktif (`satu mutasi = satu pembayaran`), serta menjalankan deteksi anomali (jam luar kerja `22:00–05:00` WIB, transaksi beruntun cepat, hash bukti ganda).
-- **Segregasi Tugas & Auto-Approve**: `auto_approve_mutasi_enabled` pada `konfigurasi_aturan` bernilai **`false` secara default**. Pengimpor CSV **dilarang** menyetujui pembayaran yang terkait dengan mutasi yang diimpornya, dan pembayaran `>= ambang_persetujuan_ganda_rp` wajib disetujui dua orang berbeda (`menunggu_persetujuan_kedua` -> `disetujui`).
-- **Pilot Rekening Pribadi** (`ALLOW_PERSONAL_PAYMENT_PILOT=true`): Mengizinkan pendaftaran `jenis_pemilik = 'perorangan_pengurus'` dengan penjagaan ketat: batas maksimum per transaksi (`pilot_rekening_pribadi_max_per_transaksi`), akumulasi harian dihitung berdasarkan tanggal **`Asia/Jakarta`** (`date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE $3) AT TIME ZONE $3`) hanya atas status aktif/disetujui, banner peringatan pada respons admin, dan pencatatan `PILOT_REKENING_PRIBADI` ke `audit_log`.
+- **Segregasi Tugas & Auto-Approve**: `mutasi_auto_approve_enabled` pada `konfigurasi_aturan` bernilai **`false` secara default**. Pengimpor CSV **dilarang** menyetujui pembayaran yang terkait dengan mutasi yang diimpornya, dan pembayaran dengan `nominal_total > ambang_persetujuan_ganda_rp` wajib disetujui dua orang berbeda (`menunggu_persetujuan_kedua` -> `disetujui`).
+- **Pilot Rekening Pribadi** (`ALLOW_PERSONAL_PAYMENT_PILOT=true`): Mengizinkan pendaftaran `jenis_pemilik = 'perorangan_pengurus'` dengan penjagaan ketat: batas maksimum per transaksi (`pilot_rekening_pribadi_max_per_transaksi`), akumulasi harian dihitung berdasarkan tanggal **`Asia/Jakarta`** (`date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE $3) AT TIME ZONE $3`) hanya atas status aktif/disetujui, banner peringatan pada respons admin, dan pencatatan `PILOT_REKENING_PRIBADI` ke `audit_log`. <!-- claim:CLAIM-INFRA-PILOT-FLAG UNVERIFIED: Nilai ALLOW_PERSONAL_PAYMENT_PILOT pada .env.test default bernilai false; cabang pilot=true diverifikasi oleh test suite Go terisolasi pada pkg api -->
 - **Rekonsiliasi Harian**: `GET /api/v1/pembayaran/rekonsiliasi/harian?tanggal=YYYY-MM-DD` membandingkan total pembayaran disetujui sistem terhadap mutasi kredit (`CR`) bank dan mutasi yang telah `tercocokkan`.
 
 ### Tabel Kondisi Error Pembayaran
@@ -179,7 +181,7 @@ stateDiagram-v2
 
 ## 6. Domain Bisnis Lainnya: KYC, Iuran, Katalog, Promo & Toko
 
-- **Pendaftaran Anggota & KYC** (`/api/v1/pendaftaran*`): Validasi NIK 16 digit, duplikasi dicek via HKDF blind index, upload dokumen memverifikasi **magic bytes** fisik file (`image/jpeg`, `image/png`, `application/pdf`; batas `MAX_KYC_UPLOAD_BYTES`), mencatat checksum SHA-256 ke `pendaftaran_dokumen`, serta menerbitkan `no_anggota` atomik `ANG/<tahun>/<urutan>` saat disetujui oleh checker berbeda.
+- **Pendaftaran Anggota & KYC** (`/api/v1/pendaftaran*`): Validasi NIK 16 digit, duplikasi dicek via HKDF blind index, upload dokumen memverifikasi **magic bytes** fisik file (`image/jpeg`, `image/png`, `application/pdf`; batas `MAX_KYC_UPLOAD_BYTES`), mencatat checksum SHA-256 ke `pendaftaran_dokumen`, serta menerbitkan `no_anggota` atomik `ANG/<tahun>/<urutan>` saat disetujui oleh checker berbeda. <!-- claim:CLAIM-PENDAFTARAN-CHECKER-01 -->
 - **Iuran** (`/api/v1/iuran*`): Penamaan kategori iuran memakai label netral (`pokok`/`wajib`/`sukarela`) dan setiap respons `/api/v1/iuran/jenis` menandai klasifikasi neraca sebagai **`KEPUTUSAN AKUNTAN`**. Generator tagihan (`POST /api/v1/iuran/generate`) bersifat idempoten terhadap `(koperasi_id, jenis_iuran_id, periode)`.
 - **E-Katalog, Promo & Toko** (`/api/v1/katalog/*`, `/api/v1/toko/*`): `HandleCheckout` mengunci baris stok dan kuota promo dengan `SELECT ... FOR UPDATE`, menolak stok minus, memotong stok lewat entri append-only di `stok_mutasi`, serta mengosongkan keranjang dalam satu transaksi. Endpoint `POST /api/v1/toko/pesanan/{id}/batal` dan `/expire` mengembalikan stok melalui entri reversal di `stok_mutasi` dan memulihkan kuota promo melalui helper `ReleasePesananStockAndPromoTx`.
 
@@ -189,8 +191,8 @@ stateDiagram-v2
 
 1. **Enkripsi AES-256-GCM + AAD**: Kolom NIK, nomor HP, tanggal lahir, alamat, dan secret TOTP dienkripsi AES-256-GCM dengan AAD deterministik `<table>:<column>:<record_id>` serta prefix versi kunci (`AES_KEY_VERSION:AES_KEY_ID:...`). Kunci lama didefinisikan di `AES_PREVIOUS_KEYS` agar dekripsi data historis tetap berjalan saat rotasi.
 2. **Blind Index Per Tenant**: Pencarian kesetaraan NIK/email memakai `DeriveTenantBlindIndexKey` (HKDF-SHA256) sehingga hash NIK milik satu koperasi tidak dapat dikorelasikan lintas koperasi atau disamakan dengan plaintext lookup global.
-3. **Penyamaran & Redaksi**: `GET /api/v1/pendaftaran/{id}` mengembalikan `nik_tersamar` (contoh `3201********0001`). Logging server menggunakan `security.RedactDSN` untuk menyembunyikan kredensial DSN dan helper sanitasi CR/LF (`cmd/server/main.go`).
-4. **Purge Pendaftaran Ditolak**: Worker berkala (`PDP_PURGE_INTERVAL`) dan endpoint admin `POST /api/v1/pendaftaran/purge-ditolak` memanggil `fn_purge_rejected_pendaftaran_pdp` memakai retensi dari `konfigurasi_aturan` (bawaan `PDP_REJECTED_RETENTION_DAYS=30`), menghapus berkas KYC fisik dari `STORAGE_KYC_DIR`, serta menulis log audit tanpa PII.
+3. **Penyamaran & Redaksi**: `GET /api/v1/pendaftaran/{id}` mengembalikan `pendaftaran_id` dan `nik_masked` (contoh `3201********0001`). Logging server menggunakan `security.RedactDSN` untuk menyembunyikan kredensial DSN dan helper sanitasi CR/LF (`cmd/server/main.go`).
+4. **Purge Pendaftaran Ditolak**: Worker berkala (`PDP_PURGE_INTERVAL`) dan endpoint admin `POST /api/v1/pendaftaran/purge-ditolak` memanggil `fn_purge_rejected_pendaftaran_pdp` memakai retensi dari `konfigurasi_aturan` (bawaan `PDP_REJECTED_RETENTION_DAYS=30`), menghapus berkas KYC fisik dari `STORAGE_KYC_DIR`, serta menulis log audit tanpa PII. <!-- claim:CLAIM-PENDAFTARAN-PURGE-01 -->
 5. **Keputusan Hukum Terbuka (`PERLU VERIFIKASI HUKUM`)**: Penetapan durasi pasti retensi 30 hari untuk pendaftaran ditolak, retensi dokumen KTP anggota keluar/nonaktif, dan naskah persetujuan pemrosesan data masih **PERLU VERIFIKASI HUKUM** dari konsultan hukum/DPO pemilik sistem.
 
 ---
@@ -206,11 +208,11 @@ stateDiagram-v2
 
 ## 9. Sistem Konfigurasi
 
-Daftar lengkap **79 variabel environment** terdokumentasi secara otomatis di [ENV_REFERENCE.md](ENV_REFERENCE.md).
+Daftar lengkap **83 variabel environment** terdokumentasi secara otomatis di [ENV_REFERENCE.md](ENV_REFERENCE.md).
 
 - **Pembagian .env vs `konfigurasi_aturan`**:
   - `.env` menyimpan konfigurasi tingkat infrastruktur, jaringan/port, DSN, rahasia kriptografi, TTL sesi, CORS, trusted proxy, dan nilai fallback global.
-  - `konfigurasi_aturan` menyimpan parameter kebijakan spesifik tenant per `koperasi_id` (ambang persetujuan ganda `ambang_persetujuan_ganda_rp`, `auto_approve_mutasi_enabled`, batas pilot per transaksi/harian, retensi PDP).
+  - `konfigurasi_aturan` menyimpan parameter kebijakan spesifik tenant per `koperasi_id` (ambang persetujuan ganda `ambang_persetujuan_ganda_rp`, `mutasi_auto_approve_enabled`, batas pilot per transaksi/harian, retensi PDP).
 - **Menambah Variabel Environment Baru**:
   1. Tambahkan field beserta struct tag `env:"NAMA_VAR"`, `default:"..."`, `scope:"..."`, `secret:"..."`, `desc:"..."`, dan `example:"..."` pada `AppConfig` di `internal/config/config.go`.
   2. Terapkan mapping ke komponen server/handler (`ConfigFromAppConfig` atau `cmd/server/main.go`).
@@ -227,7 +229,7 @@ Daftar lengkap **79 variabel environment** terdokumentasi secara otomatis di [EN
 # 1. Buat .env dari template tervalidasi (isi rahasia & item manual)
 bash scripts/promote_env.sh .env
 
-# 2. Pastikan seluruh 79 variabel terisi valid
+# 2. Pastikan seluruh 83 variabel terisi valid
 go run ./cmd/envcheck --strict --env-file .env
 
 # 3. Cek bentrokan port host pada VPS sebelum menyalakan Compose
@@ -280,6 +282,6 @@ Untuk mengganti port API (`API_PORT`/`API_HOST_PORT`), metrik (`METRICS_PORT`/`M
 - **Aturan Pengembangan & Commit**: Setiap perubahan handler wajib memiliki tes integrasi `-race` (termasuk tes isolasi tenant/anti-IDOR), lulus `go test -count=1 -race -p 1 ./...`, `govulncheck ./...`, `staticcheck ./...`, `gosec`, dan `gitleaks`. Gunakan commit kecil yang terfokus.
 - **Keterbatasan & Utang Teknis yang Diketahui (Jujur)**:
   1. `internal/simkopdes` dipertahankan sebagai adapter stub pasif atas permintaan pemilik proyek yang memfokuskan fase ini untuk satu kopdes cabang tunggal lokal; bila integrasi nasional dibutuhkan di masa depan, adapter ini perlu diimplementasikan dengan klien HTTP sebenarnya.
-  2. Notifier WhatsApp/SMS pada `internal/outbox` saat ini berjalan memakai provider antrean & mock adapter — integrasi ke vendor gateway produksi masih menunggu kredensial pemilik.
-  3. Penyimpanan KYC saat ini menulis ke direktori lokal terikat `STORAGE_KYC_DIR` (bukan object storage S3 terdistribusi); backup folder `STORAGE_KYC_DIR` wajib disertakan dalam jadwal backup VPS.
+  2. Notifier WhatsApp/SMS pada `internal/outbox` saat ini berjalan memakai provider antrean & mock adapter — integrasi ke vendor gateway produksi masih menunggu kredensial pemilik. <!-- claim:CLAIM-INFRA-WALLET-SMS UNVERIFIED: Memerlukan kredensial API vendor WhatsApp/SMS eksternal di luar lingkungan test -->
+  3. Penyimpanan KYC saat ini menulis ke direktori lokal terikat `STORAGE_KYC_DIR` (bukan object storage S3 terdistribusi); backup folder `STORAGE_KYC_DIR` wajib disertakan dalam jadwal backup VPS. <!-- claim:CLAIM-INFRA-TLS-BACKUP UNVERIFIED: Backup terenkripsi, restore drill pg_dump, sertifikat TLS, dan pemindaian Trivy berjalan pada lingkungan OS/Docker/CI bukan lewat HTTP API -->
 - **Keputusan di Tangan Manusia**: Lihat daftar tugas manual lengkap di [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) (penandatanganan legal retensi PDP `PERLU VERIFIKASI HUKUM`, klasifikasi akuntansi iuran `KEPUTUSAN AKUNTAN`, pengadaan akun QRIS resmi badan hukum, penyedia WhatsApp/SMS, dan sertifikat TLS/domain produksi).

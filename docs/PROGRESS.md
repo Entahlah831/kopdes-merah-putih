@@ -1028,3 +1028,46 @@ PASS
 ok  	github.com/kopdes/merah-putih/internal/api	1.859s
 ```
 
+
+
+## Tugas 3, 4, 5 & 6 (v5) — Peta Klaim (`scenarios.json`), 102 Langkah E2E Nyata, Matriks Peran 54x8+7, Browser Hardening & Perbaikan DISC-05..DISC-11
+
+- **Tes gagal lebih dahulu (TDD)**:
+  - `TestDoc_ClaimsAndScenariosParity` gagal sebelum anotasi `<!-- claim:ID -->` dan sebelum `frontend-tester/scenarios.json` serta `docs/DOC_DISCREPANCIES.md` dibuat.
+  - `TestV5_LiveScenariosAndRolesMatrix_E2E` gagal langsung saat pertama dijalankan terhadap PostgreSQL 16 nyata karena menemukan dua bug kode nyata yang sebelumnya lolos dari tes parsial: `DISC-09` (`GET /api/v1/iuran/tagihan/saya` -> HTTP `500` untuk akun non-anggota) dan `DISC-10` (`POST /api/v1/iuran/generate` -> `SQLSTATE 42P08` inconsistent parameter type `$3` di `service.go`).
+- **Perbaikan & Artefak Verifikasi**:
+  - `docs/FRONTEND_GUIDE.md` & `docs/BACKEND_GUIDE.md`: dianotasi dengan **26** penanda `<!-- claim:CLAIM-* -->` teruji + **5** penanda `UNVERIFIED` disertai alasan jujur untuk klaim non-REST (infra startup non-superuser DB, flag pilot isolasi Go, mock adapter WhatsApp/SMS, backup/TLS/Trivy OS, dan audit statis penyimpanan memori browser).
+  - `docs/DOC_DISCREPANCIES.md`: mencatat seluruh **11 ketidaksesuaian (`DISC-01`..`DISC-11`)** beserta perbaikan kode/dokumen.
+  - `internal/api/handlers/iuran_handler.go` (`DISC-09`): `HandleGetTagihanSaya` mengembalikan `200 OK []` bila `pgx.ErrNoRows` (akun non-anggota).
+  - `service.go` (`DISC-10`): menambahkan cast `$3::text` pada `GenerateTagihanIuranBulanan`.
+  - `internal/testseed/seed.go` & `frontend-tester/app.js` (`DISC-11`): mengekspos `produk_b_id` dan placeholder cross-tenant lengkap (`{produk_b_id}`, `{pembayaran_b_id}`, `{rekening_qris_b_id}`).
+  - `cmd/uitester/main.go` & `cmd/uitester/main_test.go`: dukungan `offset_seconds` di `POST /api/totp-helper` serta uji serving `/openapi.json`, `/roles_matrix.json`, `/scenarios.json`.
+  - `frontend-tester/scenarios.json`: 26 skenario (102 langkah) mencakup 100% klaim teruji termasuk TOTP window, upload PNG vs file teks invalid, idempotency 201/422, impor mutasi CSV 5-kolom + duplikat + segregasi pengimpor `403` + persetujuan kedua `200`, isolasi tenant `404`, IDOR `404`, dan brute-force `429 + Retry-After`.
+  - `internal/api/scenarios_and_matrix_e2e_test.go` (`TestV5_LiveScenariosAndRolesMatrix_E2E`): eksekusi langsung terhadap PostgreSQL 16 + `httptest.NewServer` mencakup seluruh matriks `54` operasi x `8` subjek + `7` probe lintas-tenant (`439` pemeriksaan matriks), CORS allowed/disallowed + `Access-Control-Expose-Headers`, penolakan payload `>10MB` HTTP `413`, seluruh `26` skenario (`102` langkah), serta pemindaian **540 respons** terhadap kebocoran NIK/sandi/rahasia.
+
+```text
+$ go test -count=1 -v -run "TestV5_LiveScenariosAndRolesMatrix_E2E|TestDoc_" ./internal/api ; go test -count=1 -v ./cmd/uitester
+=== RUN   TestDoc_OpenAPI_JSON_Parity
+--- PASS: TestDoc_OpenAPI_JSON_Parity (0.00s)
+=== RUN   TestDoc_RolesMatrix_Parity
+--- PASS: TestDoc_RolesMatrix_Parity (0.00s)
+=== RUN   TestDoc_ClaimsAndScenariosParity
+--- PASS: TestDoc_ClaimsAndScenariosParity (0.00s)
+=== RUN   TestDoc_OpenAPI_RouteParity
+--- PASS: TestDoc_OpenAPI_RouteParity (0.00s)
+=== RUN   TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims
+--- PASS: TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims (0.01s)
+=== RUN   TestDoc_EndToEnd_DocumentedWorkflows
+--- PASS: TestDoc_EndToEnd_DocumentedWorkflows (1.67s)
+=== RUN   TestV5_LiveScenariosAndRolesMatrix_E2E
+    scenarios_and_matrix_e2e_test.go:767: V5 LIVE E2E PASSED: 54 operasi x 8 subjek + 7 cross-tenant = 439 pemeriksaan matriks; 26 skenario (102 langkah); CORS/413/Zero-PII tervalidasi (540 respons dipindai).
+--- PASS: TestV5_LiveScenariosAndRolesMatrix_E2E (4.73s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	6.680s
+=== RUN   TestUITester_RefusesProductionMode
+--- PASS: TestUITester_RefusesProductionMode (0.00s)
+=== RUN   TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper
+--- PASS: TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper (0.08s)
+PASS
+ok  	github.com/kopdes/merah-putih/cmd/uitester	1.494s
+```

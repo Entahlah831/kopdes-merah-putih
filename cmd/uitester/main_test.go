@@ -71,12 +71,12 @@ func TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper(t *testing.T) {
 		t.Fatalf("Unexpected /config.json metadata: %v", parsed)
 	}
 
-	// 2. /api/totp-helper generates valid 6-digit RFC6238 code for a given Base32 secret
+	// 2. /api/totp-helper generates valid 6-digit RFC6238 code for a given Base32 secret (default & offset_seconds=+30)
 	secret, err := security.GenerateTOTPSecret()
 	if err != nil {
 		t.Fatalf("GenerateTOTPSecret: %v", err)
 	}
-	totpPayload, _ := json.Marshal(map[string]string{"secret_base32": secret})
+	totpPayload, _ := json.Marshal(map[string]interface{}{"secret_base32": secret, "offset_seconds": 30})
 	reqTotp := httptest.NewRequest(http.MethodPost, "/api/totp-helper", bytes.NewReader(totpPayload))
 	reqTotp.Header.Set("Content-Type", "application/json")
 	recTotp := httptest.NewRecorder()
@@ -90,8 +90,21 @@ func TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper(t *testing.T) {
 	if err := json.Unmarshal(recTotp.Body.Bytes(), &totpRes); err != nil {
 		t.Fatalf("decode totp response: %v", err)
 	}
-	if !security.ValidateTOTPCode(secret, totpRes.Code, time.Now()) {
-		t.Fatalf("Generated TOTP code %q failed validation", totpRes.Code)
+	if !security.ValidateTOTPCode(secret, totpRes.Code, time.Now().Add(30*time.Second)) {
+		t.Fatalf("Generated TOTP code %q failed validation at +30s offset", totpRes.Code)
+	}
+
+	// 2b. Artifact JSON files served cleanly from uiDir (/openapi.json, /roles_matrix.json, /scenarios.json)
+	for _, fname := range []string{"openapi.json", "roles_matrix.json", "scenarios.json"} {
+		if err := os.WriteFile(filepath.Join(uiDir, fname), []byte(`{"ok":true,"file":"`+fname+`"}`), 0o600); err != nil {
+			t.Fatalf("write %s: %v", fname, err)
+		}
+		reqArt := httptest.NewRequest(http.MethodGet, "/"+fname, nil)
+		recArt := httptest.NewRecorder()
+		handler.ServeHTTP(recArt, reqArt)
+		if recArt.Code != http.StatusOK || !strings.Contains(recArt.Body.String(), fname) {
+			t.Fatalf("Expected /%s 200 with filename marker, got %d: %s", fname, recArt.Code, recArt.Body.String())
+		}
 	}
 
 	// 3. /api/probe-cors probes CORS target preflight

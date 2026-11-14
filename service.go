@@ -303,10 +303,10 @@ func GenerateTagihanIuranBulanan(ctx context.Context, pool *pgxpool.Pool, kopera
 			a.koperasi_id,
 			a.id,
 			ji.id,
-			$3,
+			$3::text,
 			make_date(
-				substring($3 from 1 for 4)::int,
-				substring($3 from 6 for 2)::int,
+				substring($3::text from 1 for 4)::int,
+				substring($3::text from 6 for 2)::int,
 				ji.hari_jatuh_tempo
 			),
 			ji.nominal,

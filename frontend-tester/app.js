@@ -482,6 +482,7 @@
     ctxVars.seed_password = pwd;
     ctxVars.metrics_token = el("metricsTokenInput").value.trim();
 
+    let nikCounter = 0;
     const expandTemplate = function (val) {
       if (typeof val === "string") {
         let out = val;
@@ -489,6 +490,11 @@
         out = out.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, function (_, k) {
           if (k === "new_uuid") return generateUUIDv4();
           if (k === "unix_ts") return String(Math.floor(Date.now() / 1000));
+          if (k === "new_nik") {
+            nikCounter++;
+            const suffix = String((Date.now() % 100000000) + nikCounter).padStart(10, "0").slice(-10);
+            return "320101" + suffix;
+          }
           return ctxVars[k] !== undefined ? String(ctxVars[k]) : "";
         });
         return out;
@@ -524,7 +530,11 @@
           for (const step of sc.steps) {
             if (step.action === "totp_for_secret") {
               const sec = ctxVars[step.secret_var];
-              ctxVars[step.save_as] = await fetchTOTP({ secret_base32: sec });
+              ctxVars[step.save_as] = await fetchTOTP({ secret_base32: sec, offset_seconds: step.offset_seconds || 0 });
+              continue;
+            }
+            if (step.action === "totp_for_email") {
+              ctxVars[step.save_as] = await fetchTOTP({ email: expandTemplate(step.email), offset_seconds: step.offset_seconds || 0 });
               continue;
             }
 
@@ -549,6 +559,8 @@
               const fd = new FormData();
               fd.append(step.file_field || "file", new Blob([csvText], { type: "text/csv" }), "mutasi-uji.csv");
               reqBody = fd;
+            } else if (step.raw_body !== undefined) {
+              reqBody = expandTemplate(step.raw_body);
             } else if (step.body !== undefined) {
               bodyJson = expandTemplate(step.body);
             }
@@ -565,6 +577,13 @@
             httpCode = String(lastResp.status);
             if (step.expect_status && !step.expect_status.includes(lastResp.status)) {
               throw new Error(step.method + " " + reqPath + " harap status " + step.expect_status.join("/") + ", dapat " + lastResp.status + " (" + lastResp.text.slice(0, 140) + ")");
+            }
+            if (step.expect_header_present) {
+              for (const hdr of step.expect_header_present) {
+                if (!lastResp.headers.get(hdr)) {
+                  throw new Error(step.method + " " + reqPath + " harap header " + hdr + " ada");
+                }
+              }
             }
             if (step.expect_json_contains) {
               for (const needle of step.expect_json_contains) {
@@ -663,6 +682,9 @@
         .replace("{anggota_a_id}", resources.anggota_a_id || generateUUIDv4())
         .replace("{anggota_b_id}", resources.anggota_b_id || generateUUIDv4())
         .replace("{produk_a_id}", resources.produk_a_id || generateUUIDv4())
+        .replace("{produk_b_id}", resources.produk_b_id || generateUUIDv4())
+        .replace("{pembayaran_b_id}", resources.pembayaran_b_id || generateUUIDv4())
+        .replace("{rekening_qris_b_id}", resources.rekening_qris_b_id || generateUUIDv4())
         .replace("{user_admin_a_id}", adminA.user_id || generateUUIDv4())
         .replace("{user_admin_b_id}", adminB.user_id || generateUUIDv4())
         .replace("{id}", resources.anggota_a_id || generateUUIDv4())

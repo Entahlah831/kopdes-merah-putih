@@ -5,7 +5,7 @@
 
 ## 1. Ringkasan Eksekutif & Metodologi
 
-Audit independen terhadap basis kode Koperasi Desa Merah Putih mengidentifikasi kerentanan dan ketidaklengkapan arsitektur dari tingkat **KRITIS**, **TINGGI**, **SEDANG**, hingga **KELENGKAPAN FUNGSIONAL (P1-1 s/d P1-5)**. Seluruh temuan tersebut telah diremediasi secara tuntas menggunakan metodologi **Test-Driven Development (TDD)** yang ketat:
+Audit mandiri oleh agen pengembang (belum ada peninjauan pihak ketiga) terhadap basis kode Koperasi Desa Merah Putih mengidentifikasi kerentanan dan ketidaklengkapan arsitektur dari tingkat **KRITIS**, **TINGGI**, **SEDANG**, hingga **KELENGKAPAN FUNGSIONAL (P1-1 s/d P1-5)**. Temuan historis fase awal tersebut telah diperbaiki menggunakan metodologi **Test-Driven Development (TDD)**:
 1. Membuktikan setiap cacat terlebih dahulu dengan pengujian gagal (*failing reproduction test*).
 2. Memperbaiki logika kode/skema hingga pengujian berhasil (*passing test*).
 3. Mengabadikan perubahan skema database melalui pasangan migrasi bernomor urut tanpa pernah mengubah riwayat migrasi fondasi awal (`000001_init_kopdes_schema.up.sql`).
@@ -269,22 +269,22 @@ Pekerja latar belakang yang memproses antrean notifikasi secara asinkron dengan 
 
 ---
 
-## 5. Ringkasan 5 Keputusan Bisnis yang Diadopsi
+## 5. Ringkasan 5 Parameter Kebijakan Sementara (Menunggu Konfirmasi Pemilik)
 
-1. **Rekening QRIS Pengurus Diizinkan (Mode Pilot Lokal)**:
-   - Nilai konfigurasi: `ALLOW_PERSONAL_PAYMENT_PILOT=true`.
-   - Admin koperasi bebas mengunggah string/payload QRIS statis pengurus melalui `POST /api/v1/koperasi/rekening-qris`.
-2. **QRIS Dinamis Dinonaktifkan (Gunakan QRIS Statis + Kode Unik)**:
-   - Nilai konfigurasi: `QRIS_DYNAMIC_ENABLED=false`.
-   - Sistem mengembalikan string QRIS statis pengurus + kalkulasi `nominal_total = nominal_dasar + kode_unik`.
-3. **Persetujuan Ganda & Kontrol Maker-Checker (Aktif Penuh)**:
-   - Pembuat transaksi dilarang keras memverifikasi transaksinya sendiri.
-4. **Masa Retensi Berkas Ditolak 30 Hari (UU PDP)**:
-   - Nilai konfigurasi: `PDP_REJECTED_RETENTION_DAYS=30`.
-   - Dijalankan via stored procedure `fn_purge_rejected_pendaftaran_pdp`.
-5. **Fokus Lokal 1 Cabang Kopdes & De-scope SIMKOPDES**:
-   - Modul sinkronisasi nasional SIMKOPDES dihapus via migrasi `000009`.
-   - Database disederhanakan menjadi 64 tabel dasar + 8 partisi bulanan.
+1. **Rekening QRIS Pengurus Diizinkan (Mode Pilot Lokal — Nonaktif Default)**:
+   - Nilai default produksi: `ALLOW_PERSONAL_PAYMENT_PILOT=false` (diaktifkan `true` hanya pada berkas `.env.test` / `.env.test.alt` atau bila pemilik mengubah `.env` secara manual).
+   - Admin koperasi dapat mengunggah string/payload QRIS statis melalui `POST /api/v1/koperasi/rekening-qris`.
+2. **QRIS Dinamis Dinonaktifkan Default (Gunakan QRIS Statis + Kode Unik)**:
+   - Nilai konfigurasi default: `QRIS_DYNAMIC_ENABLED=false`.
+   - Sistem mengembalikan string QRIS statis + kalkulasi `nominal_total = nominal_dasar + kode_unik`.
+3. **Persetujuan Ganda & Kontrol Maker-Checker**:
+   - Pembuat transaksi dilarang memverifikasi transaksinya sendiri (`403`/`400`), dan pengimpor mutasi CSV dilarang menjadi penyetuju.
+4. **Masa Retensi Berkas Ditolak 30 Hari (`PERLU VERIFIKASI HUKUM`)**:
+   - Nilai konfigurasi default: `PDP_REJECTED_RETENTION_DAYS=30`.
+   - Implementasi nyata: penghapusan baris DB dan berkas fisik KYC via `fn_purge_rejected_pendaftaran_pdp` (bukan crypto-shredding).
+5. **Fokus Lokal 1 Cabang Kopdes & Pemulihan Stub SIMKOPDES**:
+   - Sempat dihapus di migrasi `000009`, namun tabel `sinkronisasi_simkopdes` beserta RLS dipulihkan pada migrasi `000012` dan dilayani oleh adapter stub `internal/simkopdes/adapter.go` (`ErrSIMKOPDESDeScoped`).
+   - Skema database terkini terdiri atas 69 tabel induk/dasar + 60 partisi (`129` entitas tabel fisik; lihat `docs/SCOPE_RECONCILIATION.md`).
 
 ---
 

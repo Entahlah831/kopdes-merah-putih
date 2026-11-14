@@ -168,8 +168,9 @@ func (h *IuranHandler) HandleCreateJenisIuran(w http.ResponseWriter, r *http.Req
 	}
 
 	response.JSON(w, http.StatusCreated, map[string]interface{}{
-		"id":      newID,
-		"message": "Jenis iuran berhasil dibuat",
+		"id":                    newID,
+		"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN",
+		"message":               "Jenis iuran berhasil dibuat",
 	})
 }
 

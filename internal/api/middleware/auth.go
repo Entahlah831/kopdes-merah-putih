@@ -50,7 +50,7 @@ func (am *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		if claims.Role == "mfa_setup" {
 			path := r.URL.Path
 			if path != "/api/v1/auth/mfa/enable" && path != "/api/v1/auth/mfa/setup" {
-				response.Forbidden(w, "Token setup MFA hanya berlaku untuk proses enrollment MFA (akses ditolak)")
+				response.Error(w, http.StatusForbidden, "MFA_ENROLLMENT_REQUIRED", "Token setup MFA hanya berlaku untuk proses enrollment MFA (akses ditolak)")
 				return
 			}
 		}

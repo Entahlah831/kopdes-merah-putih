@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -281,6 +282,20 @@ func (c AppConfig) ValidateProduction() error {
 	for _, o := range c.AllowedOrigins {
 		if o == "*" {
 			return fmt.Errorf("ALLOWED_ORIGINS tidak boleh berisi wildcard '*'")
+		}
+	}
+	for _, cidr := range c.TrustedProxies {
+		trimmed := strings.TrimSpace(cidr)
+		if trimmed == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(trimmed)
+		if err != nil {
+			return fmt.Errorf("TRUSTED_PROXIES berisi CIDR tidak valid %q: %w", cidr, err)
+		}
+		ones, _ := ipNet.Mask.Size()
+		if ones < 16 {
+			return fmt.Errorf("TRUSTED_PROXIES %q terlalu lebar untuk mode production (maksimal /16, ditemukan /%d)", cidr, ones)
 		}
 	}
 	if strings.TrimSpace(c.DBPassword) == "" {

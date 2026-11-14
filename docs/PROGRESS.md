@@ -866,16 +866,78 @@ number name                                         status    conclusion
      ok  	github.com/kopdes/merah-putih/internal/api	46.062s
      ```
 
+---
 
+## Prompt Antigravity v5 — Tugas 0: Koreksi `docs/AUDIT_REPORT.md` & Perbaikan Terkait (2026-11-14)
 
+### 1. Perubahan yang Dilakukan
+- **Penyelarasan Laporan Audit ([`docs/AUDIT_REPORT.md`](AUDIT_REPORT.md), [`docs/SCOPE_RECONCILIATION.md`](SCOPE_RECONCILIATION.md), [`docs/LAPORAN_REMEDIASI_DAN_PERUBAHAN_KODE.md`](LAPORAN_REMEDIASI_DAN_PERUBAHAN_KODE.md))**:
+  - Menyelaraskan seluruh matriks remediasi (`K1`–`K3`, `T1`–`T5`, `S1`–`S3`, `P1-1`–`P1-5`, serta ringkasan migrasi `000001`–`000018`) terhadap riwayat commit Git dan berkas migrasi aktual, termasuk mencantumkan temuan **K1** (API superuser di Compose) dan **K2** (partisi berhenti 31 Des 2026).
+  - Mengganti label `"Audit independen"` / `"diremediasi secara tuntas"` menjadi `"Audit mandiri oleh agen pengembang; belum ada peninjauan pihak ketiga"`, mengubah Bagian 3 menjadi **`KEPUTUSAN YANG DIUSULKAN / DIPAKAI SEMENTARA`** dengan kolom kosong **`Bukti persetujuan (diisi pemilik: notulen/email/chat)`**, menjelaskan mekanisme retensi 30 hari apa adanya (hapus baris/kolom DB & berkas KYC fisik, bukan *crypto-shredding*, bertanda `PERLU VERIFIKASI HUKUM`), menyelaraskan status pemulihan `sinkronisasi_simkopdes` (`000012` + `internal/simkopdes/adapter.go`, **69 tabel induk/dasar + 60 partisi = 129 objek tabel fisik**), dan menambahkan bagian **`Keterbatasan yang Diketahui & Tindak Lanjut Wajib`**.
+  - Menegaskan status **`PITR belum diimplementasikan`** dan memperbarui `scripts/restore_drill.sh` untuk mencetak status enkripsi dump (`BACKUP_ENCRYPTION_KEY`) serta menjalankan `VerifyHashChain` pada **ketiga** tabel append-only (`audit_log`, `kas_mutasi`, `pembayaran_verifikasi_log`).
+- **Pengetatan `TRUSTED_PROXIES` CIDR `> /16` di Produksi (`internal/config/config.go`, `config_test.go`)**: `ValidateProduction()` menolak CIDR lebih lebar dari `/16` (`ones < 16`).
+- **Penghapusan Pengecualian Global `gosec` & Penambahan `trivy image` (`.github/workflows/ci.yml`, `internal/security/totp.go`)**: menghapus `-exclude=G104,G304,G101,G505,G115` dan menandai `#nosec G505` / guard non-negatif + `#nosec G115` spesifik pada TOTP RFC 6238; menambahkan `docker build` + `trivy image` di CI.
+- **Uji Kelelahan Kapasitas QRIS 1.500 Request Konkuren & Peningkatan Konkurensi (`service.go`, `internal/api/qris_slot_exhaustion_test.go`, `cmd/loadtest/main.go`)**: menambahkan `ambilSlotTerpakaiQRIS` + `acakSisaSlot` (`crypto/rand`) setelah bentrok pertama untuk menghilangkan lock convoy antar worker.
+- **Perbaikan Ketidaksesuaian Dokumentasi vs API (`DISC-01` s.d. `DISC-04`)** dengan TDD test di `internal/api/v5_discrepancies_test.go`:
+  - `MFA_ENROLLMENT_REQUIRED` pada `internal/api/middleware/auth.go` untuk token `mfa_setup`.
+  - Pembatasan role `POST /api/v1/toko/pesanan/{id}/expire` di `internal/api/server.go`.
+  - Penambahan `X-Request-ID` + `Access-Control-Expose-Headers` + `403` preflight pada `security_headers.go` dan `cors.go`.
+  - Penambahan `"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN"` di `HandleCreateJenisIuran`.
 
+### 2. Output Verifikasi Asli (`Tugas 0`)
+```text
+$ git log --name-status -- ".env*"
+M	.env.test.alt       (5b24dab)
+M	.env.example/.test/.test.alt (de75732)
+M	.env.example        (568dbe0)
+M	.env.example/.test/.test.alt (0c52545)
+A	.env.test, .env.test.alt / M .env.example (d198098)
+M	.env.example        (52fc1e7, 7b1dd05, 1d62927, 24ffe9a)
+A	.env.example        (b2ced33)
+-> Nihil .env / .env.local / .env.production / .env.live di riwayat Git.
 
+$ go test -v ./internal/config -run TestValidateProduction_RejectsWideTrustedProxiesCIDR
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDR
+--- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDR (0.00s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/config	1.160s
 
+$ go test -v . -run TestKonkurensiQRIS_AntiTabrakan
+=== RUN   TestKonkurensiQRIS_AntiTabrakan
+    service_test.go:353: Sukses menguji 30 transaksi QRIS konkuren: seluruh kode unik (1..999) unik tanpa tabrakan!
+--- PASS: TestKonkurensiQRIS_AntiTabrakan (0.77s)
+PASS
+ok  	github.com/kopdes/merah-putih	1.088s
 
+$ go test -v ./internal/api -run "TestQRISSlotExhaustion_1500ConcurrentSameNominal|TestV5_Discrepancy"
+=== RUN   TestQRISSlotExhaustion_1500ConcurrentSameNominal
+    qris_slot_exhaustion_test.go:145: QRIS Slot Exhaustion (1500 concurrent requests, 100 workers, 5.07s): 201_Created=999, 409_Conflict=501, 5xx=0, other=0
+--- PASS: TestQRISSlotExhaustion_1500ConcurrentSameNominal (7.40s)
+=== RUN   TestV5_Discrepancy01_SetupTokenReturnsMFAEnrollmentRequired
+--- PASS: TestV5_Discrepancy01_SetupTokenReturnsMFAEnrollmentRequired (1.70s)
+=== RUN   TestV5_Discrepancy02_ExpirePesananRejectsAnggota
+--- PASS: TestV5_Discrepancy02_ExpirePesananRejectsAnggota (1.69s)
+=== RUN   TestV5_Discrepancy03_RequestIDAndCORSPreflight
+--- PASS: TestV5_Discrepancy03_RequestIDAndCORSPreflight (1.74s)
+=== RUN   TestV5_Discrepancy04_CreateJenisIuranIncludesKlasifikasiAkuntansi
+--- PASS: TestV5_Discrepancy04_CreateJenisIuranIncludesKlasifikasiAkuntansi (1.79s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	14.754s
 
+$ go test -v ./internal/api -run "TestDoc_MarkdownLinks|TestDoc_OpenAPI_RouteParity"
+=== RUN   TestDoc_OpenAPI_RouteParity
+--- PASS: TestDoc_OpenAPI_RouteParity (0.04s)
+=== RUN   TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims
+--- PASS: TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims (0.02s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	0.355s
 
-
-
-
-
+$ gosec.exe ./...
+Summary:
+  Gosec  : dev
+  Files  : 44
+  Lines  : 13045
+  Nosec  : 16
+  Issues : 0
+```
 

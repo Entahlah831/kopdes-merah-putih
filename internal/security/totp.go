@@ -3,6 +3,7 @@ package security
 import (
 	"crypto/hmac"
 	"crypto/rand"
+	// #nosec G505 -- SHA-1 diwajibkan oleh spesifikasi standar TOTP RFC 6238
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base32"
@@ -35,7 +36,12 @@ func GenerateTOTPCode(secretBase32 string, t time.Time) (string, error) {
 		}
 	}
 
-	counter := uint64(t.Unix() / 30)
+	unixSec := t.Unix()
+	if unixSec < 0 {
+		return "", fmt.Errorf("timestamp Unix negatif tidak valid: %d", unixSec)
+	}
+	// #nosec G115 -- unixSec divalidasi >= 0 sebelum pembagian dan konversi uint64 untuk counter TOTP RFC 6238
+	counter := uint64(unixSec / 30)
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, counter)
 

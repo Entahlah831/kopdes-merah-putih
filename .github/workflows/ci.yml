@@ -104,8 +104,7 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
           "$(go env GOPATH)/bin/staticcheck" ./...
-          # G505/G115 di internal/security/totp.go (SHA-1 RFC 6238 & uint64 unix) berada di folder terkunci AGENTS.md
-          "$(go env GOPATH)/bin/gosec" -exclude=G104,G304,G101,G505,G115 ./...
+          "$(go env GOPATH)/bin/gosec" ./...
 
   docker-setB-e2e-and-load:
     runs-on: ubuntu-latest
@@ -132,6 +131,11 @@ jobs:
             fi
           done < .env.test.alt
           docker compose -f docker-compose.test.yml --env-file .env.test.alt up -d --build
+          docker build -t kopdes-merah-putih-api:ci-test .
+          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
+          sudo tar -xz -C /usr/local/bin -f /tmp/trivy.tar.gz trivy
+          rm -f /tmp/trivy.tar.gz
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 kopdes-merah-putih-api:ci-test
           READY=0
           for i in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz" >/dev/null; then

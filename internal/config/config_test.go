@@ -164,3 +164,71 @@ func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 		t.Errorf("Generated markdown must distinguish env vars vs konfigurasi_aturan DB table")
 	}
 }
+
+func TestValidateProduction_RejectsWideTrustedProxiesCIDR(t *testing.T) {
+	baseProd := map[string]string{
+		"APP_ENV":            "production",
+		"API_PORT":           "8080",
+		"METRICS_PORT":       "9100",
+		"DB_HOST":            "10.20.1.5",
+		"DB_PORT":            "5432",
+		"DB_NAME":            "kopdes_prod",
+		"DB_USER":            "kopdes_app",
+		"DB_PASSWORD":        "ProdStrongPass123!@#",
+		"DB_SSLMODE":         "require",
+		"JWT_SECRET":         strings.Repeat("a1", 32),
+		"BLIND_INDEX_SECRET": strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":     strings.Repeat("c3", 32),
+		"QRIS_SECRET":        strings.Repeat("d4", 32),
+		"METRICS_TOKEN":      strings.Repeat("e5", 32),
+		"BCRYPT_COST":        "12",
+		"ALLOWED_ORIGINS":    "https://koperasi.example.id",
+	}
+
+	rejectCases := []struct {
+		name  string
+		proxy string
+	}{
+		{"DockerBridge12", "172.16.0.0/12"},
+		{"ClassA8", "10.0.0.0/8"},
+		{"AllIPv4", "0.0.0.0/0"},
+		{"InvalidCIDR", "not-a-cidr"},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := make(map[string]string, len(baseProd)+1)
+			for k, v := range baseProd {
+				m[k] = v
+			}
+			m["TRUSTED_PROXIES"] = tc.proxy
+			cfg, err := config.Load(func(k string) (string, bool) {
+				v, ok := m[k]
+				return v, ok
+			})
+			if err != nil {
+				t.Fatalf("Load unexpected error: %v", err)
+			}
+			if err := cfg.ValidateProduction(); err == nil {
+				t.Fatalf("Expected ValidateProduction to reject TRUSTED_PROXIES=%q in production, got nil", tc.proxy)
+			}
+		})
+	}
+
+	// Valid narrow CIDRs (/32 and /16) must pass
+	mOK := make(map[string]string, len(baseProd)+1)
+	for k, v := range baseProd {
+		mOK[k] = v
+	}
+	mOK["TRUSTED_PROXIES"] = "127.0.0.1/32,10.20.0.0/16"
+	cfgOK, err := config.Load(func(k string) (string, bool) {
+		v, ok := mOK[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if err := cfgOK.ValidateProduction(); err != nil {
+		t.Fatalf("Expected ValidateProduction to accept /32 and /16 TRUSTED_PROXIES, got: %v", err)
+	}
+}

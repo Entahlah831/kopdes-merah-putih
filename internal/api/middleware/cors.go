@@ -60,11 +60,16 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 				}
 				w.Header().Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowedMethods, ", "))
 				w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowedHeaders, ", "))
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, Content-Type")
 				w.Header().Set("Access-Control-Max-Age", "86400")
 			}
 
 			// Tangani request HTTP OPTIONS preflight
 			if r.Method == http.MethodOptions {
+				if !allowed {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

@@ -3,11 +3,13 @@ package kopdes
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"time"
 
 	"github.com/google/uuid"
@@ -109,32 +111,40 @@ func BuatPembayaranQRISStatis(ctx context.Context, pool *pgxpool.Pool, secret []
 		maxSlots = 9999
 	}
 
-	// Metrik pemakaian slot & peringatan di atas 70%
-	var activeSlots int
-	_ = tx.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM pembayaran
-		WHERE koperasi_id = $1
-		  AND rekening_qris_id = $2
-		  AND nominal_dasar = $3
-		  AND status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
-		  AND berlaku_sampai > NOW()
-		  AND deleted_at IS NULL;
-	`, req.KoperasiID, req.RekeningQRISID, req.NominalDasarRp).Scan(&activeSlots)
+	// Ambil daftar kode_unik yang sedang terpakai sekaligus (O(1) lookup di memori, hindari 999x SAVEPOINT saat penuh)
+	occupied := ambilSlotTerpakaiQRIS(ctx, tx, req.KoperasiID, req.RekeningQRISID, req.NominalDasarRp, maxSlots)
 
+	activeSlots := len(occupied)
 	if maxSlots > 0 {
 		rasio := float64(activeSlots) / float64(maxSlots)
 		if rasio >= 0.70 {
 			log.Printf("[PERINGATAN KAPASITAS QRIS] Pemakaian slot kode unik telah mencapai %.1f%% (%d/%d slot) untuk nominal Rp%d pada rekening %s",
 				rasio*100.0, activeSlots, maxSlots, req.NominalDasarRp, req.RekeningQRISID)
 		}
+		if activeSlots >= maxSlots {
+			return nil, ErrKodeUnikPenuh
+		}
 	}
 
 	kodeAwal := HitungKodeUnikAwalWithSlots(secret, req.AnggotaID, req.KoperasiID, maxSlots)
 	berlakuSampai := time.Now().UTC().Add(req.TTL)
 
-	for percobaan := 1; percobaan <= maxSlots; percobaan++ {
-		kodeKandidat := ((kodeAwal - 1 + (percobaan - 1)) % maxSlots) + 1
+	freeCodes := make([]int, 0, maxSlots-activeSlots)
+	for offset := 0; offset < maxSlots; offset++ {
+		kodeKandidat := ((kodeAwal - 1 + offset) % maxSlots) + 1
+		if !occupied[kodeKandidat] {
+			freeCodes = append(freeCodes, kodeKandidat)
+		}
+	}
+	if len(freeCodes) == 0 {
+		return nil, ErrKodeUnikPenuh
+	}
+
+	shuffledOnContention := false
+	collisions := 0
+	for idx := 0; idx < len(freeCodes); idx++ {
+		percobaan := idx + 1
+		kodeKandidat := freeCodes[idx]
 
 		if _, err := tx.Exec(ctx, "SAVEPOINT sp_qris_unik"); err != nil {
 			return nil, err
@@ -194,12 +204,69 @@ func BuatPembayaranQRISStatis(ctx context.Context, pool *pgxpool.Pool, secret []
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_pembayaran_qris_nominal_aktif" {
 			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT sp_qris_unik")
+			collisions++
+			// Refresh slot terpakai secara berkala agar permintaan saat kapasitas penuh cepat berhenti.
+			if collisions%4 == 0 && idx+1 < len(freeCodes) {
+				latest := ambilSlotTerpakaiQRIS(ctx, tx, req.KoperasiID, req.RekeningQRISID, req.NominalDasarRp, maxSlots)
+				filtered := freeCodes[idx+1 : idx+1]
+				for _, c := range freeCodes[idx+1:] {
+					if !latest[c] {
+						filtered = append(filtered, c)
+					}
+				}
+				freeCodes = freeCodes[:idx+1+len(filtered)]
+				if len(filtered) == 0 {
+					return nil, ErrKodeUnikPenuh
+				}
+			}
+			if !shuffledOnContention && idx+1 < len(freeCodes) {
+				if shuffleErr := acakSisaSlot(freeCodes[idx+1:]); shuffleErr != nil {
+					return nil, fmt.Errorf("gagal mengacak slot kode unik: %w", shuffleErr)
+				}
+				shuffledOnContention = true
+			}
 			continue
 		}
 		return nil, err
 	}
 
 	return nil, ErrKodeUnikPenuh
+}
+
+func ambilSlotTerpakaiQRIS(ctx context.Context, tx pgx.Tx, koperasiID, rekeningQRISID uuid.UUID, nominalDasarRp int64, maxSlots int) map[int]bool {
+	occupied := make(map[int]bool, maxSlots)
+	slotRows, err := tx.Query(ctx, `
+		SELECT kode_unik
+		FROM pembayaran
+		WHERE koperasi_id = $1
+		  AND rekening_qris_id = $2
+		  AND nominal_dasar = $3
+		  AND status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+		  AND berlaku_sampai > NOW()
+		  AND deleted_at IS NULL;
+	`, koperasiID, rekeningQRISID, nominalDasarRp)
+	if err == nil {
+		for slotRows.Next() {
+			var used int
+			if scanErr := slotRows.Scan(&used); scanErr == nil {
+				occupied[used] = true
+			}
+		}
+		slotRows.Close()
+	}
+	return occupied
+}
+
+func acakSisaSlot(s []int) error {
+	for i := len(s) - 1; i > 0; i-- {
+		nBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return err
+		}
+		j := int(nBig.Int64())
+		s[i], s[j] = s[j], s[i]
+	}
+	return nil
 }
 
 // GenerateTagihanIuranBulanan membuat tagihan bulanan secara idempoten untuk seluruh anggota aktif

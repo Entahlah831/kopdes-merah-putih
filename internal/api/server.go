@@ -356,7 +356,9 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.Handle("POST /api/v1/toko/checkout", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleCheckout)))
 	mux.Handle("GET /api/v1/toko/pesanan", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleListPesanan)))
 	mux.Handle("POST /api/v1/toko/pesanan/{id}/batal", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleBatalPesanan)))
-	mux.Handle("POST /api/v1/toko/pesanan/{id}/expire", authMw.RequireAuth(http.HandlerFunc(tokoH.HandleExpirePesanan)))
+	mux.Handle("POST /api/v1/toko/pesanan/{id}/expire", authMw.RequireAuth(
+		middleware.RequireRoles("admin", "pengurus", "bendahara", "ketua", "operator")(http.HandlerFunc(tokoH.HandleExpirePesanan)),
+	))
 
 	// Pendaftaran & KYC Calon Anggota (P1-1)
 	mux.Handle("POST /api/v1/pendaftaran", authMw.RequireAuth(http.HandlerFunc(pendaftaranH.HandleAjukanPendaftaran)))

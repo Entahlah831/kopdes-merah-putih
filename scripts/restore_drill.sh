@@ -66,9 +66,12 @@ pg_dump -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -F c -b 
 sha256sum "${DUMP_FILE}" > "${DUMP_FILE}.sha256"
 
 if [ -n "${BACKUP_ENCRYPTION_KEY:-}" ]; then
+  echo "[RESTORE-DRILL] Status Enkripsi Dump: TERENKRIPSI (AES-256-CBC + PBKDF2 via BACKUP_ENCRYPTION_KEY)"
   openssl enc -aes-256-cbc -pbkdf2 -salt -in "${DUMP_FILE}" -out "${DUMP_FILE}.enc" -pass env:BACKUP_ENCRYPTION_KEY
   rm -f "${DUMP_FILE}"
   openssl enc -d -aes-256-cbc -pbkdf2 -in "${DUMP_FILE}.enc" -out "${DUMP_FILE}" -pass env:BACKUP_ENCRYPTION_KEY
+else
+  echo "[RESTORE-DRILL] Status Enkripsi Dump: TIDAK TERENKRIPSI (plaintext SQL/custom dump — hanya untuk drill lokal/CI)"
 fi
 
 psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "postgres" -c "DROP DATABASE IF EXISTS \"${DRILL_DB_NAME}\";" > /dev/null 2>&1 || true
@@ -101,20 +104,29 @@ if [ -n "${KOPERASI_ID}" ]; then
   fi
 fi
 
-# Verifikasi kelengkapan hash chain pada audit_log hasil restore
-BROKEN_LINKS=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DRILL_DB_NAME}" -t -A -c "
-  WITH ordered AS (
-    SELECT koperasi_id, prev_hash, LAG(row_hash) OVER (PARTITION BY koperasi_id ORDER BY created_at, id) AS expected_prev
-    FROM audit_log
-  )
-  SELECT COUNT(*) FROM ordered WHERE expected_prev IS NOT NULL AND prev_hash <> expected_prev;
-")
-echo "-> Pemeriksaan Rantai Hash audit_log (broken links): ${BROKEN_LINKS}"
-if [ "${BROKEN_LINKS}" -ne 0 ]; then
-  psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "postgres" -c "DROP DATABASE IF EXISTS \"${DRILL_DB_NAME}\";" >/dev/null || true
-  echo "ERROR: Rantai hash terputus setelah restore!"
-  exit 1
-fi
+# Verifikasi kelengkapan dan integritas SHA-256 hash chain pada seluruh tabel berantai hash (audit_log, kas_mutasi, pembayaran_verifikasi_log)
+for HASH_TABLE in audit_log kas_mutasi pembayaran_verifikasi_log; do
+  BROKEN_LINKS=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DRILL_DB_NAME}" -t -A -c "
+    WITH ordered AS (
+      SELECT
+        koperasi_id,
+        prev_hash,
+        row_hash,
+        LAG(row_hash) OVER (PARTITION BY koperasi_id ORDER BY created_at, id) AS expected_prev
+      FROM ${HASH_TABLE}
+    )
+    SELECT COUNT(*) FROM ordered
+    WHERE row_hash IS NULL
+       OR row_hash = ''
+       OR (expected_prev IS NOT NULL AND prev_hash <> expected_prev);
+  ")
+  echo "-> Pemeriksaan Rantai Hash ${HASH_TABLE} (broken/empty links): ${BROKEN_LINKS}"
+  if [ "${BROKEN_LINKS}" -ne 0 ]; then
+    psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "postgres" -c "DROP DATABASE IF EXISTS \"${DRILL_DB_NAME}\";" >/dev/null || true
+    echo "ERROR: Rantai hash ${HASH_TABLE} terputus atau kosong setelah restore!"
+    exit 1
+  fi
+done
 
 RLS_ACTIVE_COUNT=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DRILL_DB_NAME}" -t -A -c "
   SELECT COUNT(*) FROM pg_class c

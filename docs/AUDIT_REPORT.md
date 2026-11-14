@@ -1,136 +1,188 @@
-# Laporan Audit Keamanan & Remediasi Lengkap (Audit Report)
+# Laporan Audit Mandiri Keamanan & Remediasi (Audit Report)
 **Sistem Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go)**
+
+> [!NOTE]
+> **Status Tinjauan**: Audit mandiri oleh agen pengembang; belum ada peninjauan pihak ketiga (*third-party security audit / legal review*). Seluruh status **TERVERIFIKASI DI LINGKUNGAN UJI** di bawah ini didasarkan pada kode sumber, migrasi SQL (`000001`–`000018`), serta pengujian otomatis di profil terisolasi Set A (`kopdes_test`) dan Set B (`kopdes_alt_test`), dengan daftar lengkap keterbatasan dan hal tertunda pada Bagian 8.
 
 ---
 
 ## 1. Ringkasan Eksekutif
-Audit independen terhadap basis kode Koperasi Desa Merah Putih mengidentifikasi kerentanan dan ketidaklengkapan arsitektur dari tingkat **KRITIS**, **TINGGI**, **SEDANG**, hingga **KELENGKAPAN FUNGSIONAL (P1)**. Seluruh temuan tersebut telah diremediasi secara tuntas menggunakan metodologi **Test-Driven Development (TDD)** yang ketat: setiap cacat dibuktikan terlebih dahulu dengan pengujian gagal (*failing reproduction test*), diperbaiki hingga lolos (*pass test*), dan dipatenkan dengan migrasi database bernomor urut tanpa mengubah riwayat migrasi awal.
 
-Sistem mengimplementasikan pengamanan multi-tenancy tingkat database (PostgreSQL 16 RLS), enkripsi data pribadi (AES-256-GCM + AAD), serta integritas transaksi finansial (ACID, Maker-Checker, append-only hash chaining). Catatan: Aspek kepatuhan hukum terhadap regulasi eksternal memerlukan audit dan verifikasi hukum formal tersendiri.
+Audit mandiri terhadap basis kode Koperasi Desa Merah Putih mengidentifikasi sejumlah kelemahan arsitektur, integritas data, dan konfigurasi dari tingkat **KRITIS**, **TINGGI**, **SEDANG**, hingga **KELENGKAPAN FUNGSIONAL (P1)** serta pengerasan lanjutan pasca-audit (Tugas 1–10 dan v5). Seluruh temuan yang ditangani diremediasi menggunakan pendekatan **Test-Driven Development (TDD)** — membuktikan kegagalan lewat pengujian sebelum perbaikan — dan dicatat melalui migrasi bernomor urut (`000001` sampai `000018`) tanpa memodifikasi riwayat migrasi awal setelah terbit.
 
----
-
-## 2. Matriks Remediasi Cacat & Status Verifikasi
-
-| Kode | Kategori | Deskripsi Temuan | Status | Bukti Verifikasi / Solusi |
-| :--- | :--- | :--- | :--- | :--- |
-| **K1** | KRITIS | Multi-Tenant Bypass via Pre-Auth Platform Admin | **RESOLVED** | Migrasi `000002`: Hapus bypass pra-otentikasi, wajib validasi JWT murni, anti-BOLA OWASP API1:2023. |
-| **K2** | KRITIS | Race Condition & Arbitrary Payment Claim | **RESOLVED** | Migrasi `000003` & `000004`: Atomic verification function (`fn_setujui_pembayaran_qris`), `FOR UPDATE`, idempotensi status. |
-| **K3** | KRITIS | Pembayaran Tidak Terikat Tagihan / Pesanan | **RESOLVED** | Migrasi `000003`: `pembayaran_alokasi` tabel atomik, validasi kepemilikan tagihan/pesanan sebelum QRIS diterbitkan. |
-| **T1** | TINGGI | Pembayaran Tanpa Batasan Nominal / Arbitrer | **RESOLVED** | Handler `HandleBuatQRIS` menolak pembayaran tanpa ikatan tagihan atau pesanan valid. |
-| **T2** | TINGGI | Kelemahan Rate Limiting & IP Spoofing | **RESOLVED** | `internal/api/middleware/ratelimit.go`: Evaluasi `X-Forwarded-For` hanya dari `TRUSTED_PROXIES`, bounded LRU cache, lockout proteksi brute force login. |
-| **T3** | TINGGI | Secret Kriptografi Lemah & Kebocoran Log | **RESOLVED** | Validasi minimal 32 byte secret, AES-256-GCM ber-AAD (`MasterKeyProvider`), per-tenant blind index HKDF, DSN password redactor. |
-| **T4** | TINGGI | Celah RLS pada Master & Lookup Users | **RESOLVED** | Migrasi `000005`: Aktifkan RLS pada `users`, `audit_log`, `job_log`, `konfigurasi_aturan`; lookup login via `SECURITY DEFINER` terbatas. |
-| **T5** | TINGGI | Sesi JWT Monolitik & Hierarki Peran Rentan | **RESOLVED** | Access token 15 menit, rotating refresh token di DB, deteksi pembajakan token (*token reuse*), hierarki peran deterministik, constant-time dummy bcrypt. |
-| **S1** | SEDANG | IDOR Pembayaran dalam Satu Koperasi | **RESOLVED** | `HandleGetPembayaranStatus`: Anggota biasa dibatasi hanya bisa melihat pembayaran miliknya; pengurus/admin memiliki akses penuh. |
-| **S2** | SEDANG | Parser EMVCo QRIS Rapuh & Rekening Pengurus | **RESOLVED** | Validasi CRC16 masukan, Tag 00="01", tolak tag duplikat, fuzz testing, migrasi `000006` tolak rekening pengurus di produksi jika tanpa izin pilot. |
-| **S3** | SEDANG | Konfigurasi Deployment & Header CORS | **RESOLVED** | Hapus `X-Koperasi-ID` dari CORS headers, tolak `Allow-Credentials` pada wildcard origin, batasan ukuran body 10MB, Slowloris header timeout, DB connection timeouts. |
-| **P1-1**| FUNGSI | Endpoint Pendaftaran, KYC, & Kas Mutasi | **RESOLVED** | Handler pendaftaran dengan enkripsi PII + blind index, unggah KYC validasi magic-bytes, maker-checker verifikasi kelulusan anggota, endpoint `GET /api/v1/kas/mutasi`. |
-| **P1-2**| FUNGSI | Kapasitas Slot Kode Unik & Alert 70% | **RESOLVED** | Migrasi `000008`: Dukungan 3 digit (999 slot) atau 4 digit (9.999 slot), peringatan log di atas 70%, respons ramah HTTP 409 Conflict. |
-| **P1-3**| FUNGSI | Append-Only Hash Chain & Anti TRUNCATE | **RESOLVED** | Migrasi `000007`: Kolom `prev_hash`, `row_hash`, trigger `BEFORE TRUNCATE` pada `kas_mutasi`, `audit_log`, `pembayaran_verifikasi_log`, fungsi verifikasi rantai. |
-| **P1-4**| FUNGSI | Operasional, Idempotency & Prometheus | **RESOLVED** | Header `Idempotency-Key` pada pembayaran, endpoint `/metrics` Prometheus, interface `Notifier` + Outbox Worker, skrip backup/restore PITR. |
-| **P1-5**| FUNGSI | Rekonsiliasi Skema Database | **RESOLVED** | Dokumen `docs/SCOPE_RECONCILIATION.md` mendokumentasikan 65 tabel dasar + 8 partisi bulanan tanpa penghapusan sembarangan. |
+Sistem mengandalkan pengamanan multi-tenancy pada tingkat database (PostgreSQL 16 `FORCE ROW LEVEL SECURITY` dengan role non-superuser `kopdes_app`), enkripsi data pribadi (AES-256-GCM + AAD per kolom dan record ID, blind index HKDF-SHA256 per tenant), serta pengaman transaksi finansial (*Maker-Checker*, *row locking*, idempotency berbasis database, dan rantai hash *append-only*). Catatan: kelayakan hukum, perpajakan/akuntansi, serta sertifikasi keamanan eksternal **PERLU VERIFIKASI HUKUM** dan penetapan resmi pihak ketiga/pemilik sistem.
 
 ---
 
-## 3. KEPUTUSAN RESMI MANAJEMEN & KLIEN (Final Decisions Adopted)
+## 2. Matriks Remediasi Cacat & Penyelarasan Migrasi (`000001`–`000018`)
 
-Seluruh 5 parameter kebijakan telah ditetapkan secara resmi oleh Ketua Koperasi dan Klien:
+Tabel di bawah diselaraskan dengan riwayat commit Git dan berkas migrasi aktual di `db/migrations/`.
 
-### 1. Kebijakan Rekening & QRIS Perorangan Pengurus (DISETUJUI)
-- **Keputusan**: Mengizinkan penggunaan rekening dan QRIS statis atas nama pengurus koperasi. Admin koperasi mengunggah gambar/payload QRIS statis pengurus ke sistem melalui endpoint `/api/v1/koperasi/rekening-qris`.
-- **Konfigurasi Aktif**: `ALLOW_PERSONAL_PAYMENT_PILOT=true` pada `.env` dan konfigurasi backend.
+### A. Temuan Keamanan Awal (`K1`–`K3`, `T1`–`T5`, `S1`–`S3`, `P1-1`–`P1-5`)
 
-### 2. Status Fitur QRIS Dinamis (DINONAKTIFKAN — QRIS STATIS + KODE UNIK AKTIF)
-- **Keputusan**: Fitur QRIS dinamis auto-lock dinonaktifkan sementara. Transaksi operasional koperasi sepenuhnya mengandalkan alokasi QRIS Statis dengan pencocokan 3-digit kode unik kriptografis (`nominal_total = nominal_dasar + kode_unik`).
-- **Konfigurasi Aktif**: `QRIS_DYNAMIC_ENABLED=false` pada `.env`.
+| Kode | Kategori | Deskripsi Temuan | Status | Migrasi & Commit Sebenarnya | Solusi & Bukti Verifikasi Teramati |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **K1** | KRITIS | API terhubung sebagai superuser DB di Docker Compose, dan celah bypass pra-otentikasi platform admin | **TERVERIFIKASI DI UJI** | Commit `8279018` (`db/docker-init/01_roles.sql`, `internal/db/role_guard.go`, `docker-compose.yml`); difinalisasi bersama Migrasi `000004` (`3282f84`) | Aplikasi wajib memakai role `kopdes_app` (`NOSUPERUSER NOBYPASSRLS`) dan gagal start jika mendeteksi superuser (`db.AssertNonSuperuser`). Menghapus bypass pra-otentikasi; `koperasi_id` hanya berasal dari JWT terverifikasi. |
+| **K2** | KRITIS | Partisi tabel hanya sampai 31 Des 2026 tanpa partisi lanjutan / `DEFAULT`, serta risiko hilangnya insert setelah 2026 | **TERVERIFIKASI DI UJI** | Migrasi `000002` (`000002_add_default_and_future_partitions.up.sql`, commit `84da6cd`); dilengkapi Migrasi `000011` (`a9d354a`) | Menambah partisi bulanan 2027 dan partisi `DEFAULT` pada `audit_log`, `kas_mutasi`, `notifikasi`, dan `stok_mutasi`, lalu menambahkan fungsi pembuat partisi idempoten 3 bulan ke depan + metrik pemantauan. |
+| **K3** | KRITIS | *Race condition* verifikasi pembayaran QRIS, klaim ganda bukti transfer, & integrasi mutasi kas/outbox | **TERVERIFIKASI DI UJI** | Migrasi `000003` (`000003_fix_pembayaran_verification.up.sql`, commit `095c492`) | Fungsi SQL atomik `fn_setujui_pembayaran_qris` dengan `FOR UPDATE`, penjagaan idempotensi status, mutasi kas, serta penulisan antrean `notifikasi` outbox dalam satu transaksi. |
+| **T1** | TINGGI | Pembayaran dapat diajukan tanpa ikatan tagihan iuran atau pesanan valid | **TERVERIFIKASI DI UJI** | Tabel `pembayaran_alokasi` (Migrasi `000001`, dipadukan di `000003`), handler commit `c0b7448` | `HandleBuatQRIS` mewajibkan tagihan iuran / pesanan milik anggota bersangkutan yang sah di database sebelum mengeluarkan kode unik. |
+| **T2** | TINGGI | IP Spoofing via `X-Forwarded-For`, kebocoran memori rate limiter, dan brute-force login | **TERVERIFIKASI DI UJI** | Commit `a73970a`; diperketat `/16` CIDR guard pada Tugas 0 v5 (`internal/config/config.go`) | Hanya membaca `X-Forwarded-For` dari `TRUSTED_PROXIES` (di produksi CIDR lebih lebar dari `/16` ditolak saat startup); bounded LRU limiter & lockout brute-force login per IP dan akun. |
+| **T3** | TINGGI | Secret kriptografi berisiko lemah, ketiadaan AAD AES, blind index lintas-tenant, & kebocoran DSN di log | **TERVERIFIKASI DI UJI** | Commit `2cdafbb` (`internal/security/`) | Panjang secret minimal 32 byte, AES-256-GCM dengan AAD `table:column:record_id`, blind index HKDF-SHA256 per tenant, serta `RedactDSN`. |
+| **T4** | TINGGI | Celah RLS pada `users`, `audit_log`, `job_log`, `konfigurasi_aturan`, & lookup pra-login | **TERVERIFIKASI DI UJI** | Migrasi `000004` (`000004_enforce_rls_all_tables_and_login_helper.up.sql`, commit `3282f84`) | Mengaktifkan `FORCE ROW LEVEL SECURITY` di seluruh tabel terproteksi dan mengunci lookup pra-login melalui fungsi `SECURITY DEFINER` `fn_lookup_user_login`. |
+| **T5** | TINGGI | Sesi JWT monolitik jangka panjang, pembagian izin `pengawas`/`operator`, & enumerasi akun | **TERVERIFIKASI DI UJI** | Migrasi `000005` (`000005_refresh_tokens_and_permissions.up.sql`, commit `0180c5b`) | Access token ber-`jti` 15 menit + tabel `refresh_tokens` berotasi dengan deteksi *token reuse*, read-only role `pengawas`/`operator`, serta constant-time dummy bcrypt. |
+| **S1** | SEDANG | IDOR akses status pembayaran antaranggota dalam satu koperasi | **TERVERIFIKASI DI UJI** | Commit `b0d3ac0` (`internal/api/handlers/qris_handler.go`) | Anggota biasa hanya boleh melihat `pembayaran` dengan `pembayar_user_id` atau `anggota_id` miliknya; permintaan terhadap milik anggota lain ditolak (`403`/`404`). |
+| **S2** | SEDANG | Parser EMVCo QRIS rapuh terhadap tag duplikat/checksum dan rekening settlement perorangan | **TERVERIFIKASI DI UJI** | Migrasi `000006` (`000006_rekening_qris_jenis_pemilik.up.sql`, commit `adda568`) | Validasi CRC16 (Tag 63), Tag `00='01'`, tolak tag duplikat, hapus Tag 55–57 saat Tag 54 ada, fuzz test, serta tolak rekening perorangan tanpa flag pilot eksplisit. |
+| **S3** | SEDANG | Hardening HTTP Slowloris, batasan body, sanitasi CORS `X-Koperasi-ID`, & timeout query SQL | **TERVERIFIKASI DI UJI** | Commit `b829484` (`internal/api/server.go`, `cors.go`, `body_limit.go`) | `ReadHeaderTimeout = 5s`, `BodyLimit = 10MB`, hapus `X-Koperasi-ID` dari CORS, tolak wildcard `*` di produksi, `statement_timeout`, dan `lock_timeout`. *(Header `Access-Control-Expose-Headers` dan `X-Request-ID` disempurnakan di Tugas 0 v5.)* |
+| **P1-1** | FUNGSI | Alur pendaftaran KYC anggota, unggah dokumen aman, dan mutasi kas | **TERVERIFIKASI DI UJI** | Commit `158de31` (`pendaftaran_handler.go`, `kas_handler.go`) | Pendaftaran berenkripsi PII + blind index, validasi magic-bytes berkas KYC, persetujuan Maker-Checker, dan `GET /api/v1/kas/mutasi`. |
+| **P1-2** | FUNGSI | Kapasitas kode unik 3/4 digit, peringatan kapasitas 70%, & penolakan aman saat penuh | **TERVERIFIKASI DI UJI** | Migrasi `000008` (`000008_kode_unik_configurable_digits.up.sql`, commit `158de31`) | Dukungan 3 digit (`999` slot) / 4 digit (`9.999` slot), peringatan log pada `>= 70%`, dan respons ramah `409 Conflict` saat slot habis (diuji dengan 1.500 request konkuren pada Tugas 0 v5). |
+| **P1-3** | FUNGSI | Rantai hash *append-only* (`audit_log`, `kas_mutasi`, `pembayaran_verifikasi_log`) & anti-`TRUNCATE` | **TERVERIFIKASI DI UJI** | Migrasi `000007` (`158de31`) & Migrasi `000010` (`d10d73b`) | `000007` menambah kolom `prev_hash`/`row_hash` dan trigger anti-`TRUNCATE`; `000010` memindahkan pengisian hash chain ke trigger `BEFORE INSERT` dengan advisory lock agar jalur SQL maupun API terisi konsisten. |
+| **P1-4** | FUNGSI | Idempotency DB, proteksi `/metrics`, MFA TOTP, outbox worker, & backup/restore logis | **TERVERIFIKASI TERBATAS** | Migrasi `000013`–`000017` (`54a15ba`..`3612a99`, `ab8c6c4`) | Idempotency tabel DB + HTTP `422` (`000013`), mutasi bank & dual approval (`000014`, `000017`), `/metrics` wajib token >=32B & MFA TOTP wajib (`000016`), backup logis `pg_dump` + `restore_drill.sh`. **Keterbatasan: PITR / arsip WAL belum diimplementasikan (lihat Bagian 3 & 8).** |
+| **P1-5** | FUNGSI | Rekonsiliasi ruang lingkup skema database & tabel SIMKOPDES | **TERVERIFIKASI DI UJI** | Migrasi `000009` (`1d62927`) lalu dipulihkan Migrasi `000012` (`cd70b5a`) | `000009` sempat mendrop `sinkronisasi_simkopdes`; `000012` memulihkannya beserta adapter stub `internal/simkopdes/adapter.go`. Skema aktual berisi **69 tabel induk/dasar** (`65` reguler + `4` parent terpartisi) dan **60 partisi** (**129 objek tabel fisik**). Lihat [SCOPE_RECONCILIATION.md](SCOPE_RECONCILIATION.md). |
 
-### 3. Persetujuan Ganda (Dual Control / Maker-Checker Transaksi Finansial) (DISETUJUI)
-- **Keputusan**: Menerapkan prinsip *Dual Control* di mana pemohon dilarang menyetujui transaksi sendiri (*Maker-Checker*). Transaksi mutasi keuangan dan pendaftaran anggota wajib diverifikasi oleh pihak berwenang (Admin/Pengurus).
+### B. Ringkasan Migrasi Lanjutan (`000009`–`000018`)
 
-### 4. Kebijakan Retensi Data Pribadi UU 27/2022 PDP (DITETAPKAN 30 HARI)
-- **Keputusan**: Berkas foto KTP/KYC dan data pendaftaran yang berstatus `'ditolak'` disimpan paling lama **30 hari**. Setelah 30 hari, data pribadi wajib dihapus permanen (*crypto-shredding*) untuk melindungi hak privasi warga.
-- **Implementasi Database**: Fungsi `fn_purge_rejected_pendaftaran_pdp(koperasi_id, 30)` dan endpoint `POST /api/v1/pendaftaran/purge-ditolak`.
-
-### 5. Pelaporan SIMKOPDES Kemenkop UKM (DIDE-SCOPE — FOKUS LOKAL SATU CABANG)
-- **Keputusan**: Koperasi desa beroperasi secara mandiri dan lokal pada satu kantor cabang yang telah disepakati (ACC) dengan klien. Integrasi jaringan dan sinkronisasi nasional SIMKOPDES dinonaktifkan sepenuhnya.
-- **Implementasi Database**: Migrasi `000009_local_scope_and_pdp_retention.up.sql` mendrop tabel `sinkronisasi_simkopdes`, merampingkan skema database menjadi 64 tabel dasar terproteksi RLS lokal.
+- **Migrasi `000009` (`1d62927`)**: Menambah kolom/konfigurasi retensi PDP (`fn_purge_rejected_pendaftaran_pdp`) serta sempat mendrop `sinkronisasi_simkopdes` (dikoreksi pada `000012`).
+- **Migrasi `000010` (`d10d73b`)**: Trigger `BEFORE INSERT` `pgcrypto` pengisi `prev_hash` / `row_hash` dengan advisory lock (diperbaiki lagi pengurutan kuncinya melalui `internal/db/advisory_lock.go` di commit `a25d8f7`).
+- **Migrasi `000011` (`a9d354a`)**: Fungsi SQL idempoten pembuat partisi 3 bulan ke depan (`partition_manager.go`).
+- **Migrasi `000012` (`cd70b5a`)**: Mengunci `fn_purge_rejected_pendaftaran_pdp` (validasi `app.current_koperasi_id`, `REVOKE PUBLIC`, `GRANT kopdes_app`, audit log tanpa PII) + memulihkan tabel `sinkronisasi_simkopdes`.
+- **Migrasi `000013` (`54a15ba`)**: Tabel `idempotency_keys` dan respons `422 IDEMPOTENCY_CONFLICT` untuk kunci sama dengan isi body berbeda.
+- **Migrasi `000014` (`b1b5361`)**: Impor mutasi bank CSV, pencocokan nominal otomatis, dual approval di atas ambang batas, deteksi anomali, dan laporan rekonsiliasi harian.
+- **Migrasi `000015` (`5d64241`)**: Batas nominal per transaksi & harian zona waktu `Asia/Jakarta` (`1fa4f1c`) + peringatan pilot rekening perorangan.
+- **Migrasi `000016` (`1c5114b`)**: MFA TOTP wajib bagi `admin`/`bendahara`/`ketua`, *enrollment-only setup token*, anti-replay window, recovery codes ber-hash, dan proteksi token `/metrics`.
+- **Migrasi `000017` (`3612a99`)**: Pemisahan tugas pengimpor vs pembuat vs penyetuju mutasi bank (`segregation of duties`), hash baris mutasi unik 1-ke-1, serta auto-approve nonaktif secara default.
+- **Migrasi `000018` (`52fc1e7`)**: Pemberian izin `DELETE` terkontrol untuk operasi bisnis sah (mis. penghapusan item keranjang/katalog) pada role `kopdes_app`.
 
 ---
 
-## 4. Kesimpulan & Status Kesiapan Terkini (2026-11-13)
-Basis kode, skema PostgreSQL 16 (termasuk pemulihan adapter stub `internal/simkopdes` sebagai batas integrasi siap-ekstensi), pengujian otomatis Go `-race`, konfigurasi terpusat (`envcheck`), serta paket dokumentasi teknis berada dalam kondisi terverifikasi pada lingkungan pengujian Set A dan Set B (Windows + Linux GitHub Actions CI). Keseluruhan klaim kepatuhan mutlak tetap tunduk pada audit hukum (`PERLU VERIFIKASI HUKUM`), penetapan pembukuan akuntansi (`KEPUTUSAN AKUNTAN`), dan pengisian kredensial produksi oleh pemilik sistem ([TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md)).
+## 3. KEPUTUSAN YANG DIUSULKAN / DIPAKAI SEMENTARA
 
----
+> [!IMPORTANT]
+> Bagian ini memuat parameter kebijakan operasional yang **diusulkan / dipakai sementara** dalam kode dan konfigurasi pengujian. Agen pengembang **tidak berwenang menyatakan persetujuan resmi** atas nama Ketua Koperasi, Pengurus, ataupun Penasihat Hukum. Pemilik sistem wajib mengisi kolom **Bukti persetujuan** dan memverifikasi aspek hukum/akuntansi sebelum go-live produksi.
 
-## 5. Hasil Audit Konfigurasi Terpusat (`envcheck`) & Uji Konflik Port
+| No | Topik Keputusan | Nilai / Mekanisme Sementara di Kode | Konfigurasi & Default Produksi | Status Verifikasi Eksternal | Bukti persetujuan (diisi pemilik: notulen/email/chat) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 1 | Penggunaan Rekening & QRIS Perorangan Pengurus | Diperbolehkan hanya bila flag pilot aktif; dibatasi limit per transaksi, limit harian `Asia/Jakarta`, log audit khusus, dan banner peringatan di respons admin | `ALLOW_PERSONAL_PAYMENT_PILOT` default **`false`** di `.env.example` & `AppConfig`. Nilai `true` **hanya** aktif di profil uji `.env.test` / `.env.test.alt`. | Perlu keputusan pengurus sebelum mengaktifkan `true` di produksi | |
+| 2 | Mode QRIS Statis + Kode Unik vs QRIS Dinamis | QRIS statis + alokasi kode unik kriptografis 3 digit (atau 4 digit) aktif; auto-lock QRIS dinamis dinonaktifkan sementara | `QRIS_DYNAMIC_ENABLED=false` (default) | Menunggu kesiapan kontrak QRIS dinamis PJP resmi | |
+| 3 | *Dual Control* (*Maker-Checker*) Transaksi & Mutasi CSV | Pemohon/pembuat/pengimpor dilarang menyetujui transaksi sendiri; dual approval di atas ambang nominal; auto-approve impor CSV nonaktif secara default | Ditegakkan di DB (`fn_setujui_pembayaran_qris` + Migrasi `000014`/`000017`) | Disarankan tetap aktif saat go-live | |
+| 4 | Masa Retensi Penghapusan Data Pendaftar Ditolak | Fungsi `fn_purge_rejected_pendaftaran_pdp` dan `internal/db/pdp_worker.go` melakukan **penghapusan baris/kolom database serta penghapusan berkas foto KYC fisik di disk** (**BUKAN** *crypto-shredding*). | `PDP_REJECTED_RETENTION_DAYS=30` (dapat diubah via konfigurasi) | **PERLU VERIFIKASI HUKUM** (konsultan hukum/DPO harus menilai kecukupan masa retensi terhadap UU PDP & arsip koperasi) | |
+| 5 | Pelaporan SIMKOPDES & Operasi Lokal Cabang | Skema `sinkronisasi_simkopdes` dipulihkan oleh Migrasi `000012` dengan adapter stub `internal/simkopdes/adapter.go`; operasi default tetap lokal satu cabang | Adapter stub terisolasi; siap disambungkan ke spesifikasi API eksternal Kemenkop UKM bila dibutuhkan | **MENUNGGU KEPUTUSAN PEMILIK & SPEK EKSTERNAL** | |
+| 6 | Klasifikasi Akuntansi Jenis Iuran | Label kode netral tanpa menyematkan kepastian hukum akuntansi koperasi secara sepihak; setiap respon `GET/POST /api/v1/iuran/jenis` menyertakan penanda | `"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN"` (`iuran_handler.go`) | **KEPUTUSAN AKUNTAN** (pemetaan ekuitas vs liabilitas wajib ditetapkan akuntan koperasi) | |
 
-Seluruh konfigurasi dievaluasi tanpa memodifikasi `.env` asli pemilik, melainkan menggunakan dua berkas uji terisolasi (`.env.test` Set A dan `.env.test.alt` Set B dengan 79 variabel):
+### Bukti Ketiadaan Berkas `.env` Produksi pada Riwayat Git
+
+Seluruh pengujian dan CI memakai `.env.example`, `.env.test`, serta `.env.test.alt`. Berkas asli pemilik (`.env`, `.env.local`, `.env.production`, `.env.live`, `secrets/`) tidak pernah disentuh ataupun masuk ke riwayat Git, terbukti dari hasil perintah langsung berikut:
 
 ```text
-=== .env.test (Set A --strict) ===
-envcheck STRICT PASS: 79 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100 (EXIT: 0)
-
-=== .env.test.alt (Set B --strict --ports) ===
-envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
-envcheck STRICT PASS: 79 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100 (EXIT: 0)
-
-=== .env.example (Penolakan Nilai Kosong Wajib) ===
-NILAI KOSONG: DB_PASSWORD wajib diisi
-NILAI KOSONG: JWT_SECRET wajib diisi
-NILAI KOSONG: AES_MASTER_KEY wajib diisi
-NILAI KOSONG: BLIND_INDEX_SECRET wajib diisi
-NILAI KOSONG: QRIS_SECRET wajib diisi
-NILAI KOSONG: METRICS_TOKEN wajib diisi
-DSN DB TIDAK VALID: DB_PASSWORD wajib diisi
-VALIDASI KEAMANAN GAGAL: secret JWT_SECRET tidak valid: panjang minimal 32 byte (didapat 0 byte)
-(EXIT: 1 — Ditolak sesuai ekspektasi)
-
-=== Perbandingan Skema (.env.test vs .env.test.alt) ===
-envcheck COMPARE PASS: skema kunci 100% identik (79 kunci). (Seluruh rahasia disamarkan ***REDACTED***)
-
-=== Uji Deteksi Konflik Port Live (--ports saat Set A PostgreSQL aktif pada :5433) ===
-PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433 (listen tcp 127.0.0.1:5433: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.) (EXIT: 1 — Bentrok terdeteksi akurat)
+$ git log --name-status -- ".env*"
+commit 5b24dab685da4b10492091d44965b54df38102fc
+M	.env.test.alt
+commit de75732a9527770484091d44965b54df38102fc (ringkas: .env.example, .env.test, .env.test.alt)
+commit 568dbe0e7fe1aca424fa7181926df153a740d9d4
+M	.env.example
+commit 0c5254564e8bd6841ae530542c3de6a83b0b00eb
+M	.env.example
+M	.env.test
+M	.env.test.alt
+commit d198098bc683288d19eb4e2b136ab94b6bea9bd3
+M	.env.example
+A	.env.test
+A	.env.test.alt
+commit 52fc1e73b7a5021dd55ee02e74d663bcb7748371 -> M .env.example
+commit 7b1dd050f3702f765215ceffa03e64248fc8e862 -> M .env.example
+commit 1d62927ccc209304818a175979082b28ecf44fab -> M .env.example
+commit 24ffe9a24c5114bb41282852b7da6cfc3ffa0159 -> M .env.example
+commit b2ced33c064cca6a164b0bf284a8d6af34239874 -> A .env.example
 ```
+
+*(Ringkasan jalur seluruh 10 commit `.env*`: hanya `.env.example`, `.env.test`, dan `.env.test.alt` yang ada dalam riwayat Git.)*
 
 ---
 
-## 6. Pemindaian Keamanan Statis, Container, Secret & Toolchain
+## 4. Perbaikan Audit v5 & Pembuktian ketidaksesuaian (DISC-01 s.d. DISC-04)
+
+Pada penyelarasan audit v5 (`Tugas 0`), perbaikan kode berikut telah diuji dengan pola gagal-lalu-lolos:
+
+1. **Penolakan CIDR `TRUSTED_PROXIES` Lebar (`> /16`) di Produksi (`0.7`)**:
+   `AppConfig.ValidateProduction()` di `internal/config/config.go` kini mem-parsing setiap entri `TRUSTED_PROXIES` dan menolak prefix `< 16` (mis. `172.17.0.0/12`, `10.0.0.0/8`, `0.0.0.0/0`). Verifikasi lokal:
+   ```text
+   $ go test -v ./internal/config -run TestValidateProduction_RejectsWideTrustedProxiesCIDR
+   === RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDR
+   --- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDR (0.00s)
+   PASS
+   ok  	github.com/kopdes/merah-putih/internal/config	1.160s
+   ```
+2. **Penghapusan Pengecualian Global `gosec` & Penambahan `trivy image` (`0.5`)**:
+   Pengecualian global `-exclude=G104,G304,G101,G505,G115` telah dihapus dari `.github/workflows/ci.yml`. Anotasi `#nosec G505` (kebutuhan SHA-1 pada RFC 6238 TOTP) dan pemeriksaan batas non-negatif + `#nosec G115` ditambahkan secara spesifik pada `internal/security/totp.go`. Pemindaian penuh tanpa `-exclude` di lokal menghasilkan:
+   ```text
+   $ gosec.exe ./...
+   Summary:
+     Gosec  : dev
+     Files  : 44
+     Lines  : 13045
+     Nosec  : 16
+     Issues : 0
+   ```
+   Selain itu, job CI kini membangun image Docker dan menjalankan `trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1` (menunggu hasil eksekusi Linux CI saat push).
+3. **Uji Kelelahan Kapasitas Slot Kode Unik QRIS (1.500 Request Konkuren pada 1 Nominal / 999 Slot) (`0.6`)**:
+   Fungsi `BuatPembayaranQRISStatis` di `service.go` diperkuat agar menghindari antrean terkunci berantai saat bentrok kode unik (`freeCodes` diacak dengan `crypto/rand` setelah bentrok pertama dan di-prune setiap 4 bentrok), dan diuji melalui `TestQRISSlotExhaustion_1500ConcurrentSameNominal` (`internal/api/qris_slot_exhaustion_test.go`) serta submode `cmd/loadtest --mode qris-slot-exhaustion`:
+   ```text
+   === RUN   TestQRISSlotExhaustion_1500ConcurrentSameNominal
+       qris_slot_exhaustion_test.go:145: QRIS Slot Exhaustion (1500 concurrent requests, 100 workers, 5.07s): 201_Created=999, 409_Conflict=501, 5xx=0, other=0
+   --- PASS: TestQRISSlotExhaustion_1500ConcurrentSameNominal (7.40s)
+   ```
+   Hasil membuktikan tepat `999` transaksi memperoleh kode unik (`201 Created`) tanpa duplikasi aktif pada `(rekening_qris_id, nominal_total)` dan seluruh `501` sisanya mendapat respons ramah `409 Conflict` (`0` HTTP `5xx`, `0` status tak terduga).
+4. **Koreksi Ketidaksesuaian Dokumentasi vs Implementasi (`DISC-01`–`DISC-04`)**:
+   - `internal/api/middleware/auth.go`: mengembalikan kode `MFA_ENROLLMENT_REQUIRED` ketika token `mfa_setup` dipakai mengakses rute terlindungi.
+   - `internal/api/server.go`: membatasi `POST /api/v1/toko/pesanan/{id}/expire` hanya bagi `admin`, `pengurus`, `bendahara`, `ketua`, `operator` (bukan anggota biasa).
+   - `internal/api/middleware/security_headers.go` & `cors.go`: propagasi/pembuatan `X-Request-ID`, penambahan `Access-Control-Expose-Headers` (`X-Request-ID`, `Retry-After`), dan status `403` untuk origin tidak diizinkan pada *preflight* `OPTIONS`.
+   - `internal/api/handlers/iuran_handler.go`: respons `POST /api/v1/iuran/jenis` kini konsisten menyertakan `"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN"` seperti `GET /api/v1/iuran/jenis`.
+   - Keempat test `TestV5_Discrepancy01..04` lulus dalam pengujian lokal (`ok github.com/kopdes/merah-putih/internal/api 14.754s`).
+
+---
+
+## 5. Status Cadangan Data (*Backup*), Latihan Pemulihan (*Restore Drill*), & PITR (`0.4`)
+
+- **Status PITR**: **PITR belum diimplementasikan** (*Point-In-Time Recovery* berbasis arsip WAL berkelanjutan / PgBackRest / WAL-G tidak tersedia pada skrip atau Compose saat ini).
+- **Yang Tersedia & Teruji Saat Ini**: Skrip cadangan logis `scripts/backup.sh` (`pg_dump` dengan dukungan enkripsi opsional OpenSSL AES-256-CBC via `BACKUP_ENCRYPTION_KEY`; di profil uji `.env.test` & `.env.test.alt` kunci ini terisi, sedangkan di `.env.example` dibiarkan kosong sehingga pengisiannya wajib bagi pemilik) serta latihan pemulihan `scripts/restore_drill.sh`.
+- **Pembaruan Latihan Restore (Tugas 0.4)**: `scripts/restore_drill.sh` telah diperbarui agar mencetak status enkripsi dump secara eksplisit **dan** memverifikasi `VerifyHashChain` pada **ketiga** tabel append-only: `audit_log`, `kas_mutasi`, serta `pembayaran_verifikasi_log` (sebelumnya hanya `audit_log`). Hasil eksekusi terakhir `restore_drill.sh` sebelumnya tercatat pada CI Run `43385163339` (`WAL LSN Checkpoint: 0/2342000`, `129` objek tabel pulih dalam `2s`, `audit_log broken links: 0`, `61` RLS aktif); eksekusi ulang pasca-pembaruan skrip 3-tabel dijadwalkan pada run Linux CI berikutnya.
+
+---
+
+## 6. Audit Konfigurasi (`envcheck`), Pemindaian Keamanan, & Toolchain
+
+### Hasil `envcheck` (Terakhir Terverifikasi pada Commit `51407b6`)
+- `.env.test` (Set A `--strict`): `79` variabel terverifikasi, `DB_NAME=kopdes_test`, `API_PORT=8080` (`EXIT: 0`).
+- `.env.test.alt` (Set B `--strict --ports`): `79` variabel terverifikasi, tanpa bentrok port (`EXIT: 0`).
+- `.env.example` (`--strict`): ditolak dengan `EXIT: 1` karena rahasia wajib kosong (`DB_PASSWORD`, `JWT_SECRET`, `AES_MASTER_KEY`, `BLIND_INDEX_SECRET`, `QRIS_SECRET`, `METRICS_TOKEN`).
+- Uji bentrok port live (`--ports` saat PostgreSQL Set A aktif di `5433`): mendeteksi `PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433` (`EXIT: 1`).
+
+### Pemindaian Keamanan & Toolchain
 
 | Pemindai | Lingkungan Eksekusi | Hasil Teramati | Catatan |
 |---|---|---|---|
-| **Gitleaks** | Lokal Windows + Linux CI | `0` kebocoran (`68` commit dipindai, `1.35 MB`) | EXIT `0` |
-| **staticcheck `./...`** | Lokal Windows + Linux CI | `0` temuan | EXIT `0` |
-| **gosec `./...`** | Lokal Windows + Linux CI | `Issues : 0` | Pengecualian eksplisit `G104,G304,G101,G505,G115` (`SHA-1` TOTP RFC 6238 di folder terkunci `internal/security/`) |
-| **Hadolint & Trivy Config** | Linux CI (`ubuntu-latest`) | Lolos (`--severity HIGH,CRITICAL --exit-code 1 .`) | Run ID `43385163339` |
-| **`govulncheck ./...` (Linux CI)** | Linux CI (`go 1.27.4`) | `No vulnerabilities found.` | Lolos 100% di target build CI/Docker |
-| **`govulncheck ./...` (Host Windows Lokal)** | Lokal Windows (`go1.27.1`) | 11 temuan stdlib (a.l. `GO-2026-6859`, fixed in `go1.27.4`) | Hanya memengaruhi toolchain dev Windows lokal `1.27.1`; image CI/Docker memakai `1.27.4` |
+| **Gitleaks** | Lokal Windows & Linux CI (`43385163339`) | `0` kebocoran (`EXIT: 0`) | Akan dijalankan ulang sesudah seluruh rangkaian commit v5 |
+| **`staticcheck ./...`** | Lokal Windows & Linux CI (`43385163339`) | `0` isu (`EXIT: 0`) | Diuji kembali di tahap verifikasi akhir |
+| **`gosec ./...` (Tanpa `-exclude` global)** | Lokal Windows (Tugas 0 v5) | `Files: 44, Lines: 13045, Nosec: 16, Issues: 0` | Pengecualian global CI telah dihapus; siap diverifikasi Linux CI |
+| **`govulncheck ./...` (Linux CI / Dockerfile `go1.27.4`)** | Linux CI (`43385163339`) | `No vulnerabilities found.` | Toolchain host Windows pengembang masih `go1.27.1`; image Docker & CI dibangun dengan `go1.27.4` |
+| **Hadolint + Trivy Config + `trivy image`** | Linux CI | Config + Hadolint lolos di `43385163339`; `trivy image` baru ditambahkan | Hasil `trivy image` aktual menunggu run CI pasca-push Tugas 0–8 |
 
 ---
 
-## 7. Perbandingan Hasil Pengujian Set A vs Set B, Load Test & Restore Drill
+## 7. Ringkasan Uji Beban & Perbandingan Lingkungan Uji
 
-Pengujian akhir pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43385163339`, commit `5b24dab`) menyelesaikan 3 job paralel hingga 100% hijau (`completed/success`), termasuk validasi sensitivitas timezone `UTC` (Linux CI) vs `Asia/Jakarta` (Windows lokal) untuk batas harian pilot rekening pribadi:
-
-| Aspek Uji | Set A (`kopdes_test`, CI `test-and-security-setA`) | Set B (`kopdes_alt_test`, CI `docker-setB-e2e-and-load`) |
-|---|---|---|
-| **Job ID & Status** | `131751801297` (`completed/success`) | `131752034881` (`completed/success`) |
-| **Port API / DB / Metrics** | `8080 / 5433 / 9100` | `18080 / 15433 / 19100` |
-| **Timeout & TTL** | `JWT 15m (HS256)`, `stmt 15s`, `rate 30 rps` | `JWT 3m (HS512)`, `stmt 12s`, `rate 45 rps`, key rotation aktif |
-| **`go test -count=1 -race -p 1 ./...`** | Seluruh paket `ok` (`internal/api 472.845s`) | Seluruh paket `ok` (`internal/api 469.022s`) |
-| **Uji Beban 2.000 Anggota (`cmd/loadtest`)** | *(Dijalankan di Set B Docker Compose)* | `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `p50: 3.71ms`, `p95: 20.08ms`, `p99: 31.67ms` |
-| **Backup + `scripts/restore_drill.sh`** | *(Dijalankan di Set B Docker Compose)* | `WAL LSN 0/2342000`, `129` tabel pulih (`2s`), Marker Drill `1`, `0 broken links` (`VerifyHashChain` `audit_log`), `61` tabel RLS aktif |
-
-### Verifikasi Dokumentasi & Spesifikasi API Otomatis (`TestDoc_*`)
-Eksekusi lokal pasca-pembaruan dokumentasi (`go test -count=1 -v -race -run TestDoc ./internal/api`):
-- `TestDoc_OpenAPI_RouteParity` (`PASS 0.03s`): paritas 100% seluruh rute `internal/api/server.go` terhadap `docs/openapi.yaml`, `docs/kopdes.postman_collection.json`, dan `docs/kopdesClient.ts` tanpa hardcode alamat/port tetap.
-- `TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims` (`PASS 0.23s`): validasi seluruh tautan relatif & `#heading-anchor` di `docs/*.md`, nihil klaim mutlak yang dilarang, dan mencantumkan penanda `PERLU VERIFIKASI HUKUM` & `KEPUTUSAN AKUNTAN`.
-- `TestDoc_EndToEnd_DocumentedWorkflows` (`PASS 41.29s`): mengeksekusi alur langsung `/healthz`, `/readyz`, `/metrics`, MFA wajib (`MFA_MANDATORY_SETUP_REQUIRED` -> `data.setup_token` -> `/enable` -> `recovery_codes` -> `/mfa/verify`), pendaftaran + upload PNG KYC + masking NIK `****`, `GET /iuran/jenis` (`KEPUTUSAN AKUNTAN`), QRIS `Idempotency-Key` (`201`, replay, `422 IDEMPOTENCY_CONFLICT`), klaim RRN, dan verifikasi maker-checker.
+Pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43385163339`, commit `5b24dab`):
+- **Set A (`test-and-security-setA`)** & **Set B (`docker-setB-e2e-and-load`)**: seluruh paket `go test -count=1 -race -p 1 ./...` lulus (`internal/api` ~472.8s di Set A dan ~469.0s di Set B).
+- **Load Test 2.000 Anggota (`cmd/loadtest`)** pada Docker Set B: `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `p50: 3.71ms`, `p95: 20.08ms`, `p99: 31.67ms` (pengujian kelelahan 1.500 slot QRIS konkuren baru ditambahkan dan lulus lokal pada Tugas 0 v5: `999` `201 Created`, `501` `409 Conflict`, `0` error dalam `5.07s`).
 
 ---
 
-## 8. Hal Tertunda & Keputusan Manusia yang Masih Diperlukan
+## 8. Keterbatasan yang Diketahui & Tindak Lanjut Wajib
 
-- **`TES DITUNDA` (Menunggu Kredensial & Infrastruktur Eksternal Pemilik):** Integrasi langsung ke API penyedia SMS/WhatsApp berbayar (`internal/outbox` kini menggunakan stub/outbox worker lokal teruji), penyimpanan objek eksternal S3/MinIO jika memindahkan lampiran KYC dari disk lokal, verifikasi domain TLS HTTPS di reverse proxy VPS produksi, serta aktivasi QRIS badan hukum resmi dari PJP (saat `ALLOW_PERSONAL_PAYMENT_PILOT` dimatikan).
-- **`PERLU VERIFIKASI HUKUM`:** Konsultan hukum/notaris perlu meninjau masa retensi penghapusan data pendaftar ditolak (`PDP_REJECTED_RETENTION_DAYS`, default `30` hari).
-- **`KEPUTUSAN AKUNTAN`:** Pengurus & akuntan koperasi perlu menetapkan pemetaan jurnal akuntansi (ekuitas vs kewajiban/simpanan) untuk setiap jenis iuran sebelum tutup buku.
+1. **Belum Ada Audit & Pengujian Penetrasi Pihak Ketiga**: Seluruh hasil pada dokumen ini adalah hasil verifikasi mandiri tim/agen pengembang pada lingkungan uji, bukan sertifikasi keamanan atau peninjauan eksternal independen.
+2. **PITR Belum Diimplementasikan**: Hanya tersedia cadangan logis `pg_dump` terjadwal + latihan restore; arsip WAL berkelanjutan (untuk RPO < 24 jam dan pemulihan ke titik waktu tertentu) perlu dibangun pada fase infrastruktur produksi berikutnya.
+3. **Integrasi Eksternal Masih Stub/Lokal**: Pengiriman WhatsApp/SMS (`internal/outbox`) dan sinkronisasi SIMKOPDES (`internal/simkopdes`) bersifat *adapter stub* tanpa kredensial penyedia resmi; penyimpanan lampiran KYC memakai disk lokal dengan batasan akses, belum object storage eksternal S3/MinIO.
+4. **Pembaruan Uji Menyeluruh v5 Sedang Berjalan**: Penambahan pengecekan `restore_drill.sh` 3-tabel, `trivy image` di CI, Frontend Tester beserta bukti skenario/matriks RBAC penuh (`Tugas 1`–`8`), serta pemindaian ulang penuh (`-race`, `staticcheck`, `govulncheck`, CI hijau) wajib dibuktikan setelah implementasi v5 rampung.
+5. **Kewajiban Hukum & Akuntansi Eksternal**:
+   - **`PERLU VERIFIKASI HUKUM`**: Evaluasi UU 27/2022 PDP atas kebijakan retensi `PDP_REJECTED_RETENTION_DAYS` (default `30` hari) dan pemrosesan data biometrik/KTP.
+   - **`KEPUTUSAN AKUNTAN`**: Pemetaan pos akuntansi iuran koperasi sebelum tutup buku.
+   - **Tugas Operasional Pemilik**: Pengisian kredensial produksi, sertifikat TLS/reverse proxy domain HTTPS, dan verifikasi rekening resmi badan hukum koperasi ([TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md)).

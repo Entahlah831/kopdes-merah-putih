@@ -152,7 +152,7 @@ Setelah perbaikan awal `DISC-01`–`DISC-04`, pengujian live terhadap server API
 
 - **Status PITR**: **PITR belum diimplementasikan** (*Point-In-Time Recovery* berbasis arsip WAL berkelanjutan / PgBackRest / WAL-G tidak tersedia pada skrip atau Compose saat ini).
 - **Yang Tersedia & Teruji Saat Ini**: Skrip cadangan logis `scripts/backup.sh` (`pg_dump` dengan dukungan enkripsi opsional OpenSSL AES-256-CBC via `BACKUP_ENCRYPTION_KEY`; di profil uji `.env.test` & `.env.test.alt` kunci ini terisi, sedangkan di `.env.example` dibiarkan kosong sehingga pengisiannya wajib bagi pemilik) serta latihan pemulihan `scripts/restore_drill.sh`.
-- **Pembaruan Latihan Restore (Tugas 0.4)**: `scripts/restore_drill.sh` telah diperbarui agar mencetak status enkripsi dump secara eksplisit **dan** memverifikasi `VerifyHashChain` pada **ketiga** tabel append-only: `audit_log`, `kas_mutasi`, serta `pembayaran_verifikasi_log` (sebelumnya hanya `audit_log`). Hasil eksekusi terakhir `restore_drill.sh` sebelumnya tercatat pada CI Run `43385163339` (`WAL LSN Checkpoint: 0/2342000`, `129` objek tabel pulih dalam `2s`, `audit_log broken links: 0`, `61` RLS aktif); eksekusi ulang pasca-pembaruan skrip 3-tabel dijadwalkan pada run Linux CI berikutnya.
+- **Pembaruan Latihan Restore (Tugas 0.4)**: `scripts/restore_drill.sh` telah diperbarui agar mencetak status enkripsi dump secara eksplisit **dan** memverifikasi `VerifyHashChain` pada **ketiga** tabel append-only: `audit_log`, `kas_mutasi`, serta `pembayaran_verifikasi_log` (sebelumnya hanya `audit_log`). Hasil terperinci terakhir sebelumnya tercatat pada CI Run `43385163339` (`WAL LSN Checkpoint: 0/2342000`, `129` objek tabel pulih dalam `2s`, `audit_log broken links: 0`, `61` RLS aktif). Pada **CI Run `43565262692`** (commit `689beae`, pasca-pembaruan skrip 3-tabel), step 5 job `docker-setB-e2e-and-load` (`Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B`) selesai dengan status `completed/success`. *(Catatan: unduhan log teks mentah langkah CI di GitHub memerlukan sesi autentikasi akun/`gh` sehingga isi stdout langkah `43565262692` tidak diekstrak secara anonim.)*
 
 ---
 
@@ -173,16 +173,19 @@ Setelah perbaikan awal `DISC-01`–`DISC-04`, pengujian live terhadap server API
 | **`staticcheck ./...`** | Lokal Windows Tugas 8 v5 | `0` isu (`EXIT: 0`) | Setelah perbaikan `S1021` di `scenarios_and_matrix_e2e_test.go` |
 | **`gosec ./...` (Tanpa `-exclude` global)** | Lokal Windows Tugas 8 v5 | `Files: 47, Lines: 14144, Nosec: 20, Issues: 0` (`EXIT: 0`) | Pengecualian global CI telah dihapus |
 | **`go test -count=1 -race -p 1 ./...`** | Lokal Windows Set A Tugas 8 v5 | Seluruh paket lulus (`EXIT: 0`; `internal/api` `167.549s`) | Setelah `fastTestHashPassword` (cost 10 cache) di `api_test.go` |
-| **`govulncheck ./...`** | Lokal `go1.27.1` vs CI `go1.27.4` | Lokal `go1.27.1`: 12 temuan stdlib (`http2`/`net/http` fixed di `1.27.2+`); CI `go1.27.4`: run `43385163339` `No vulnerabilities found.` | Menunggu konfirmasi run CI pasca-push v5 |
-| **Hadolint + Trivy Config + `trivy image`** | Linux CI | Config + Hadolint lolos di `43385163339`; `trivy image` baru ditambahkan | Hasil `trivy image` aktual menunggu run CI pasca-push Tugas 0–8 |
+| **`govulncheck ./...`** | Lokal `go1.27.1` vs CI `go1.27.4` | Lokal `go1.27.1`: 12 temuan stdlib (`http2`/`net/http` fixed di `1.27.2+`); CI `43565262692` (`go1.27.4`): step pemindaian Keamanan Go `completed/success` (run `43385163339`: `No vulnerabilities found.`) | Image Docker & Linux CI memakai `go1.27.4` |
+| **Hadolint + Trivy Config + `trivy image`** | Linux CI (`43565262692`) | Job `config-and-static-audit` (step Hadolint, Trivy Config, Gitleaks) dan step 4 `docker-setB-e2e-and-load` (berisi `trivy image` `--severity HIGH,CRITICAL`) seluruhnya `completed/success` | Log teks mentah GitHub Actions tidak tersedia tanpa login (`HTTP 403` anonim) |
 
 ---
 
 ## 7. Ringkasan Uji Beban & Perbandingan Lingkungan Uji
 
-Pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43385163339`, commit `5b24dab`):
-- **Set A (`test-and-security-setA`)** & **Set B (`docker-setB-e2e-and-load`)**: seluruh paket `go test -count=1 -race -p 1 ./...` lulus (`internal/api` ~472.8s di Set A dan ~469.0s di Set B).
-- **Load Test 2.000 Anggota (`cmd/loadtest`)** pada Docker Set B: `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `p50: 3.71ms`, `p95: 20.08ms`, `p99: 31.67ms` (pengujian kelelahan 1.500 slot QRIS konkuren baru ditambahkan dan lulus lokal pada Tugas 0 v5: `999` `201 Created`, `501` `409 Conflict`, `0` error dalam `5.07s`).
+- **GitHub Actions Run `43565262692`** (`https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43565262692`, commit `689beae`, keseluruhan `completed/success`):
+  - `config-and-static-audit` (`132357603433`): `completed/success` (`40s`, seluruh 5 langkah validasi envcheck, compose, Hadolint, Trivy config, Gitleaks).
+  - `test-and-security-setA` (`132357603168`): `completed/success` (`4m 12s`, `go test -count=1 -race -p 1 -timeout 20m ./...`, `govulncheck`, `staticcheck`, `gosec` tanpa `-exclude` global).
+  - `docker-setB-e2e-and-load` (`132357786607`): `completed/success` (`4m 47s`, Docker Compose Set B port non-standar + `trivy image` + `/readyz` + `/metrics`, `-race`, `backup.sh`, `restore_drill.sh` 3-tabel, dan `cmd/loadtest` 2.000 anggota).
+- **Angka Terukur Uji Beban & Lokal**:
+  - **Load Test 2.000 Anggota (`cmd/loadtest`)** tercatat pada CI Run `43385163339`: `success_count: 2000`, `error_count: 0`, `error_rate_pct: 0`, `rps: 15790.52`, `p50: 3.71ms`, `p95: 20.08ms`, `p99: 31.67ms` (pengujian kelelahan 1.500 slot QRIS konkuren lulus lokal pada Tugas 0 v5: `999` `201 Created`, `501` `409 Conflict`, `0` error dalam `5.07s`).
 
 ---
 
@@ -191,7 +194,7 @@ Pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopde
 1. **Belum Ada Audit & Pengujian Penetrasi Pihak Ketiga**: Seluruh hasil pada dokumen ini adalah hasil verifikasi mandiri tim/agen pengembang pada lingkungan uji, bukan sertifikasi keamanan atau peninjauan eksternal independen.
 2. **PITR Belum Diimplementasikan**: Hanya tersedia cadangan logis `pg_dump` terjadwal + latihan restore; arsip WAL berkelanjutan (untuk RPO < 24 jam dan pemulihan ke titik waktu tertentu) perlu dibangun pada fase infrastruktur produksi berikutnya.
 3. **Integrasi Eksternal Masih Stub/Lokal**: Pengiriman WhatsApp/SMS (`internal/outbox`) dan sinkronisasi SIMKOPDES (`internal/simkopdes`) bersifat *adapter stub* tanpa kredensial penyedia resmi; penyimpanan lampiran KYC memakai disk lokal dengan batasan akses, belum object storage eksternal S3/MinIO.
-4. **Verifikasi Akhir GitHub Actions v5 (`trivy image` & `restore_drill.sh` 3-tabel)**: Implementasi lokal Tugas 0–8 (termasuk `frontend-tester/README.md`, `439` cek matriks, `26` skenario, `envcheck` 83 variabel, `go test -count=1 -race -p 1 ./...`, `gosec`, `staticcheck`, `gitleaks`) sudah lulus; hasil eksekusi Linux CI terbaru (Set A, Set B Docker, `govulncheck` `go1.27.4`, `trivy image`, `restore_drill.sh` 3-tabel) dicatat sesudah push ke `origin/main`.
+4. **Keterbatasan Akses Log Mentah CI Anonim**: Run Linux CI `43565262692` (`689beae`) terverifikasi `completed/success` pada ketiga job beserta seluruh step (`trivy image`, `govulncheck` `go1.27.4`, `gosec`, `-race` Set A/B, `restore_drill.sh` 3-tabel), namun unduhan berkas log stdout mentah GitHub Actions membutuhkan autentikasi (`gh`/sesi akun GitHub; REST API anonim mengembalikan `403 Forbidden`). Pemindaian lokal penuh (`envcheck` 83 var, `go test -count=1 -race -p 1 ./...`, `gosec`, `staticcheck`, `gitleaks`, dan `TestV5_LiveScenariosAndRolesMatrix_E2E` 439+102 cek) telah diekstrak secara lengkap di `docs/PROGRESS.md`.
 5. **Kewajiban Hukum & Akuntansi Eksternal**:
    - **`PERLU VERIFIKASI HUKUM`**: Evaluasi UU 27/2022 PDP atas kebijakan retensi `PDP_REJECTED_RETENTION_DAYS` (default `30` hari) dan pemrosesan data biometrik/KTP.
    - **`KEPUTUSAN AKUNTAN`**: Pemetaan pos akuntansi iuran koperasi sebelum tutup buku.

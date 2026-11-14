@@ -1142,3 +1142,13 @@ ok  	github.com/kopdes/merah-putih/internal/security	1.445s
 ?   	github.com/kopdes/merah-putih/internal/testseed	[no test files]
 EXIT:0
 ```
+
+### Verifikasi GitHub Actions Linux CI Run `43565262692` (Commit `689beae`)
+
+- **URL Run**: `https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/43565262692`
+- **Status Akhir**: `status=completed`, `conclusion=success`
+- **Rincian Job & Step (`api.github.com/repos/Entahlah831/kopdes-merah-putih/actions/runs/43565262692/jobs`)**:
+  - `config-and-static-audit` (`132357603433`, `06:13:23Z`–`06:14:03Z`): `completed/success` — Step 4 (`Validasi Konfigurasi & Konflik Port`), Step 5 (`Docker Compose & Penolakan .env.example`), Step 6 (`Hadolint`), Step 7 (`Trivy Config & Filesystem Scan`), Step 8 (`Gitleaks Secret Scanning`).
+  - `test-and-security-setA` (`132357603168`, `06:13:23Z`–`06:17:35Z`): `completed/success` — Step 5 (`Inisialisasi Database Set A`), Step 6 (`Jalankan Full Suite -race (Set A)`), Step 7 (`Pemindaian Keamanan Go (govulncheck, staticcheck, gosec)` tanpa `-exclude` global).
+  - `docker-setB-e2e-and-load` (`132357786607`, `06:14:05Z`–`06:18:52Z`): `completed/success` — Step 4 (`Boot Stack Set B dari Nol`: build Docker, `trivy image`, `/readyz`, `/metrics`), Step 5 (`Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B`), Step 6 (`Bersihkan Container Set B`).
+- **Catatan Log Mentah**: Unduhan berkas log stdout mentah GitHub Actions mengembalikan `403 Forbidden` pada endpoint REST API anonim (`/jobs/{id}/logs`) serta menampilkan `"Sign in to view logs"` pada antarmuka web tanpa login (`gh` CLI belum terpasang di mesin host), sehingga seluruh status keberhasilan step di atas mengacu langsung pada status resmi GitHub Actions Jobs API + pemeriksaan lokal lengkap.

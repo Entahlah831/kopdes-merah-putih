@@ -1000,3 +1000,31 @@ Summary:
 ```
 
 
+## Tugas 2 & Tugas 5 Prep (v5) — OpenAPI JSON, `roles_matrix.json` 54 Operasi, Perbaikan Alur Frontend Tester & Tes Paritas
+
+- **Tes gagal lebih dahulu (`TestDoc_OpenAPI_JSON_Parity`, `TestDoc_RolesMatrix_Parity`)**:
+  - `go test -v -run "TestDoc_OpenAPI_JSON_Parity|TestDoc_RolesMatrix_Parity" ./internal/api` gagal awal karena `frontend-tester/openapi.json` dan `docs/roles_matrix.json` belum tersedia.
+- **Perbaikan ketidaksesuaian awal & single source of truth**:
+  - Memperbarui `docs/openapi.yaml`: menambahkan query parameter wajib `anggota_id` (UUID) pada `GET /api/v1/katalog/harga` sesuai `katalog_handler.go`, serta memperjelas respons `GET /api/v1/pendaftaran/{id}` (`pendaftaran_id`, `nik_masked`).
+  - Memperbaiki `internal/api/handlers/katalog_handler.go` (`HandleGetHargaAnggota`) agar mengembalikan `404 NotFound` saat `pgx.ErrNoRows` (bukan `500` ketika produk lintas tenant diakses).
+  - Memperbaiki typo `auto_approve_mutasi_enabled` -> `mutasi_auto_approve_enabled` di `internal/config/config.go` dan meregenerasi `docs/ENV_REFERENCE.md`.
+  - Membangun `docs/roles_matrix.json` yang mencakup seluruh **54 operasi HTTP / 48 path** x **7 peran** (`admin`, `pengurus`, `bendahara`, `ketua`, `pengawas`, `operator`, `anggota`) + `unauthenticated` + `cross_tenant`.
+  - Memperluas `scripts/generate_api_artifacts.py` untuk mengonversi `docs/openapi.yaml` -> `frontend-tester/openapi.json`, menyinkronkan `docs/roles_matrix.json` -> `frontend-tester/roles_matrix.json`, dan merender tabel matriks otorisasi otomatis ke `docs/FRONTEND_GUIDE.md` di antara `<!-- BEGIN_ROLES_MATRIX -->` .. `<!-- END_ROLES_MATRIX -->`.
+  - Memperbaiki payload/rute pada `frontend-tester/app.js` & `frontend-tester/index.html` (`/api/v1/auth/revoke`, `alamat_ktp`, `POST /pembayaran/{id}/bukti`, kolom CSV 5-kolom `tipe=CR`, `GET /katalog/produk`, `metode_serah_terima`, `POST /iuran/generate`, CRC16 EMVCo valid, serta label `Semua 54 Operasi / 48 Path`).
+
+```text
+$ go test -count=1 -v -run "TestDoc_" ./internal/api
+=== RUN   TestDoc_OpenAPI_JSON_Parity
+--- PASS: TestDoc_OpenAPI_JSON_Parity (0.00s)
+=== RUN   TestDoc_RolesMatrix_Parity
+--- PASS: TestDoc_RolesMatrix_Parity (0.00s)
+=== RUN   TestDoc_OpenAPI_RouteParity
+--- PASS: TestDoc_OpenAPI_RouteParity (0.00s)
+=== RUN   TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims
+--- PASS: TestDoc_MarkdownLinks_Anchors_And_NoForbiddenClaims (0.01s)
+=== RUN   TestDoc_EndToEnd_DocumentedWorkflows
+--- PASS: TestDoc_EndToEnd_DocumentedWorkflows (1.69s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	1.859s
+```
+

@@ -101,6 +101,26 @@
     return new Blob([arr], { type: "image/png" });
   }
 
+  function computeCRC16CCITT(str) {
+    let crc = 0xffff;
+    for (let i = 0; i < str.length; i++) {
+      crc ^= (str.charCodeAt(i) & 0xff) << 8;
+      for (let b = 0; b < 8; b++) {
+        crc = (crc & 0x8000) !== 0 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+      }
+    }
+    return crc.toString(16).toUpperCase().padStart(4, "0");
+  }
+
+  function buildSampleStaticQRIS(merchantName) {
+    const m = merchantName || "Kopdes Uji";
+    const len2 = String(m.length).padStart(2, "0");
+    const base =
+      "00020101021126570011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI5204541153033605802ID59" +
+      len2 + m + "6007Jakarta6304";
+    return base + computeCRC16CCITT(base);
+  }
+
   function decodeJWTPayload(jwt) {
     try {
       const parts = jwt.split(".");
@@ -438,19 +458,27 @@
       accountsMap[a.key] = a;
     }
 
-    const ensureRoleToken = async function (roleKey) {
+    const ensureRoleToken = async function (roleKey, forceFresh) {
       if (!roleKey || roleKey === "none" || roleKey === "unauthenticated") return "";
-      if (tokensByKey[roleKey]) return tokensByKey[roleKey];
+      if (!forceFresh && tokensByKey[roleKey]) return tokensByKey[roleKey];
+      if (!forceFresh && state.roleTokens[roleKey]) {
+        tokensByKey[roleKey] = state.roleTokens[roleKey];
+        return state.roleTokens[roleKey];
+      }
       const acc = accountsMap[roleKey];
       if (!acc) throw new Error("Akun uji tidak ditemukan: " + roleKey);
       const auth = await loginAccount(acc, pwd);
       tokensByKey[roleKey] = auth.accessToken;
+      state.roleTokens[roleKey] = auth.accessToken;
       return auth.accessToken;
     };
 
     const ctxVars = Object.assign({}, (state.config && state.config.resources) || {});
     ctxVars.koperasi_a_id = state.config.koperasi_a_id;
     ctxVars.koperasi_b_id = state.config.koperasi_b_id;
+    ctxVars.user_admin_a_id = (accountsMap["admin_a"] || {}).user_id || "";
+    ctxVars.user_admin_b_id = (accountsMap["admin_b"] || {}).user_id || "";
+    ctxVars.sample_static_qris = buildSampleStaticQRIS("Kopdes Uji Browser");
     ctxVars.seed_password = pwd;
     ctxVars.metrics_token = el("metricsTokenInput").value.trim();
 
@@ -504,7 +532,7 @@
             if (step.token_var) {
               tok = safeString(ctxVars[step.token_var]);
             } else if (step.as_account) {
-              tok = await ensureRoleToken(step.as_account);
+              tok = await ensureRoleToken(step.as_account, !!step.force_login);
             }
 
             const reqPath = expandTemplate(step.path);
@@ -610,15 +638,20 @@
     const roleTokens = {};
     const keysNeeded = ["admin_a", "pengurus_a", "bendahara_a", "ketua_a", "pengawas_a", "operator_a", "anggota_a", "admin_b"];
     for (const k of keysNeeded) {
-      if (accountsMap[k]) {
+      if (state.roleTokens[k]) {
+        roleTokens[k] = state.roleTokens[k];
+      } else if (accountsMap[k]) {
         const res = await loginAccount(accountsMap[k], pwd);
         roleTokens[k] = res.accessToken;
+        state.roleTokens[k] = res.accessToken;
       }
     }
 
     const tbody = el("rolesMatrixTableBody");
     tbody.textContent = "";
     const resources = (state.config && state.config.resources) || {};
+    const adminA = accountsMap["admin_a"] || {};
+    const adminB = accountsMap["admin_b"] || {};
     let total = 0;
     let passed = 0;
     let failed = 0;
@@ -627,6 +660,11 @@
       if (ep.skip_browser_probe) continue;
       let path = ep.sample_path || ep.path;
       path = path
+        .replace("{anggota_a_id}", resources.anggota_a_id || generateUUIDv4())
+        .replace("{anggota_b_id}", resources.anggota_b_id || generateUUIDv4())
+        .replace("{produk_a_id}", resources.produk_a_id || generateUUIDv4())
+        .replace("{user_admin_a_id}", adminA.user_id || generateUUIDv4())
+        .replace("{user_admin_b_id}", adminB.user_id || generateUUIDv4())
         .replace("{id}", resources.anggota_a_id || generateUUIDv4())
         .replace("{produk_id}", resources.produk_a_id || generateUUIDv4());
 
@@ -766,13 +804,13 @@
         if (!state.refreshToken) throw new Error("Tidak ada refresh_token di memori.");
         const res = await apiRequest({
           method: "POST",
-          path: "/api/v1/auth/logout",
+          path: "/api/v1/auth/revoke",
           json: { refresh_token: state.refreshToken }
         });
         state.accessToken = "";
         state.refreshToken = "";
         updateSessionBar();
-        appendFlowLog("Logout (" + res.status + ")", res.json || res.text);
+        appendFlowLog("Logout / Revoke (" + res.status + ")", res.json || res.text);
       } catch (err) {
         appendFlowLog("Logout Gagal", err.message);
       }
@@ -909,7 +947,7 @@
             nama_lengkap: el("flowPendaftaranNama").value,
             nik: el("flowPendaftaranNIK").value,
             no_hp: "0812345" + String(ts).slice(-5),
-            alamat: "Jl. Desa Uji No. " + String(ts).slice(-3),
+            alamat_ktp: "Jl. Desa Uji No. " + String(ts).slice(-3),
             tempat_lahir: "Bogor",
             tanggal_lahir: "1992-01-15",
             jenis_kelamin: "L"
@@ -917,12 +955,16 @@
         });
         const pid = reg.json && reg.json.data && reg.json.data.pendaftaran_id;
         state.vars.last_pendaftaran_id = pid;
+        let masked = null;
         if (pid) {
           const fd = new FormData();
-          fd.append("file", createTinyPNGBlob(), "ktp.png");
+          fd.append("dokumen", createTinyPNGBlob(), "ktp.png");
+          fd.append("jenis_dokumen", "ktp");
           await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/dokumen", body: fd });
+          const getRes = await apiRequest({ method: "GET", path: "/api/v1/pendaftaran/" + pid });
+          masked = getRes.json && getRes.json.data;
         }
-        appendFlowLog("3.2 Pendaftaran + Upload PNG", reg.json);
+        appendFlowLog("3.2 Pendaftaran + Upload KYC + Masking PII", { create: reg.json, detail: masked });
       } catch (err) {
         appendFlowLog("3.2 Error", err.message);
       }
@@ -931,12 +973,14 @@
     el("btnFlow32Verify").addEventListener("click", async function () {
       try {
         if (!state.vars.last_pendaftaran_id) throw new Error("Jalankan 3.2 terlebih dahulu.");
+        const p2Auth = await loginAccount({ email: "pengurus2_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
         const res = await apiRequest({
           method: "POST",
           path: "/api/v1/pendaftaran/" + state.vars.last_pendaftaran_id + "/verifikasi",
-          json: { status: "disetujui", catatan: "Lulus verifikasi uji browser" }
+          token: p2Auth.accessToken,
+          json: { status: "disetujui" }
         });
-        appendFlowLog("3.2b Verifikasi Pendaftaran (" + res.status + ")", res.json);
+        appendFlowLog("3.2b Verifikasi Maker-Checker (" + res.status + ")", res.json);
       } catch (err) {
         appendFlowLog("3.2b Error", err.message);
       }
@@ -954,6 +998,7 @@
         const r3 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", headers: { "Idempotency-Key": key }, json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a2_id, rekening_qris_id: state.config.resources.rekening_qris_a_id } });
         if (r1.json && r1.json.data && r1.json.data.pembayaran_id) {
           state.vars.last_pembayaran_id = r1.json.data.pembayaran_id;
+          state.vars.last_pembayaran_nominal_total = r1.json.data.nominal_total;
           updateSessionBar();
         }
         appendFlowLog("3.3a QRIS Idempotency", { create: r1.status, replay: r2.status, conflict_422: r3.status, data: r1.json });
@@ -966,13 +1011,19 @@
       try {
         const payId = state.vars.last_pembayaran_id;
         if (!payId) throw new Error("Jalankan 3.3a terlebih dahulu.");
-        const fd = new FormData();
-        fd.append("file", createTinyPNGBlob(), "bukti.png");
-        const up = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/bukti", body: fd });
-        const sub = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/submit-klaim", json: { rrn: "RRN" + String(Date.now()).slice(-8), nama_pengirim: "Anggota A" } });
+        const klaim = await apiRequest({
+          method: "POST",
+          path: "/api/v1/pembayaran/" + payId + "/bukti",
+          json: { referensi_rrn: "RRN" + String(Date.now()).slice(-8), catatan: "Bukti transfer uji browser" }
+        });
         const p2Auth = await loginAccount({ email: "pengurus2_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const app = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/verifikasi", token: p2Auth.accessToken, json: { aksi: "setujui", catatan: "Valid mutasi uji" } });
-        appendFlowLog("3.3b Klaim + Approve Pengurus2", { upload: up.status, submit: sub.status, approve: app.status, data: app.json });
+        const app = await apiRequest({
+          method: "POST",
+          path: "/api/v1/pembayaran/" + payId + "/verifikasi",
+          token: p2Auth.accessToken,
+          json: { disetujui: true, catatan: "Valid mutasi uji" }
+        });
+        appendFlowLog("3.3b Klaim RRN + Approve Pengurus2", { klaim: klaim.status, approve: app.status, data: app.json });
       } catch (err) {
         appendFlowLog("3.3b Error", err.message);
       }
@@ -980,12 +1031,29 @@
 
     el("btnFlow34Mutasi").addEventListener("click", async function () {
       try {
+        const ang = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const qRes = await apiRequest({
+          method: "POST",
+          path: "/api/v1/pembayaran/qris",
+          token: ang.accessToken,
+          headers: { "Idempotency-Key": generateUUIDv4() },
+          json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a2_id, rekening_qris_id: state.config.resources.rekening_qris_a_id }
+        });
+        const nomTotal = (qRes.json && qRes.json.data && qRes.json.data.nominal_total) || 50123;
         const p1 = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const csv = "tanggal,nominal,berita,referensi_bank\n2026-11-14,50000,Uji Browser Mutasi,REF" + Date.now() + "\n";
-        const fd = new FormData();
-        fd.append("file", new Blob([csv], { type: "text/csv" }), "mutasi.csv");
-        const imp = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd });
-        appendFlowLog("3.4 Impor CSV Mutasi Bank (" + imp.status + ")", imp.json);
+        const csv = "tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-14,QRIS Iuran Uji " + Date.now() + ",CR," + nomTotal + ",1234567890\n";
+        const fd1 = new FormData();
+        fd1.append("file", new Blob([csv], { type: "text/csv" }), "mutasi.csv");
+        const imp1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd1 });
+        const fd2 = new FormData();
+        fd2.append("file", new Blob([csv], { type: "text/csv" }), "mutasi.csv");
+        const imp2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd2 });
+        const rekon = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/rekonsiliasi/harian", token: p1.accessToken });
+        appendFlowLog("3.4 Impor CSV + Deteksi Duplikat + Rekonsiliasi", {
+          impor_1: imp1.json,
+          impor_2_duplikat: imp2.json,
+          rekonsiliasi: rekon.json
+        });
       } catch (err) {
         appendFlowLog("3.4 Error", err.message);
       }
@@ -993,11 +1061,12 @@
 
     el("btnFlow35Rekening").addEventListener("click", async function () {
       try {
-        const adm = await loginAccount({ email: "admin_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const pAuth = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const qrisSample = buildSampleStaticQRIS("TestPersonal");
         const bad = await apiRequest({
           method: "POST",
           path: "/api/v1/koperasi/rekening-qris",
-          token: adm.accessToken,
+          token: pAuth.accessToken,
           json: {
             nama_merchant: "Personal Ditolak",
             nmid: "ID9999999999999",
@@ -1005,10 +1074,11 @@
             no_rekening_settlement: "99887766",
             nama_pemilik_rekening: "Pengurus Pribadi",
             jenis_pemilik: "perorangan_pengurus",
-            qris_payload_statis: "00020101021126570011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI5204541153033605802ID5912TestMerchant6007Jakarta63042B4F"
+            qris_payload_statis: qrisSample
           }
         });
-        appendFlowLog("3.5 Tolak Rekening Perorangan (" + bad.status + ")", bad.json);
+        const list = await apiRequest({ method: "GET", path: "/api/v1/koperasi/rekening-qris", token: pAuth.accessToken });
+        appendFlowLog("3.5 Tolak Rekening Perorangan (" + bad.status + ") & List Rekening", { rejected: bad.json, list_count: list.json && list.json.data && list.json.data.length });
       } catch (err) {
         appendFlowLog("3.5 Error", err.message);
       }
@@ -1017,10 +1087,22 @@
     el("btnFlow36Toko").addEventListener("click", async function () {
       try {
         const ang = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const list = await apiRequest({ method: "GET", path: "/api/v1/toko/produk", token: ang.accessToken });
+        const list = await apiRequest({ method: "GET", path: "/api/v1/katalog/produk", token: ang.accessToken });
         const cart = await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: state.config.resources.produk_a_id, qty: 1 } });
-        const co = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { kode_promo: state.config.resources.promo_a_kode, metode_pembayaran: "qris" } });
-        appendFlowLog("3.6 Toko Keranjang & Checkout", { produk_count: list.json && list.json.data && list.json.data.length, cart: cart.status, checkout: co.status, data: co.json });
+        const co = await apiRequest({
+          method: "POST",
+          path: "/api/v1/toko/checkout",
+          token: ang.accessToken,
+          json: { metode_serah_terima: "ambil_di_koperasi", kode_promo: state.config.resources.promo_a_kode }
+        });
+        const orders = await apiRequest({ method: "GET", path: "/api/v1/toko/pesanan", token: ang.accessToken });
+        appendFlowLog("3.6 Toko Keranjang & Checkout", {
+          produk_count: list.json && list.json.data && list.json.data.length,
+          cart: cart.status,
+          checkout: co.status,
+          checkout_data: co.json,
+          orders_count: orders.json && orders.json.data && orders.json.data.length
+        });
       } catch (err) {
         appendFlowLog("3.6 Error", err.message);
       }
@@ -1028,10 +1110,22 @@
 
     el("btnFlow37Iuran").addEventListener("click", async function () {
       try {
-        const adm = await loginAccount({ email: "admin_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const getJ = await apiRequest({ method: "GET", path: "/api/v1/iuran/jenis", token: adm.accessToken });
-        const postJ = await apiRequest({ method: "POST", path: "/api/v1/iuran/jenis", token: adm.accessToken, json: { kode: "UI-" + String(Date.now()).slice(-6), nama: "Iuran Browser", nominal: 25000, hari_jatuh_tempo: 10 } });
-        appendFlowLog("3.7 Iuran + KEPUTUSAN AKUNTAN", { get_status: getJ.status, post_status: postJ.status, post_body: postJ.json });
+        const pAuth = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const getJ = await apiRequest({ method: "GET", path: "/api/v1/iuran/jenis", token: pAuth.accessToken });
+        const postJ = await apiRequest({
+          method: "POST",
+          path: "/api/v1/iuran/jenis",
+          token: pAuth.accessToken,
+          json: { kode: "UI-" + String(Date.now()).slice(-6), nama: "Iuran Browser", tipe: "wajib", nominal: 25000 }
+        });
+        const newJenisId = (postJ.json && postJ.json.data && postJ.json.data.id) || state.config.resources.jenis_iuran_a_id;
+        const gen = await apiRequest({
+          method: "POST",
+          path: "/api/v1/iuran/generate",
+          token: pAuth.accessToken,
+          json: { jenis_iuran_id: newJenisId, periode: "2026-12" }
+        });
+        appendFlowLog("3.7 Iuran + KEPUTUSAN AKUNTAN + Generate", { get_status: getJ.status, post_status: postJ.status, post_body: postJ.json, generate_status: gen.status, generate_body: gen.json });
       } catch (err) {
         appendFlowLog("3.7 Error", err.message);
       }

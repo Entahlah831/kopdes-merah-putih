@@ -1,0 +1,1065 @@
+{
+  "version": "1.1.0",
+  "roles": ["admin", "pengurus", "bendahara", "ketua", "pengawas", "operator", "anggota"],
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "group": "Health & Metrics",
+      "auth_mode": "public",
+      "sample_path": "/healthz",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 200,
+      "cross_tenant": "N/A (public)",
+      "notes": "Liveness probe publik tanpa JWT; dikecualikan dari rate limiter."
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "group": "Health & Metrics",
+      "auth_mode": "public",
+      "sample_path": "/readyz",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 200,
+      "cross_tenant": "N/A (public)",
+      "notes": "Readiness probe PostgreSQL tanpa JWT; dikecualikan dari rate limiter."
+    },
+    {
+      "method": "GET",
+      "path": "/metrics",
+      "group": "Health & Metrics",
+      "auth_mode": "metrics_token",
+      "sample_path": "/metrics",
+      "roles": {
+        "admin": 401,
+        "pengurus": 401,
+        "bendahara": 401,
+        "ketua": 401,
+        "pengawas": 401,
+        "operator": 401,
+        "anggota": 401
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "N/A (Bearer METRICS_TOKEN)",
+      "notes": "Wajib Bearer METRICS_TOKEN / METRICS_PREVIOUS_TOKEN (>=32 byte). JWT user/unauth ditolak 401."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "group": "Auth & MFA",
+      "auth_mode": "public",
+      "sample_path": "/api/v1/auth/login",
+      "sample_body": {},
+      "roles": {
+        "admin": [400, 401],
+        "pengurus": [400, 401],
+        "bendahara": [400, 401],
+        "ketua": [400, 401],
+        "pengawas": [400, 401],
+        "operator": [400, 401],
+        "anggota": [400, 401]
+      },
+      "unauthenticated": [400, 401],
+      "cross_tenant": "N/A (fn_lookup_user_login)",
+      "notes": "Publik; email/password wajib. Role admin/bendahara/ketua wajib MFA (403 setup jika belum aktif)."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/mfa/setup",
+      "group": "Auth & MFA",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/auth/mfa/setup",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "N/A (self JWT)",
+      "notes": "Diizinkan untuk seluruh user terautentikasi termasuk token terbatas scope mfa_setup."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/mfa/enable",
+      "group": "Auth & MFA",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/auth/mfa/enable",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "N/A (self JWT)",
+      "notes": "Mengaktifkan TOTP + menerbitkan 8 recovery code; probe {} mengembalikan 400 (tidak mengubah DB)."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/mfa/verify",
+      "group": "Auth & MFA",
+      "auth_mode": "public",
+      "sample_path": "/api/v1/auth/mfa/verify",
+      "sample_body": {},
+      "roles": {
+        "admin": [400, 401],
+        "pengurus": [400, 401],
+        "bendahara": [400, 401],
+        "ketua": [400, 401],
+        "pengawas": [400, 401],
+        "operator": [400, 401],
+        "anggota": [400, 401]
+      },
+      "unauthenticated": [400, 401],
+      "cross_tenant": "N/A (mfa_session_token)",
+      "notes": "Publik tahap 2 MFA menggunakan mfa_session_token + totp_code/recovery_code."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/refresh",
+      "group": "Auth & MFA",
+      "auth_mode": "public",
+      "sample_path": "/api/v1/auth/refresh",
+      "sample_body": {},
+      "roles": {
+        "admin": [400, 401],
+        "pengurus": [400, 401],
+        "bendahara": [400, 401],
+        "ketua": [400, 401],
+        "pengawas": [400, 401],
+        "operator": [400, 401],
+        "anggota": [400, 401]
+      },
+      "unauthenticated": [400, 401],
+      "cross_tenant": "N/A (refresh_token)",
+      "notes": "Publik dengan refresh_token rotasi; token reuse mencabut seluruh sesi user."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/revoke",
+      "group": "Auth & MFA",
+      "auth_mode": "public",
+      "sample_path": "/api/v1/auth/revoke",
+      "sample_body": {},
+      "roles": {
+        "admin": [400, 200],
+        "pengurus": [400, 200],
+        "bendahara": [400, 200],
+        "ketua": [400, 200],
+        "pengawas": [400, 200],
+        "operator": [400, 200],
+        "anggota": [400, 200]
+      },
+      "unauthenticated": [400, 200],
+      "cross_tenant": "N/A (refresh_token)",
+      "notes": "Logout eksplisit mencabut refresh token."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "group": "Auth & MFA",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/auth/me",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "N/A (self JWT)",
+      "notes": "Mengembalikan profil identitas & koperasi_id dari JWT aktif."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pendaftaran",
+      "group": "Pendaftaran & KYC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pendaftaran",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT + blind index NIK per tenant",
+      "notes": "Mengajukan pendaftaran calon anggota baru."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pendaftaran/{id}",
+      "group": "Pendaftaran & KYC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999",
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (RLS + anti-IDOR pemilik pendaftaran)",
+      "cross_tenant_probe": { "path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999", "expect": [404] },
+      "notes": "Privileged lihat tenant aktif; anggota hanya lihat pendaftaran miliknya (404 jika milik orang lain)."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pendaftaran/{id}/dokumen",
+      "group": "Pendaftaran & KYC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999/dokumen",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400/404 (RLS + validasi multipart)",
+      "notes": "Upload berkas KYC JPEG/PNG/PDF maksimal MAX_KYC_UPLOAD_BYTES."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pendaftaran/{id}/verifikasi",
+      "group": "Pendaftaran & KYC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999/verifikasi",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400/404 (RLS koperasi_id)",
+      "notes": "RequireRoles(admin, pengurus, ketua, sekretaris) + Maker-Checker pengaju != verifikator."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pendaftaran/purge-ditolak",
+      "group": "Pendaftaran & KYC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pendaftaran/purge-ditolak",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Hanya membersihkan pendaftaran ditolak milik tenant JWT",
+      "notes": "RequireRoles(admin, pengurus, ketua, sekretaris); menghapus PII & berkas KYC > retensi."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/anggota",
+      "group": "Anggota",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/anggota",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (RLS hanya anggota tenant aktif)",
+      "notes": "Daftar anggota tenant untuk peran admin/pengurus/bendahara/ketua/pengawas/operator."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/anggota/{id}",
+      "group": "Anggota",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/anggota/{anggota_a_id}",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (RLS anggota Kop B ditolak)",
+      "cross_tenant_probe": { "path": "/api/v1/anggota/{anggota_b_id}", "expect": [404] },
+      "notes": "Detail anggota tenant aktif; anggota biasa dilarang mengakses indeks seluruh anggota."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/anggota/{id}/status",
+      "group": "Anggota",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/anggota/00000000-0000-4000-8000-000000000999/status",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400/404 (RLS)",
+      "notes": "RequireRoles(admin, pengurus, ketua); mencatat perubahan status ke anggota_status_log."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/users",
+      "group": "Users & RBAC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/users",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 403,
+        "ketua": 200,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya user pada koperasi aktif)",
+      "notes": "RequireRoles(admin, pengurus, ketua)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/users/{id}",
+      "group": "Users & RBAC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/users/{user_admin_a_id}",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 403,
+        "ketua": 200,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (RLS pol_isolasi_users_select)",
+      "cross_tenant_probe": { "path": "/api/v1/users/{user_admin_b_id}", "expect": [404] },
+      "notes": "RequireRoles(admin, pengurus, ketua); detail user Kop B diblokir RLS -> 404."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/users/{id}/role",
+      "group": "Users & RBAC",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/users/00000000-0000-4000-8000-000000000999/role",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400/404 (DISC-02 fix)",
+      "notes": "RequireRoles(admin, pengurus, ketua); anti-self-escalation & anti-privilege-escalation."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/iuran/jenis",
+      "group": "Iuran",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/iuran/jenis",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya jenis iuran tenant JWT)",
+      "notes": "Daftar jenis iuran netral + penanda klasifikasi KEPUTUSAN AKUNTAN."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/iuran/jenis",
+      "group": "Iuran",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/iuran/jenis",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT",
+      "notes": "RequireRoles(admin, pengurus, bendahara)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/iuran/tagihan/saya",
+      "group": "Iuran",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/iuran/tagihan/saya",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya tagihan user sendiri)",
+      "notes": "Menampilkan tagihan iuran milik user yang login."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/iuran/generate",
+      "group": "Iuran",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/iuran/generate",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT",
+      "notes": "RequireRoles(admin, pengurus, bendahara); generate tagihan idempoten per periode."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/iuran/menunggak",
+      "group": "Iuran",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/iuran/menunggak",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya tunggakan tenant aktif)",
+      "notes": "Read-only admin roles."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/katalog/stok",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/stok",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya stok gudang tenant aktif)",
+      "notes": "Saldo stok katalog koperasi aktif."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/katalog/harga",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/harga?produk_id={produk_a_id}&anggota_id={anggota_a_id}",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (produk/anggota Kop B tidak ditemukan via RLS)",
+      "cross_tenant_probe": { "path": "/api/v1/katalog/harga?produk_id={produk_b_id}&anggota_id={anggota_a_id}", "expect": [404] },
+      "notes": "Wajib query produk_id dan anggota_id (UUID)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/katalog/produk",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/produk",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya produk tenant aktif)",
+      "notes": "Daftar produk koperasi aktif."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/katalog/produk",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/produk",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT",
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/katalog/produk/{id}",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/produk/00000000-0000-4000-8000-000000000999",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (0 baris terupdate karena filter koperasi_id & RLS)",
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/katalog/produk/{id}",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/produk/00000000-0000-4000-8000-000000000999",
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (0 baris terupdate karena RLS)",
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/katalog/promo",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/promo",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya promo tenant aktif)",
+      "notes": "Daftar promo aktif tenant."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/katalog/promo",
+      "group": "Katalog & Promo",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/katalog/promo",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT",
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/toko/keranjang",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/keranjang",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya keranjang user sendiri)",
+      "notes": "Isi keranjang belanja user aktif."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/toko/keranjang",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/keranjang",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "FK/RLS menolak produk_id Kop B",
+      "notes": "Menambahkan/mengubah qty item keranjang user aktif."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/toko/keranjang/{produk_id}",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/keranjang/00000000-0000-4000-8000-000000000999",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (0 baris dihapus)",
+      "notes": "Menghapus produk dari keranjang user aktif."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/toko/checkout",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/checkout",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat keranjang & stok koperasi aktif",
+      "notes": "Checkout dengan kunci stok FOR UPDATE & mutasi append-only stok_mutasi."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/toko/pesanan",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/pesanan",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (RLS koperasi aktif)",
+      "notes": "Anggota melihat pesanannya sendiri; privileged melihat pesanan koperasi."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/toko/pesanan/{id}/batal",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/pesanan/00000000-0000-4000-8000-000000000999/batal",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400 (pesanan Kop B tidak ditemukan via RLS)",
+      "notes": "Membatalkan pesanan & memulihkan stok + kuota promo; anggota dibatasi pesanannya sendiri."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/toko/pesanan/{id}/expire",
+      "group": "Toko & Checkout",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/toko/pesanan/00000000-0000-4000-8000-000000000999/expire",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": "allow",
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400 (pesanan Kop B tidak ditemukan via RLS)",
+      "notes": "RequireRoles(admin, pengurus, bendahara, ketua, operator); operator boleh memproses pesanan kedaluwarsa."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pembayaran/qris",
+      "group": "Pembayaran QRIS",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/qris",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400 (tagihan/rekening Kop B tidak ditemukan via RLS)",
+      "notes": "Wajib terikat tagihan/pesanan + mendukung Idempotency-Key DB + kode unik anti-tabrakan."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pembayaran/{id}",
+      "group": "Pembayaran QRIS",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/00000000-0000-4000-8000-000000000999",
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (RLS + anti-IDOR anggota)",
+      "cross_tenant_probe": { "path": "/api/v1/pembayaran/{pembayaran_b_id}", "expect": [404] },
+      "notes": "Anggota biasa hanya dapat mengakses pembayaran miliknya sendiri (404 jika milik pihak lain)."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pembayaran/{id}/bukti",
+      "group": "Pembayaran QRIS",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/00000000-0000-4000-8000-000000000999/bukti",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": "allow",
+        "operator": "allow",
+        "anggota": "allow"
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "404 (fn_klaim_bukti_pembayaran + RLS)",
+      "cross_tenant_probe": { "path": "/api/v1/pembayaran/{pembayaran_b_id}/bukti", "expect": [404] },
+      "notes": "Klaim RRN bukti transfer oleh pembayar -> status menunggu_verifikasi."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pembayaran/antrean",
+      "group": "Rekonsiliasi & Mutasi Bank",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/antrean",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya antrean koperasi aktif)",
+      "notes": "Read-only admin roles."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pembayaran/{id}/verifikasi",
+      "group": "Rekonsiliasi & Mutasi Bank",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/00000000-0000-4000-8000-000000000999/verifikasi",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400 (pembayaran Kop B tidak terlihat RLS)",
+      "notes": "RequireRoles(admin, pengurus, bendahara, ketua); Maker-Checker + dual approval > ambang."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pembayaran/mutasi-bank/impor",
+      "group": "Rekonsiliasi & Mutasi Bank",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/mutasi-bank/impor",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": "allow",
+        "ketua": "allow",
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Hanya mencocokkan pembayaran koperasi JWT aktif",
+      "notes": "RequireRoles(admin, pengurus, bendahara, ketua); CSV col: tgl,keterangan,tipe(CR),nominal,no_rek."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pembayaran/rekonsiliasi/harian",
+      "group": "Rekonsiliasi & Mutasi Bank",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/pembayaran/rekonsiliasi/harian",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (agregat khusus koperasi aktif)",
+      "notes": "Read-only admin roles; batas hari memakai Asia/Jakarta."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/koperasi/rekening-qris",
+      "group": "Rekening QRIS Koperasi",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/koperasi/rekening-qris",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya rekening QRIS tenant aktif)",
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/koperasi/rekening-qris",
+      "group": "Rekening QRIS Koperasi",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/koperasi/rekening-qris",
+      "sample_body": {},
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "Terikat koperasi_id JWT",
+      "notes": "RequireRoles(admin, pengurus); validasi EMVCo CRC16 + blokir perorangan kecuali pilot."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/koperasi/rekening-qris/{id}",
+      "group": "Rekening QRIS Koperasi",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/koperasi/rekening-qris/00000000-0000-4000-8000-000000000999",
+      "roles": {
+        "admin": "allow",
+        "pengurus": "allow",
+        "bendahara": 403,
+        "ketua": 403,
+        "pengawas": 403,
+        "operator": 403,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "400 (rekening Kop B tidak ditemukan via RLS)",
+      "cross_tenant_probe": { "path": "/api/v1/koperasi/rekening-qris/{rekening_qris_b_id}", "expect": [400] },
+      "notes": "RequireRoles(admin, pengurus)."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/kas/mutasi",
+      "group": "Kas & Laporan",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/kas/mutasi",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (hanya ledger kas koperasi aktif)",
+      "notes": "Read-only admin roles; tabel append-only berantai hash."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/laporan/keuangan",
+      "group": "Kas & Laporan",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/laporan/keuangan",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (agregat khusus koperasi aktif)",
+      "notes": "Read-only admin roles."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/laporan/anggota",
+      "group": "Kas & Laporan",
+      "auth_mode": "jwt",
+      "sample_path": "/api/v1/laporan/anggota",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 403
+      },
+      "unauthenticated": 401,
+      "cross_tenant": "200 (agregat khusus koperasi aktif)",
+      "notes": "Read-only admin roles."
+    }
+  ]
+}

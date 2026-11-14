@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,6 +98,10 @@ func (h *KatalogHandler) HandleGetHargaAnggota(w http.ResponseWriter, r *http.Re
 	})
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			response.NotFound(w, "Harga produk atau anggota tidak ditemukan")
+			return
+		}
 		response.InternalServerError(w, fmt.Sprintf("Gagal menghitung harga produk: %v", err))
 		return
 	}

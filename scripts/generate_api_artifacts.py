@@ -213,7 +213,83 @@ def main():
     with open(TS_CLIENT_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
 
-    print(f"[OK] Generated {POSTMAN_PATH} and {TS_CLIENT_PATH} from {OPENAPI_PATH}")
+    sync_frontend_tester_and_roles_table(spec)
+    print(f"[OK] Generated {POSTMAN_PATH}, {TS_CLIENT_PATH}, frontend-tester/openapi.json, frontend-tester/roles_matrix.json from {OPENAPI_PATH}")
+
+
+def _format_role_cell(val):
+    if val == 200 or val == "allow":
+        return "Ya"
+    if isinstance(val, list):
+        return "Ya"
+    if val == 403:
+        return "Tidak (403)"
+    if val == 401:
+        return "401"
+    return str(val)
+
+
+def sync_frontend_tester_and_roles_table(spec):
+    import shutil
+
+    ui_dir = os.path.abspath("frontend-tester")
+    os.makedirs(ui_dir, exist_ok=True)
+
+    # 1. Emit frontend-tester/openapi.json directly from docs/openapi.yaml
+    openapi_json_path = os.path.join(ui_dir, "openapi.json")
+    with open(openapi_json_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(spec, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    # 2. Sync docs/roles_matrix.json -> frontend-tester/roles_matrix.json if present
+    docs_matrix_path = os.path.join("docs", "roles_matrix.json")
+    if not os.path.exists(docs_matrix_path):
+        return
+    ui_matrix_path = os.path.join(ui_dir, "roles_matrix.json")
+    shutil.copyfile(docs_matrix_path, ui_matrix_path)
+
+    with open(docs_matrix_path, "r", encoding="utf-8") as f:
+        matrix = json.load(f)
+
+    # 3. Render Markdown table inside docs/FRONTEND_GUIDE.md between BEGIN_ROLES_MATRIX / END_ROLES_MATRIX
+    fg_path = os.path.join("docs", "FRONTEND_GUIDE.md")
+    if not os.path.exists(fg_path):
+        return
+    with open(fg_path, "r", encoding="utf-8") as f:
+        fg_text = f.read()
+
+    begin_marker = "<!-- BEGIN_ROLES_MATRIX -->"
+    end_marker = "<!-- END_ROLES_MATRIX -->"
+    if begin_marker not in fg_text or end_marker not in fg_text:
+        return
+
+    roles = matrix.get("roles", ["admin", "pengurus", "bendahara", "ketua", "pengawas", "operator", "anggota"])
+    header_cols = ["Method", "Path"] + roles + ["Unauth", "Cross-Tenant", "Catatan"]
+    md_lines = [
+        begin_marker,
+        "",
+        "| " + " | ".join(header_cols) + " |",
+        "|" + "|".join(["---"] * len(header_cols)) + "|",
+    ]
+    for ep in matrix.get("endpoints", []):
+        r_map = ep.get("roles", {})
+        row = [
+            f"`{ep['method'].upper()}`",
+            f"`{ep['path']}`",
+        ]
+        for r in roles:
+            row.append(_format_role_cell(r_map.get(r)))
+        row.append(str(ep.get("unauthenticated", "")))
+        row.append(str(ep.get("cross_tenant", "")).replace("|", "/"))
+        row.append(str(ep.get("notes", "")).replace("|", "/"))
+        md_lines.append("| " + " | ".join(row) + " |")
+    md_lines.extend(["", end_marker])
+
+    start_idx = fg_text.index(begin_marker)
+    end_idx = fg_text.index(end_marker) + len(end_marker)
+    updated_fg = fg_text[:start_idx] + "\n".join(md_lines) + fg_text[end_idx:]
+    with open(fg_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(updated_fg)
 
 
 if __name__ == "__main__":

@@ -213,7 +213,7 @@ paths:
         - $ref: '#/components/parameters/PathID'
       responses:
         '200':
-          description: Data pendaftaran dengan nik_tersamar
+          description: Data pendaftaran dengan pendaftaran_id dan nik_masked (NIK tersamar 4+4 digit)
         '404':
           description: Pendaftaran tidak ditemukan atau bukan milik pengguna
   /api/v1/pendaftaran/{id}/dokumen:
@@ -452,6 +452,13 @@ paths:
       parameters:
         - name: produk_id
           in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: anggota_id
+          in: query
+          required: true
           schema:
             type: string
             format: uuid

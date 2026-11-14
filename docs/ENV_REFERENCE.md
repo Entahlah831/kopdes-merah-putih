@@ -8,7 +8,7 @@
 | Jenis Pengaturan | Lokasi Penyimpanan | Contoh Parameter |
 |---|---|---|
 | Infrastruktur, Port, DSN, Kunci Kriptografi, Token, Batas Global API | Variabel Environment (`.env`) | `API_PORT`, `DB_*`, `JWT_SECRET`, `AES_MASTER_KEY`, `METRICS_TOKEN`, `BCRYPT_COST` |
-| Kebijakan Bisnis per Koperasi / Tenant | Tabel Database `konfigurasi_aturan` (RLS per `koperasi_id`) | Ambang persetujuan ganda khusus tenant, `auto_approve_mutasi_enabled`, batas pilot koperasi, jadwal iuran |
+| Kebijakan Bisnis per Koperasi / Tenant | Tabel Database `konfigurasi_aturan` (RLS per `koperasi_id`) | Ambang persetujuan ganda khusus tenant, `mutasi_auto_approve_enabled`, batas pilot koperasi, jadwal iuran |
 
 Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` di `.env` hanya berfungsi sebagai **nilai default sistem** ketika tenant belum menimpanya di tabel `konfigurasi_aturan`.
 

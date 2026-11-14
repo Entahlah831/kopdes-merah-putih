@@ -777,6 +777,11 @@ export function PembayaranQRIS({ tagihanIds }: { tagihanIds: string[] }) {
   );
 }</code></pre>
 
+  <div class="callout callout-info">
+    <strong>Frontend Tester Polos &amp; Kontrak Lengkap (54 Operasi / 48 Path):</strong>
+    Gunakan <code>cmd/uitester</code> (<code>UI_PORT</code> &amp; <code>API_PUBLIC_URL</code> dari <code>.env.test</code>) bersama <code>frontend-tester/</code> untuk menguji OpenAPI Explorer, alur terpandu 3.1–3.9, 26 skenario <code>scenarios.json</code>, serta matriks RBAC <code>roles_matrix.json</code> langsung di browser tanpa framework maupun penyimpanan token persisten. Konfigurasi total berjumlah 83 variabel di <code>docs/ENV_REFERENCE.md</code>.
+  </div>
+
   <!-- SECTION 7: FAQ -->
   <h1>7. Pertanyaan Umum & Troubleshooting (FAQ)</h1>
   <div class="callout callout-info">

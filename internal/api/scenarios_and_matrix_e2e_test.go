@@ -545,8 +545,7 @@ func TestV5_LiveScenariosAndRolesMatrix_E2E(t *testing.T) {
 
 	tmplRe := regexp.MustCompile(`\{\{([a-zA-Z0-9_]+)\}\}`)
 	nikCounter := 0
-	var expandString func(string) string
-	expandString = func(in string) string {
+	expandString := func(in string) string {
 		if in == "{{new_uuid}}" {
 			return uuid.NewString()
 		}

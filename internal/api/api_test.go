@@ -65,6 +65,20 @@ func hashSHA256(val string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+var testPwdHashCache sync.Map
+
+func fastTestHashPassword(pwd string) (string, error) {
+	if v, ok := testPwdHashCache.Load(pwd); ok {
+		return v.(string), nil
+	}
+	h, err := security.HashPasswordWithCost(pwd, 10)
+	if err != nil {
+		return "", err
+	}
+	testPwdHashCache.Store(pwd, h)
+	return h, nil
+}
+
 type TestEnv struct {
 	Server        *api.Server
 	Pool          *pgxpool.Pool
@@ -133,11 +147,11 @@ func setupAPITestEnv(t testing.TB) *TestEnv {
 
 	adminEmail := fmt.Sprintf("admin_%s@kopdes.id", uuid.New().String()[:8])
 	adminHash := security.HashBlindIndex(adminEmail, []byte(cfg.BlindIndexSecret))
-	adminPwdHash, _ := security.HashPassword("AdminPass123!")
+	adminPwdHash, _ := fastTestHashPassword("AdminPass123!")
 
 	anggotaEmail := fmt.Sprintf("anggota_%s@kopdes.id", uuid.New().String()[:8])
 	anggotaHash := security.HashBlindIndex(anggotaEmail, []byte(cfg.BlindIndexSecret))
-	anggotaPwdHash, _ := security.HashPassword("AnggotaPass123!")
+	anggotaPwdHash, _ := fastTestHashPassword("AnggotaPass123!")
 
 	_, err = conn.Exec(ctx, `
 		INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap)
@@ -278,7 +292,7 @@ func (env *TestEnv) createAndLoginUserFull(t testing.TB, roleName string) (handl
 	email := fmt.Sprintf("user_%s@kopdes.id", uuid.New().String()[:8])
 	emailHash := security.HashBlindIndex(email, []byte(env.Config.BlindIndexSecret))
 	pwdPlain := "UserPass123!"
-	pwdHash, _ := security.HashPassword(pwdPlain)
+	pwdHash, _ := fastTestHashPassword(pwdPlain)
 	userID := uuid.New()
 
 	_, err = conn.Exec(ctx, `
@@ -5025,7 +5039,7 @@ func TestItem4_Toko_StockConcurrency_NoOversell_And_OrderCancellation_Release(t 
 		bID := uuid.New()
 		email := fmt.Sprintf("buyer_race_%d_%s@koperasi.id", i, uuid.New().String()[:6])
 		emailHash := security.HashBlindIndex(email, []byte(env.Config.BlindIndexSecret))
-		pwdHash, _ := security.HashPassword("BuyerPassword123!")
+		pwdHash, _ := fastTestHashPassword("BuyerPassword123!")
 
 		_, err := env.Pool.Exec(ctx, `
 			INSERT INTO users (id, email_enkripsi, email_hash, no_hp_enkripsi, no_hp_hash, password_hash, nama_lengkap, status_aktif)

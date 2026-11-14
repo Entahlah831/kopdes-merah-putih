@@ -61,7 +61,7 @@ Tabel di bawah diselaraskan dengan riwayat commit Git dan berkas migrasi aktual 
 
 | No | Topik Keputusan | Nilai / Mekanisme Sementara di Kode | Konfigurasi & Default Produksi | Status Verifikasi Eksternal | Bukti persetujuan (diisi pemilik: notulen/email/chat) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | Penggunaan Rekening & QRIS Perorangan Pengurus | Diperbolehkan hanya bila flag pilot aktif; dibatasi limit per transaksi, limit harian `Asia/Jakarta`, log audit khusus, dan banner peringatan di respons admin | `ALLOW_PERSONAL_PAYMENT_PILOT` default **`false`** di `.env.example` & `AppConfig`. Nilai `true` **hanya** aktif di profil uji `.env.test` / `.env.test.alt`. | Perlu keputusan pengurus sebelum mengaktifkan `true` di produksi | |
+| 1 | Penggunaan Rekening & QRIS Perorangan Pengurus | Diperbolehkan hanya bila flag pilot aktif; dibatasi limit per transaksi, limit harian `Asia/Jakarta`, log audit khusus, dan banner peringatan di respons admin | Default **`false`** pada `.env.example`, `.env.test`, `.env.test.alt`, serta `AppConfig`; mode `true` hanya diuji pada kasus uji API Go terisolasi (`internal/api/`). | Perlu keputusan pengurus sebelum mengaktifkan `true` di produksi | |
 | 2 | Mode QRIS Statis + Kode Unik vs QRIS Dinamis | QRIS statis + alokasi kode unik kriptografis 3 digit (atau 4 digit) aktif; auto-lock QRIS dinamis dinonaktifkan sementara | `QRIS_DYNAMIC_ENABLED=false` (default) | Menunggu kesiapan kontrak QRIS dinamis PJP resmi | |
 | 3 | *Dual Control* (*Maker-Checker*) Transaksi & Mutasi CSV | Pemohon/pembuat/pengimpor dilarang menyetujui transaksi sendiri; dual approval di atas ambang nominal; auto-approve impor CSV nonaktif secara default | Ditegakkan di DB (`fn_setujui_pembayaran_qris` + Migrasi `000014`/`000017`) | Disarankan tetap aktif saat go-live | |
 | 4 | Masa Retensi Penghapusan Data Pendaftar Ditolak | Fungsi `fn_purge_rejected_pendaftaran_pdp` dan `internal/db/pdp_worker.go` melakukan **penghapusan baris/kolom database serta penghapusan berkas foto KYC fisik di disk** (**BUKAN** *crypto-shredding*). | `PDP_REJECTED_RETENTION_DAYS=30` (dapat diubah via konfigurasi) | **PERLU VERIFIKASI HUKUM** (konsultan hukum/DPO harus menilai kecukupan masa retensi terhadap UU PDP & arsip koperasi) | |
@@ -138,6 +138,14 @@ Pada penyelarasan audit v5 (`Tugas 0`), perbaikan kode berikut telah diuji denga
    - `internal/api/handlers/iuran_handler.go`: respons `POST /api/v1/iuran/jenis` kini konsisten menyertakan `"klasifikasi_akuntansi": "KEPUTUSAN AKUNTAN"` seperti `GET /api/v1/iuran/jenis`.
    - Keempat test `TestV5_Discrepancy01..04` lulus dalam pengujian lokal (`ok github.com/kopdes/merah-putih/internal/api 14.754s`).
 
+### Pembuktian Lanjutan v5: Frontend Tester, Matriks 54 Operasi, & `DISC-05` s.d. `DISC-11`
+
+Setelah perbaikan awal `DISC-01`–`DISC-04`, pengujian live terhadap server API nyata dan paritas artefak (`Tugas 1`–`7` v5) menemukan **7 ketidaksesuaian tambahan (`DISC-05` s.d. `DISC-11`, seluruhnya dicatat di [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md))**, termasuk **3 ketidaksesuaian fungsional/pengujian nyata**:
+- **`DISC-09` (`iuran_handler.go`)**: `GET /api/v1/iuran/tagihan/saya` mengembalikan HTTP `500` untuk user manajemen non-anggota karena `pgx.ErrNoRows` di tabel `anggota`; diperbaiki menjadi `200 OK []`.
+- **`DISC-10` (`service.go`)**: `POST /api/v1/iuran/generate` gagal dengan PostgreSQL `SQLSTATE 42P08` (*inconsistent types deduced for parameter `$3`*); diperbaiki via cast eksplisit `$3::text`.
+- **`DISC-11` (`internal/testseed/seed.go` & `frontend-tester/app.js`)**: Penyeragaman resource ID lintas-tenant uji (`produk_b_id`, `pembayaran_b_id`, `rekening_qris_b_id`) sehingga seluruh `7` probe `cross_tenant` berjalan deterministik.
+- **Pembuktian Live (`TestV5_LiveScenariosAndRolesMatrix_E2E` & `TestDoc_*`)**: Memverifikasi **`439` pemeriksaan matriks peran** (`54` operasi × `7` peran + `unauthenticated` + `7` `cross_tenant`), **`26` skenario uji `claim:ID` (`102` langkah)**, kebijakan CORS + `Access-Control-Expose-Headers`, penolakan body `> 10MB` (`413`), dan pemindaian **zero-PII di `540` respons API**.
+
 ---
 
 ## 5. Status Cadangan Data (*Backup*), Latihan Pemulihan (*Restore Drill*), & PITR (`0.4`)
@@ -150,20 +158,22 @@ Pada penyelarasan audit v5 (`Tugas 0`), perbaikan kode berikut telah diuji denga
 
 ## 6. Audit Konfigurasi (`envcheck`), Pemindaian Keamanan, & Toolchain
 
-### Hasil `envcheck` (Terakhir Terverifikasi pada Commit `51407b6`)
-- `.env.test` (Set A `--strict`): `79` variabel terverifikasi, `DB_NAME=kopdes_test`, `API_PORT=8080` (`EXIT: 0`).
-- `.env.test.alt` (Set B `--strict --ports`): `79` variabel terverifikasi, tanpa bentrok port (`EXIT: 0`).
-- `.env.example` (`--strict`): ditolak dengan `EXIT: 1` karena rahasia wajib kosong (`DB_PASSWORD`, `JWT_SECRET`, `AES_MASTER_KEY`, `BLIND_INDEX_SECRET`, `QRIS_SECRET`, `METRICS_TOKEN`).
-- Uji bentrok port live (`--ports` saat PostgreSQL Set A aktif di `5433`): mendeteksi `PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433` (`EXIT: 1`).
+### Hasil `envcheck` (Terverifikasi Lokal pada Tugas 8 v5)
+- `.env.test` (`--strict`): `envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100` (`EXIT: 0`).
+- `.env.test.alt` (`--strict --ports`): `envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.` + `envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100` (`EXIT: 0`).
+- `--compare .env.test .env.test.alt`: `envcheck COMPARE PASS: skema kunci 100% identik (83 kunci).` (`EXIT: 0`).
+- `.env.example` (`--strict`): ditolak `EXIT: 1` karena rahasia wajib kosong (`DB_PASSWORD`, `JWT_SECRET`, `AES_MASTER_KEY`, `BLIND_INDEX_SECRET`, `QRIS_SECRET`, `METRICS_TOKEN`).
+- Uji bentrok port live (`.env.test --strict --ports` saat PostgreSQL Set A aktif di `5433`): mendeteksi `PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433` (`EXIT: 1`).
 
-### Pemindaian Keamanan & Toolchain
+### Pemindaian Keamanan, Uji `-race`, & Toolchain
 
-| Pemindai | Lingkungan Eksekusi | Hasil Teramati | Catatan |
+| Pemindai / Pengujian | Lingkungan Eksekusi | Hasil Teramati | Catatan |
 |---|---|---|---|
-| **Gitleaks** | Lokal Windows & Linux CI (`43385163339`) | `0` kebocoran (`EXIT: 0`) | Akan dijalankan ulang sesudah seluruh rangkaian commit v5 |
-| **`staticcheck ./...`** | Lokal Windows & Linux CI (`43385163339`) | `0` isu (`EXIT: 0`) | Diuji kembali di tahap verifikasi akhir |
-| **`gosec ./...` (Tanpa `-exclude` global)** | Lokal Windows (Tugas 0 v5) | `Files: 44, Lines: 13045, Nosec: 16, Issues: 0` | Pengecualian global CI telah dihapus; siap diverifikasi Linux CI |
-| **`govulncheck ./...` (Linux CI / Dockerfile `go1.27.4`)** | Linux CI (`43385163339`) | `No vulnerabilities found.` | Toolchain host Windows pengembang masih `go1.27.1`; image Docker & CI dibangun dengan `go1.27.4` |
+| **Gitleaks** (`git --config .gitleaks.toml`) | Lokal Windows Tugas 8 v5 | `74 commits scanned`, `no leaks found` (`EXIT: 0`) | Diuji juga pada Linux CI |
+| **`staticcheck ./...`** | Lokal Windows Tugas 8 v5 | `0` isu (`EXIT: 0`) | Setelah perbaikan `S1021` di `scenarios_and_matrix_e2e_test.go` |
+| **`gosec ./...` (Tanpa `-exclude` global)** | Lokal Windows Tugas 8 v5 | `Files: 47, Lines: 14144, Nosec: 20, Issues: 0` (`EXIT: 0`) | Pengecualian global CI telah dihapus |
+| **`go test -count=1 -race -p 1 ./...`** | Lokal Windows Set A Tugas 8 v5 | Seluruh paket lulus (`EXIT: 0`; `internal/api` `167.549s`) | Setelah `fastTestHashPassword` (cost 10 cache) di `api_test.go` |
+| **`govulncheck ./...`** | Lokal `go1.27.1` vs CI `go1.27.4` | Lokal `go1.27.1`: 12 temuan stdlib (`http2`/`net/http` fixed di `1.27.2+`); CI `go1.27.4`: run `43385163339` `No vulnerabilities found.` | Menunggu konfirmasi run CI pasca-push v5 |
 | **Hadolint + Trivy Config + `trivy image`** | Linux CI | Config + Hadolint lolos di `43385163339`; `trivy image` baru ditambahkan | Hasil `trivy image` aktual menunggu run CI pasca-push Tugas 0–8 |
 
 ---
@@ -181,7 +191,7 @@ Pada **GitHub Actions Run `43385163339`** (`https://github.com/Entahlah831/kopde
 1. **Belum Ada Audit & Pengujian Penetrasi Pihak Ketiga**: Seluruh hasil pada dokumen ini adalah hasil verifikasi mandiri tim/agen pengembang pada lingkungan uji, bukan sertifikasi keamanan atau peninjauan eksternal independen.
 2. **PITR Belum Diimplementasikan**: Hanya tersedia cadangan logis `pg_dump` terjadwal + latihan restore; arsip WAL berkelanjutan (untuk RPO < 24 jam dan pemulihan ke titik waktu tertentu) perlu dibangun pada fase infrastruktur produksi berikutnya.
 3. **Integrasi Eksternal Masih Stub/Lokal**: Pengiriman WhatsApp/SMS (`internal/outbox`) dan sinkronisasi SIMKOPDES (`internal/simkopdes`) bersifat *adapter stub* tanpa kredensial penyedia resmi; penyimpanan lampiran KYC memakai disk lokal dengan batasan akses, belum object storage eksternal S3/MinIO.
-4. **Pembaruan Uji Menyeluruh v5 Sedang Berjalan**: Penambahan pengecekan `restore_drill.sh` 3-tabel, `trivy image` di CI, Frontend Tester beserta bukti skenario/matriks RBAC penuh (`Tugas 1`–`8`), serta pemindaian ulang penuh (`-race`, `staticcheck`, `govulncheck`, CI hijau) wajib dibuktikan setelah implementasi v5 rampung.
+4. **Verifikasi Akhir GitHub Actions v5 (`trivy image` & `restore_drill.sh` 3-tabel)**: Implementasi lokal Tugas 0–8 (termasuk `frontend-tester/README.md`, `439` cek matriks, `26` skenario, `envcheck` 83 variabel, `go test -count=1 -race -p 1 ./...`, `gosec`, `staticcheck`, `gitleaks`) sudah lulus; hasil eksekusi Linux CI terbaru (Set A, Set B Docker, `govulncheck` `go1.27.4`, `trivy image`, `restore_drill.sh` 3-tabel) dicatat sesudah push ke `origin/main`.
 5. **Kewajiban Hukum & Akuntansi Eksternal**:
    - **`PERLU VERIFIKASI HUKUM`**: Evaluasi UU 27/2022 PDP atas kebijakan retensi `PDP_REJECTED_RETENTION_DAYS` (default `30` hari) dan pemrosesan data biometrik/KTP.
    - **`KEPUTUSAN AKUNTAN`**: Pemetaan pos akuntansi iuran koperasi sebelum tutup buku.

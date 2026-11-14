@@ -1071,3 +1071,74 @@ ok  	github.com/kopdes/merah-putih/internal/api	6.680s
 PASS
 ok  	github.com/kopdes/merah-putih/cmd/uitester	1.494s
 ```
+
+---
+
+## Tugas 7 & Tugas 8 (v5) — Panduan Frontend Tester, Penyelarasan Dokumentasi, Optimasi Uji `-race`, & Verifikasi Penuh Lokal
+
+- **Pembaruan Dokumentasi & Artefak (`Tugas 7`)**:
+  - `frontend-tester/README.md`: dokumentasi lengkap Frontend Tester polos (tanpa framework/CDN/build/penyimpanan persisten), `cmd/seed_test_accounts`, `scripts/seed_test_accounts.{ps1,sh}`, `cmd/uitester`, `docker-compose.test.yml --profile tester`, OpenAPI Explorer (`54` operasi / `48` path), alur `3.1`–`3.9`, `scenarios.json` (`26` skenario / `102` langkah), `roles_matrix.json` (`439` pemeriksaan), panel perilaku browser `6.1`–`6.4`, serta catatan reset MFA untuk `admin_nomfa_a`.
+  - `docs/README.md`, `docs/FRONTEND_GUIDE.md` (§12), `docs/BACKEND_GUIDE.md` (§10 status `restore_drill.sh` 3-tabel + status PITR belum diimplementasikan, §11 rujukan diskrepansi & tester), dan `docs/AUDIT_REPORT.md` (§3 koreksi `ALLOW_PERSONAL_PAYMENT_PILOT=false` pada `.env.test`/`.env.test.alt`, §4 ringkasan `DISC-05`–`DISC-11`).
+  - `scripts/generate_docs.py`: penambahan ringkasan Frontend Tester dan regenerasi `docs/DOKUMENTASI_LENGKAP_API_KOPDES.html`, `.pdf` (`515,374 bytes`), dan `.docx`.
+- **Optimasi & Perbaikan `Tugas 8`**:
+  - `internal/api/scenarios_and_matrix_e2e_test.go`: memperbaiki temuan `staticcheck` (`S1021`) pada deklarasi `expandString`.
+  - `internal/api/api_test.go`: sebelum optimasi, `go test -count=1 -race -p 1 ./...` menyentuh batas timeout default `10m0s` (`FAIL internal/api 601.537s` saat menjalankan `TestV5_Discrepancy04` pada detik ke-8) akibat 100+ pemanggilan ulang *bcrypt cost-12* pada fixture uji. Ditambahkan `fastTestHashPassword` ber-cache `sync.Map` (cost 10 di fixture uji) sehingga waktu `-race` paket `internal/api` turun menjadi **`167.549s`** dengan seluruh tes tetap aktif.
+  - `.github/workflows/ci.yml`: menambah `-timeout 20m` pada langkah `go test -count=1 -race -p 1` Set A dan Set B agar runner CI memiliki ruang waktu longgar.
+
+```text
+$ go run ./cmd/envcheck --env-file .env.test --strict
+envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100
+
+$ go run ./cmd/envcheck --env-file .env.test.alt --strict --ports
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100
+
+$ go run ./cmd/envcheck --compare .env.test .env.test.alt
+envcheck COMPARE PASS: skema kunci 100% identik (83 kunci).
+
+$ go run ./cmd/envcheck --env-file .env.example --strict  # (EXIT: 1)
+NILAI KOSONG: DB_PASSWORD wajib diisi ... VALIDASI KEAMANAN GAGAL: secret JWT_SECRET tidak valid: panjang minimal 32 byte (didapat 0 byte)
+
+$ go run ./cmd/envcheck --env-file .env.test --strict --ports  # saat PG Set A aktif di 5433 (EXIT: 1)
+PORT SEDANG DIPAKAI (DB_HOST_PORT): 127.0.0.1:5433
+
+$ gosec.exe ./...
+Summary:
+  Gosec  : dev
+  Files  : 47
+  Lines  : 14144
+  Nosec  : 20
+  Issues : 0
+
+$ staticcheck.exe ./...
+EXIT:0
+
+$ gitleaks.exe git --config .gitleaks.toml --verbose --redact
+12:50PM INF 74 commits scanned.
+12:50PM INF scanned ~1984380 bytes (1.98 MB) in 3.75s
+12:50PM INF no leaks found
+
+$ govulncheck.exe ./...  # host lokal go1.27.1 (CI & Dockerfile memakai go1.27.4)
+Your code is affected by 12 vulnerabilities from the Go standard library. (net/http / http2 @go1.27.1, fixed in go1.27.2+)
+
+$ go test -count=1 -race -p 1 ./...
+ok  	github.com/kopdes/merah-putih	5.204s
+ok  	github.com/kopdes/merah-putih/cmd/envcheck	1.645s
+?   	github.com/kopdes/merah-putih/cmd/loadtest	[no test files]
+ok  	github.com/kopdes/merah-putih/cmd/seed_test_accounts	1.534s
+?   	github.com/kopdes/merah-putih/cmd/server	[no test files]
+ok  	github.com/kopdes/merah-putih/cmd/uitester	2.243s
+ok  	github.com/kopdes/merah-putih/internal/api	167.549s
+?   	github.com/kopdes/merah-putih/internal/api/handlers	[no test files]
+ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.806s
+?   	github.com/kopdes/merah-putih/internal/api/response	[no test files]
+ok  	github.com/kopdes/merah-putih/internal/auth	1.594s
+ok  	github.com/kopdes/merah-putih/internal/config	1.530s
+ok  	github.com/kopdes/merah-putih/internal/db	3.835s
+ok  	github.com/kopdes/merah-putih/internal/outbox	2.339s
+ok  	github.com/kopdes/merah-putih/internal/qris	1.583s
+ok  	github.com/kopdes/merah-putih/internal/security	1.445s
+?   	github.com/kopdes/merah-putih/internal/simkopdes	[no test files]
+?   	github.com/kopdes/merah-putih/internal/testseed	[no test files]
+EXIT:0
+```

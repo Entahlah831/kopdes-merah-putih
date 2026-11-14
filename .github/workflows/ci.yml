@@ -95,7 +95,7 @@ jobs:
       - name: Jalankan Full Suite -race (Set A)
         env:
           TEST_ENV_FILE: .env.test
-        run: go test -count=1 -race -p 1 ./...
+        run: go test -count=1 -race -p 1 -timeout 20m ./...
 
       - name: Pemindaian Keamanan Go (govulncheck, staticcheck, gosec)
         run: |
@@ -163,7 +163,7 @@ jobs:
               export "${_k}=${_v}"
             fi
           done < .env.test.alt
-          go test -count=1 -race -p 1 ./...
+          go test -count=1 -race -p 1 -timeout 20m ./...
           ENV_FILE=.env.test.alt bash scripts/backup.sh
           ENV_FILE=.env.test.alt bash scripts/restore_drill.sh
           go run ./cmd/loadtest --base-url "http://127.0.0.1:${API_HOST_PORT}" --members 2000 --concurrency 100

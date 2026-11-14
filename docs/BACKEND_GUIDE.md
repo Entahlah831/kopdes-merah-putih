@@ -252,7 +252,8 @@ Untuk mengganti port API (`API_PORT`/`API_HOST_PORT`), metrik (`METRICS_PORT`/`M
 - **Backup Terenkripsi**: `ENV_FILE=.env bash scripts/backup.sh` membuat dump terenkripsi AES-256-CBC/PBKDF2 (`*.dump.enc`) beserta checksum `.sha256` menggunakan role berhak akses penuh (`POSTGRES_USER`) agar tabel `FORCE RLS` ikut terbaca utuh.
 - **Uji Pemulihan & DR Drill**:
   - `ENV_FILE=.env bash scripts/restore_test.sh <file.dump.enc>` menguji restore penuh ke database sementara.
-  - `ENV_FILE=.env bash scripts/restore_drill.sh` membuat WAL checkpoint, menyisipkan marker `audit_log`, memulihkan snapshot ke database drill terpisah, lalu memverifikasi `broken links = 0` pada hash chain `audit_log` serta seluruh policy `FORCE RLS` aktif.
+  - `ENV_FILE=.env bash scripts/restore_drill.sh` membuat WAL checkpoint, menyisipkan marker `audit_log`, memulihkan snapshot ke database drill terpisah, mencetak status enkripsi dump, memverifikasi `broken links = 0` pada hash chain **ketiga** tabel append-only (`audit_log`, `kas_mutasi`, `pembayaran_verifikasi_log`), serta memastikan seluruh policy `FORCE ROW LEVEL SECURITY` aktif.
+  - **Status PITR**: **PITR belum diimplementasikan** (*Point-In-Time Recovery* berbasis arsip WAL berkelanjutan belum tersedia; pemulihan saat ini bergantung pada cadangan logis `pg_dump` terjadwal).
 
 ### Partisi Bulanan, Monitoring & Alerting
 
@@ -284,4 +285,5 @@ Untuk mengganti port API (`API_PORT`/`API_HOST_PORT`), metrik (`METRICS_PORT`/`M
   1. `internal/simkopdes` dipertahankan sebagai adapter stub pasif atas permintaan pemilik proyek yang memfokuskan fase ini untuk satu kopdes cabang tunggal lokal; bila integrasi nasional dibutuhkan di masa depan, adapter ini perlu diimplementasikan dengan klien HTTP sebenarnya.
   2. Notifier WhatsApp/SMS pada `internal/outbox` saat ini berjalan memakai provider antrean & mock adapter — integrasi ke vendor gateway produksi masih menunggu kredensial pemilik. <!-- claim:CLAIM-INFRA-WALLET-SMS UNVERIFIED: Memerlukan kredensial API vendor WhatsApp/SMS eksternal di luar lingkungan test -->
   3. Penyimpanan KYC saat ini menulis ke direktori lokal terikat `STORAGE_KYC_DIR` (bukan object storage S3 terdistribusi); backup folder `STORAGE_KYC_DIR` wajib disertakan dalam jadwal backup VPS. <!-- claim:CLAIM-INFRA-TLS-BACKUP UNVERIFIED: Backup terenkripsi, restore drill pg_dump, sertifikat TLS, dan pemindaian Trivy berjalan pada lingkungan OS/Docker/CI bukan lewat HTTP API -->
+- **Rujukan Verifikasi & Diskrepansi**: Daftar seluruh temuan perbedaan dokumentasi vs kode nyata beserta perbaikannya dicatat di [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md), dan alat pembuktian live API berbasis browser terdokumentasi di [frontend-tester/README.md](../frontend-tester/README.md).
 - **Keputusan di Tangan Manusia**: Lihat daftar tugas manual lengkap di [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) (penandatanganan legal retensi PDP `PERLU VERIFIKASI HUKUM`, klasifikasi akuntansi iuran `KEPUTUSAN AKUNTAN`, pengadaan akun QRIS resmi badan hukum, penyedia WhatsApp/SMS, dan sertifikat TLS/domain produksi).

@@ -707,3 +707,16 @@ curl -s -H "Authorization: Bearer ${ADMIN_TOKEN}" "${API_BASE_URL}/api/v1/lapora
 - **Debugging `429 Too Many Requests`**:
   1. Pastikan frontend mengimplementasikan single-flight refresh dan menghindari polling lebih cepat dari interval 10 detik.
   2. Apabila `429` terjadi serentak pada banyak user di belakang reverse proxy / Docker, minta operator backend menambahkan CIDR proxy ke variabel `TRUSTED_PROXIES`.
+
+---
+
+## 12. Frontend Tester Polos & Pembuktian Skenario (`frontend-tester/`)
+
+Untuk membuktikan secara langsung di browser bahwa seluruh klaim pada panduan ini cocok dengan perilaku API nyata, repositori menyediakan **Frontend Tester Polos** (HTML polos + `<style>` minimal + vanilla JS tanpa build step maupun CDN):
+
+- **Panduan Menjalankan Tester**: Lihat [frontend-tester/README.md](../frontend-tester/README.md) (`cmd/seed_test_accounts`, `cmd/uitester`, serta profil `tester` pada `docker-compose.test.yml`).
+- **Penyimpanan Memori Tab**: Token autentikasi pada tester **tidak pernah** disimpan ke `localStorage`, `sessionStorage`, ataupun cookie; seluruh state hanya hidup di memori JS selama tab terbuka.
+- **Matriks & Skenario Otomatis**:
+  - [roles_matrix.json](roles_matrix.json): menguji seluruh `54` operasi (`48` path) terhadap `7` peran, kondisi `unauthenticated`, serta `7` probe isolasi lintas tenant (`439` pemeriksaan).
+  - [scenarios.json](../frontend-tester/scenarios.json): memetakan seluruh `26` penanda klaim terdokumentasi pada `FRONTEND_GUIDE.md` dan `BACKEND_GUIDE.md` menjadi `102` langkah eksekusi terotomasi (beserta ekspor laporan bukti JSON/Markdown dan pemindaian zero-PII).
+- **Catatan Ketidaksesuaian**: Setiap perbedaan yang ditemukan saat pengujian live dicatat beserta status perbaikannya di [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md).

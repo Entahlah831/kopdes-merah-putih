@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Kopdes Merah Putih — Frontend Tester Polos</title>
+</head>
+<body>
+  <h1>Kopdes Merah Putih — Frontend Tester Polos</h1>
+  <p>Alat uji langsung di browser (tanpa framework, tanpa build step, tanpa CDN, token hanya di memori halaman).</p>
+
+  <fieldset>
+    <legend>0. Status Lingkungan, Konfigurasi &amp; Guard Keamanan</legend>
+    <div id="configBanner">Memuat /config.json ...</div>
+    <div id="nonLocalGuardBox" hidden>
+      <p><strong>PERINGATAN TARGET NON-LOKAL / PRODUKSI:</strong> Ketik persis <code>SAYA PAHAM INI BUKAN PRODUKSI</code> untuk membuka tombol mutasi:</p>
+      <input type="text" id="nonLocalConfirmInput" size="40" placeholder="SAYA PAHAM INI BUKAN PRODUKSI">
+      <button type="button" id="btnApplyGuard">Konfirmasi Target Uji</button>
+    </div>
+    <p>
+      <label>Target Base URL API: <input type="text" id="apiBaseUrlInput" size="42"></label>
+      <label>Koperasi ID Aktif: <input type="text" id="activeKoperasiInput" size="38"></label>
+    </p>
+    <p>
+      <label>Kata Sandi Akun Uji (di memori, tidak disimpan): <input type="password" id="testSeedPasswordInput" size="32" autocomplete="off"></label>
+      <label>Metrics Bearer Token (opsional, >=32 byte): <input type="password" id="metricsTokenInput" size="36" autocomplete="off"></label>
+    </p>
+    <p>
+      <strong>Sesi Aktif:</strong> <span id="sessionStatusText">Belum login (Unauthenticated)</span> |
+      <button type="button" id="btnRefreshToken">Refresh Token</button>
+      <button type="button" id="btnLogout">Logout / Revoke</button>
+      <button type="button" id="btnClearSession">Hapus Sesi Memori</button>
+    </p>
+    <details>
+      <summary>Catatan State ID &amp; Variabel Uji Terkumpul (Memori Halaman)</summary>
+      <pre id="varsDumpPre">{}</pre>
+    </details>
+  </fieldset>
+
+  <fieldset>
+    <legend>1. Pengalih Akun Cepat (Seeded Role Accounts)</legend>
+    <table border="1" cellpadding="4">
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>Tenant</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>MFA Wajib</th>
+          <th>Keterangan</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody id="accountsTableBody">
+        <tr><td colspan="7">Memuat daftar akun...</td></tr>
+      </tbody>
+    </table>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Konsol OpenAPI Generik (Semua 48 Operasi)</legend>
+    <p>
+      <label>Pilih Operasi OpenAPI:
+        <select id="openapiOpSelect"></select>
+      </label>
+      <button type="button" id="btnLoadOpSample">Muat Contoh</button>
+    </p>
+    <div id="openapiOpDesc"></div>
+    <p>
+      <label>Path Params (JSON): <br><textarea id="openapiPathParams" rows="2" cols="70">{}</textarea></label><br>
+      <label>Query Params (JSON): <br><textarea id="openapiQueryParams" rows="2" cols="70">{}</textarea></label><br>
+      <label>Mode Idempotency-Key:
+        <select id="openapiIdempMode">
+          <option value="none">Tanpa header</option>
+          <option value="auto">Auto UUID baru</option>
+          <option value="reuse">Pakai ulang UUID terakhir</option>
+          <option value="custom">Kustom manual</option>
+        </select>
+      </label>
+      <input type="text" id="openapiIdempCustom" size="38" placeholder="Idempotency-Key manual/terakhir">
+      <br>
+      <label>Body Request (JSON): <br><textarea id="openapiBody" rows="6" cols="70">{}</textarea></label>
+    </p>
+    <p>
+      <button type="button" id="btnSendOpenAPI" data-mutates="dynamic">Kirim Request</button>
+      <button type="button" id="btnCopyCurl">Salin sebagai cURL</button>
+    </p>
+    <pre id="openapiCurlPreview"></pre>
+    <pre id="openapiResponsePre">Belum ada permintaan.</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Panel Alur Terpandu (3.1 s.d. 3.9)</legend>
+    <p>Jalankan per langkah sesuai panduan dokumentasi. Setiap langkah mengisi konteks ID (misal payment_id, order_id, enrollment) ke langkah berikutnya.</p>
+
+    <details open>
+      <summary>3.1 Autentikasi, MFA Wajib Enrollment, Token Reuse &amp; Lockout</summary>
+      <p>
+        <label>Email: <input type="text" id="flowLoginEmail" size="30"></label>
+        <label>Password: <input type="password" id="flowLoginPass" size="24" autocomplete="off"></label>
+        <button type="button" id="btnFlow31aLogin" data-mutates="true">3.1a Login Langsung (Auto TOTP jika MFA)</button>
+      </p>
+      <p>
+        <button type="button" id="btnFlow31bEnroll" data-mutates="true">3.1b Uji MFA Mandatory Enrollment (admin_nomfa_a)</button>
+        <button type="button" id="btnFlow31cReuse" data-mutates="true">3.1c Uji Refresh Rotation &amp; Token Reuse Revocation</button>
+        <button type="button" id="btnFlow31dMetrics">3.1d Uji GET /metrics Token</button>
+        <button type="button" id="btnFlow31eLockout" data-mutates="true">3.1e Uji Brute-Force Lockout (429 + Retry-After)</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.2 Pendaftaran Anggota + Upload KYC PNG + Maker-Checker Verifikasi</summary>
+      <p>
+        <label>Nama Pendaftar: <input type="text" id="flowPendaftaranNama" value="Calon Anggota Uji Browser"></label>
+        <label>NIK 16 Digit: <input type="text" id="flowPendaftaranNIK" value="3201999900010001"></label>
+        <button type="button" id="btnFlow32Run" data-mutates="true">3.2 Jalankan Pendaftaran + Upload KYC PNG + Masking PII</button>
+        <button type="button" id="btnFlow32Verify" data-mutates="true">3.2b Verifikasi Maker-Checker Pengurus</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.3 Pembayaran QRIS Statis, Kode Unik, Idempotency-Key (201/Replay/422) &amp; Maker-Checker</summary>
+      <p>
+        <button type="button" id="btnFlow33QRIS" data-mutates="true">3.3a Buat QRIS Tagihan (201, Replay 201, Body Beda 422)</button>
+        <button type="button" id="btnFlow33ClaimAndApprove" data-mutates="true">3.3b Upload Bukti, Klaim RRN &amp; Approve Pengurus2</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.4 Impor Mutasi Bank CSV, Segregasi Peran &amp; Rekonsiliasi Harian</summary>
+      <p>
+        <button type="button" id="btnFlow34Mutasi" data-mutates="true">3.4 Jalankan Impor CSV &amp; Uji Deteksi Duplikat</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.5 Manajemen Rekening QRIS Merchant (Tolak Perorangan Tanpa Pilot vs Badan Hukum)</summary>
+      <p>
+        <button type="button" id="btnFlow35Rekening" data-mutates="true">3.5 Uji Penolakan Rekening Perorangan &amp; List Rekening</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.6 Toko Koperasi, Keranjang, Promo, Checkout &amp; Verifikasi Pembayaran</summary>
+      <p>
+        <button type="button" id="btnFlow36Toko" data-mutates="true">3.6 Jalankan List Produk -&gt; Keranjang -&gt; Checkout Promo -&gt; Order</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.7 CRUD Jenis Iuran &amp; Generate Tagihan Bulanan (Penanda KEPUTUSAN AKUNTAN)</summary>
+      <p>
+        <button type="button" id="btnFlow37Iuran" data-mutates="true">3.7 Jalankan GET/POST Jenis Iuran &amp; Generate Tagihan</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.8 Laporan Keuangan, Rekonsiliasi, Manajemen Anggota, Users &amp; Anti-Escalation Role</summary>
+      <p>
+        <button type="button" id="btnFlow38Admin" data-mutates="true">3.8 Jalankan Laporan + Users + Tolak Self-Escalation</button>
+      </p>
+    </details>
+
+    <details>
+      <summary>3.9 Isolasi Lintas-Tenant (Kop A vs Kop B) &amp; Anti-IDOR Anggota</summary>
+      <p>
+        <button type="button" id="btnFlow39Tenant">3.9 Jalankan Pembuktian Lintas-Tenant &amp; IDOR Pembayaran</button>
+      </p>
+    </details>
+
+    <pre id="flowOutputPre">Log langkah terpandu akan tampil di sini.</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. Eksekutor Pembuktian Dokumentasi (scenarios.json)</legend>
+    <p>
+      <button type="button" id="btnRunAllScenarios" data-mutates="true">Jalankan semua skenario</button>
+      <button type="button" id="btnDownloadProofJSON" disabled>Unduh laporan bukti (JSON)</button>
+      <button type="button" id="btnDownloadProofMD" disabled>Unduh laporan bukti (Markdown)</button>
+    </p>
+    <div id="scenariosSummary">Belum dijalankan.</div>
+    <table border="1" cellpadding="4">
+      <thead>
+        <tr>
+          <th>Claim ID</th>
+          <th>Status</th>
+          <th>HTTP</th>
+          <th>Operasi</th>
+          <th>Bukti Ringkas</th>
+          <th>Waktu</th>
+        </tr>
+      </thead>
+      <tbody id="scenariosTableBody">
+        <tr><td colspan="6">Belum ada hasil skenario.</td></tr>
+      </tbody>
+    </table>
+  </fieldset>
+
+  <fieldset>
+    <legend>5. Pengujian Matriks Peran (roles_matrix.json)</legend>
+    <p>
+      <button type="button" id="btnRunRolesMatrix" data-mutates="true">Uji matriks</button>
+    </p>
+    <div id="rolesMatrixSummary">Belum dijalankan.</div>
+    <table border="1" cellpadding="4">
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Path</th>
+          <th>Peran / Kondisi</th>
+          <th>Harapan</th>
+          <th>Aktual</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="rolesMatrixTableBody">
+        <tr><td colspan="6">Belum ada hasil matriks.</td></tr>
+      </tbody>
+    </table>
+  </fieldset>
+
+  <fieldset>
+    <legend>6. Panel Perilaku Browser Nyata (CORS, Abort/Retry, Ukuran Body, PII Masking)</legend>
+    <p>
+      <button type="button" id="btnBehavior61CORS">6.1 Uji CORS Origin Sah vs Origin Asing</button>
+      <button type="button" id="btnBehavior62Abort" data-mutates="true">6.2 Uji Timeout/Abort + Retry Idempotency-Key</button>
+      <button type="button" id="btnBehavior63Limits" data-mutates="true">6.3 Uji Body &gt; 10MB (413) &amp; Malformed JSON (400)</button>
+      <button type="button" id="btnBehavior64PII">6.4 Pindai PII / Rahasia di Semua Respons Tersimpan</button>
+    </p>
+    <pre id="behaviorOutputPre">Belum dijalankan.</pre>
+  </fieldset>
+
+  <script src="app.js"></script>
+</body>
+</html>

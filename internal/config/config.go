@@ -35,6 +35,9 @@ type AppConfig struct {
 	MetricsPort    int      `env:"METRICS_PORT" type:"int" default:"9100" required:"prod,compose" secret:"false" port:"internal" component:"api,compose" desc:"Port internal endpoint Prometheus /metrics (bila berbeda dari API_PORT)" example:"9100"`
 	MetricsHostPort int     `env:"METRICS_HOST_PORT" type:"int" default:"9100" required:"compose" secret:"false" port:"host" component:"compose,prometheus" desc:"Port host untuk eksposur /metrics internal" example:"9100"`
 	PrometheusHostPort int  `env:"PROMETHEUS_HOST_PORT" type:"int" default:"9090" required:"monitoring" secret:"false" port:"host" component:"prometheus" desc:"Port host layanan Prometheus opsional" example:"9090"`
+	UIPort             int  `env:"UI_PORT" type:"int" default:"8081" required:"all" secret:"false" port:"host" component:"uitester,compose" desc:"Port HTTP Frontend Tester lokal/uji (dilarang aktif pada production)" example:"8081"`
+	UIBind             string `env:"UI_BIND" type:"string" default:"127.0.0.1" required:"all" secret:"false" port:"bind" component:"uitester,compose" desc:"Alamat bind HTTP Frontend Tester (default loopback 127.0.0.1)" example:"127.0.0.1"`
+	APIPublicURL       string `env:"API_PUBLIC_URL" type:"string" default:"http://127.0.0.1:8080" required:"all" secret:"false" component:"uitester,frontend-tester" desc:"URL publik/host API untuk Frontend Tester browser (tanpa trailing slash)" example:"http://127.0.0.1:8080"`
 	AllowedOrigins []string `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" example:"http://127.0.0.1:3000"`
 	TrustedProxies []string `env:"TRUSTED_PROXIES" type:"[]string" default:"127.0.0.1/32" required:"prod" secret:"false" component:"api" desc:"Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For" example:"127.0.0.1/32"`
 
@@ -117,6 +120,7 @@ type AppConfig struct {
 	EnvFile              string `env:"ENV_FILE" type:"string" default:".env" required:"optional" secret:"false" component:"api,scripts" desc:"Path berkas .env fallback untuk binary server dan skrip operasional" example:".env"`
 	TestEnvFile          string `env:"TEST_ENV_FILE" type:"string" default:".env.test" required:"optional" secret:"false" component:"tests" desc:"Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt)" example:".env.test"`
 	TestDatabaseURL      string `env:"TEST_DATABASE_URL" type:"string" default:"" required:"test" secret:"true" component:"tests" desc:"DSN khusus suite tes Go (wajib berakhiran *_test)" example:"postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable"`
+	TestSeedPassword     string `env:"TEST_SEED_PASSWORD" type:"string" default:"" required:"optional" secret:"true" component:"seed_test_accounts" desc:"Kata sandi akun uji sintetis untuk cmd/seed_test_accounts (kosong di template; dilarang di produksi)" example:"kopdes_test_setA_user_pass_123!"`
 }
 
 // Load membaca seluruh parameter AppConfig dari fungsi lookup (mis. os.LookupEnv).
@@ -231,6 +235,12 @@ func (c AppConfig) validateBasic() error {
 	}
 	if c.MetricsPort < 0 || c.MetricsPort > 65535 {
 		return fmt.Errorf("METRICS_PORT di luar jangkauan: %d", c.MetricsPort)
+	}
+	if c.PrometheusHostPort < 0 || c.PrometheusHostPort > 65535 {
+		return fmt.Errorf("PROMETHEUS_HOST_PORT di luar jangkauan: %d", c.PrometheusHostPort)
+	}
+	if c.UIPort <= 0 || c.UIPort > 65535 {
+		return fmt.Errorf("UI_PORT di luar jangkauan: %d", c.UIPort)
 	}
 	if c.DBPort <= 0 || c.DBPort > 65535 {
 		return fmt.Errorf("DB_PORT di luar jangkauan: %d", c.DBPort)

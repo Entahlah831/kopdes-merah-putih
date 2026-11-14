@@ -21,6 +21,8 @@ Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` 
 | `internal` | `METRICS_PORT` | Port internal endpoint Prometheus /metrics (bila berbeda dari API_PORT) |
 | `host` | `METRICS_HOST_PORT` | Port host untuk eksposur /metrics internal |
 | `host` | `PROMETHEUS_HOST_PORT` | Port host layanan Prometheus opsional |
+| `host` | `UI_PORT` | Port HTTP Frontend Tester lokal/uji (dilarang aktif pada production) |
+| `bind` | `UI_BIND` | Alamat bind HTTP Frontend Tester (default loopback 127.0.0.1) |
 | `host` | `DB_PORT` | Port koneksi DB yang dituju klien/API di host atau jaringan |
 | `internal` | `DB_CONTAINER_PORT` | Port internal PostgreSQL di dalam kontainer |
 | `host` | `DB_HOST_PORT` | Port host PostgreSQL yang dipetakan ke DB_CONTAINER_PORT |
@@ -37,6 +39,9 @@ Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` 
 | `METRICS_PORT` | `int` | `9100` | `prod,compose` | Tidak | `api,compose` | Port internal endpoint Prometheus /metrics (bila berbeda dari API_PORT) | `9100` |
 | `METRICS_HOST_PORT` | `int` | `9100` | `compose` | Tidak | `compose,prometheus` | Port host untuk eksposur /metrics internal | `9100` |
 | `PROMETHEUS_HOST_PORT` | `int` | `9090` | `monitoring` | Tidak | `prometheus` | Port host layanan Prometheus opsional | `9090` |
+| `UI_PORT` | `int` | `8081` | `all` | Tidak | `uitester,compose` | Port HTTP Frontend Tester lokal/uji (dilarang aktif pada production) | `8081` |
+| `UI_BIND` | `string` | `127.0.0.1` | `all` | Tidak | `uitester,compose` | Alamat bind HTTP Frontend Tester (default loopback 127.0.0.1) | `127.0.0.1` |
+| `API_PUBLIC_URL` | `string` | `http://127.0.0.1:8080` | `all` | Tidak | `uitester,frontend-tester` | URL publik/host API untuk Frontend Tester browser (tanpa trailing slash) | `http://127.0.0.1:8080` |
 | `ALLOWED_ORIGINS` | `[]string` | _(kosong)_ | `prod,staging` | Tidak | `api` | Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production) | `http://127.0.0.1:3000` |
 | `TRUSTED_PROXIES` | `[]string` | `127.0.0.1/32` | `prod` | Tidak | `api` | Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For | `127.0.0.1/32` |
 | `DB_HOST` | `string` | `127.0.0.1` | `all` | Tidak | `api,scripts` | Hostname server PostgreSQL 16 | `127.0.0.1` |
@@ -109,3 +114,4 @@ Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` 
 | `ENV_FILE` | `string` | `.env` | `optional` | Tidak | `api,scripts` | Path berkas .env fallback untuk binary server dan skrip operasional | `.env` |
 | `TEST_ENV_FILE` | `string` | `.env.test` | `optional` | Tidak | `tests` | Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt) | `.env.test` |
 | `TEST_DATABASE_URL` | `string` | _(kosong)_ | `test` | **Ya** | `tests` | DSN khusus suite tes Go (wajib berakhiran *_test) | `postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable` |
+| `TEST_SEED_PASSWORD` | `string` | _(kosong)_ | `optional` | **Ya** | `seed_test_accounts` | Kata sandi akun uji sintetis untuk cmd/seed_test_accounts (kosong di template; dilarang di produksi) | `kopdes_test_setA_user_pass_123!` |

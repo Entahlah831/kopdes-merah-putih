@@ -16,7 +16,8 @@ COPY . .
 
 # Kompilasi binary statis dengan strip simbol
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/server && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/uitester ./cmd/uitester
 
 # Tahap 2: Runtime Container Minimal & Non-Root
 FROM alpine:3.23
@@ -33,6 +34,8 @@ RUN apk add --no-cache ca-certificates tzdata curl && \
 
 COPY --from=builder /app/kopdes-api /app/kopdes-api
 COPY --from=builder /app/envcheck /app/envcheck
+COPY --from=builder /app/uitester /app/uitester
+COPY --from=builder /app/frontend-tester /app/frontend-tester
 COPY --from=builder /app/db/migrations /app/db/migrations
 
 USER kopdesuser

@@ -941,3 +941,62 @@ Summary:
   Issues : 0
 ```
 
+---
+
+## Prompt Antigravity v5 — Tugas 1: Infrastruktur Env, `cmd/uitester`, `cmd/seed_test_accounts` & Kerangka Frontend Tester (2026-11-14)
+
+### 1. Perubahan yang Dilakukan
+- **Registri Variabel Lingkungan & Audit (`internal/config/config.go`, `cmd/envcheck/main.go`, `.env.example`, `.env.test`, `.env.test.alt`, `docs/ENV_REFERENCE.md`, `internal/config/repo_audit_test.go`)**:
+  - Menambahkan `UI_PORT` (`8081` Set A / `18081` Set B), `UI_BIND` (`127.0.0.1`), `API_PUBLIC_URL` (`http://127.0.0.1:8080` Set A / `http://127.0.0.1:18080` Set B), serta `TEST_SEED_PASSWORD` (opsional; kosong di `.env.example`). Total `83` variabel terdaftar di `AppConfig`.
+  - Memperbarui `ALLOWED_ORIGINS` pada `.env.test` dan `.env.test.alt` agar menyertakan origin loopback `UI_PORT` masing-masing profil.
+  - Memperbarui `runPortAudit` agar mendeteksi bentrokan port pada `UI_PORT`, dan memperluas `TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist` untuk memeriksa `frontend-tester/index.html`, `frontend-tester/app.js`, `cmd/uitester/main.go`, `cmd/seed_test_accounts/main.go`, dan `scripts/seed_test_accounts.{ps1,sh}`.
+- **Seeder Idempoten Akun Uji (`internal/testseed/seed.go`, `cmd/seed_test_accounts/`, `scripts/seed_test_accounts.{ps1,sh}`)**:
+  - Menolak eksekusi bila `APP_ENV != test` atau `DB_NAME` tidak berakhiran `*_test`.
+  - Mengisi secara idempoten Koperasi A (`11111111-...`) dan Koperasi B (`22222222-...`), 11 akun uji (`admin_a`, `admin_nomfa_a`, `pengurus_a`, `pengurus2_a`, `bendahara_a`, `ketua_a`, `pengawas_a`, `operator_a`, `anggota_a`, `admin_b`, `anggota_b`), rekening QRIS badan hukum, jenis & tagihan iuran, produk/harga/gudang/stok/promo toko, serta contoh pembayaran tenant B untuk pengujian anti-IDOR.
+- **Server Tester & Frontend Polos (`cmd/uitester/`, `Dockerfile`, `docker-compose.test.yml`, `frontend-tester/{index.html,app.js}`)**:
+  - `cmd/uitester` menolak startup saat `APP_ENV=production`, menyajikan `/config.json` tanpa rahasia/kata sandi, `/api/probe-cors`, `/api/totp-helper` (RFC 6238 khusus mode non-produksi), serta berkas statis `frontend-tester/`.
+  - `docker-compose.test.yml` menambahkan service opsional `uitester` berprofil `tester` tanpa port literal.
+  - `frontend-tester/index.html` dan `app.js` ditulis tanpa framework, tanpa build step, tanpa CDN, tanpa CSS warna/ikon/animasi, token hanya disimpan dalam memori JS, serta guard konfirmasi **`SAYA PAHAM INI BUKAN PRODUKSI`** untuk target non-lokal.
+
+### 2. Output Verifikasi Asli (`Tugas 1`)
+```text
+$ go test -v ./internal/config ./cmd/uitester ./cmd/seed_test_accounts
+=== RUN   TestConfig_Load_UITesterAndSeedEnvVars
+--- PASS: TestConfig_Load_UITesterAndSeedEnvVars (0.00s)
+=== RUN   TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh
+--- PASS: TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh (0.01s)
+=== RUN   TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist
+--- PASS: TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist (0.01s)
+ok  	github.com/kopdes/merah-putih/internal/config	0.714s
+=== RUN   TestUITester_RefusesProductionMode
+--- PASS: TestUITester_RefusesProductionMode (0.00s)
+=== RUN   TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper
+--- PASS: TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper (0.01s)
+ok  	github.com/kopdes/merah-putih/cmd/uitester	1.522s
+=== RUN   TestSeedTestAccounts_RefusesNonTestEnvironmentOrDatabase
+--- PASS: TestSeedTestAccounts_RefusesNonTestEnvironmentOrDatabase (0.00s)
+ok  	github.com/kopdes/merah-putih/cmd/seed_test_accounts	0.479s
+
+$ go run ./cmd/envcheck --env-file .env.test --strict
+envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100
+
+$ go run ./cmd/envcheck --env-file .env.test.alt --strict --ports
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 83 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100
+
+$ go run ./cmd/envcheck --compare .env.test .env.test.alt
+envcheck COMPARE PASS: skema kunci 100% identik (83 kunci).
+
+$ go run ./cmd/seed_test_accounts --env-file .env.test   # Eksekusi 1 & 2 (idempoten)
+Seeded 11 akun uji sintetis ke database kopdes_test (postgres://kopdes_app:%2A%2A%2A%2A%2A%2A@127.0.0.1:5433/kopdes_test?sslmode=disable) selesai.
+
+$ gosec.exe ./...
+Summary:
+  Gosec  : dev
+  Files  : 47
+  Lines  : 14132
+  Nosec  : 20
+  Issues : 0
+```
+
+

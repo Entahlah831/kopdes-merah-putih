@@ -98,3 +98,47 @@ services:
       timeout: 3s
       retries: 10
     mem_limit: 512m
+
+  uitester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+    profiles: ["tester"]
+    entrypoint: ["/app/uitester", "--ui-dir", "/app/frontend-tester"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      APP_ENV: test
+      UI_BIND: "0.0.0.0"
+      UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:?API_PUBLIC_URL wajib disetel}
+      METRICS_PORT: ${METRICS_PORT:?METRICS_PORT wajib disetel}
+      METRICS_HOST_PORT: ${METRICS_HOST_PORT:?METRICS_HOST_PORT wajib disetel}
+      DB_HOST: postgres
+      DB_PORT: ${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}
+      DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
+      DB_USER: ${DB_USER:?DB_USER wajib disetel}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      DB_SSLMODE: disable
+      AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
+      AES_KEY_VERSION: ${AES_KEY_VERSION:-v1}
+      AES_KEY_ID: ${AES_KEY_ID:-k1}
+      AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET wajib disetel}
+    ports:
+      - "${UI_BIND:-127.0.0.1}:${UI_PORT:?UI_PORT wajib disetel}:${UI_PORT:?UI_PORT wajib disetel}"
+    networks:
+      - kopdes_test_internal
+      - kopdes_test_edge
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${UI_PORT}/config.json >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m

@@ -70,9 +70,9 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 		t.Errorf("Set A dan Set B DB_NAME wajib berakhiran _test: A=%q B=%q", setA["DB_NAME"], setB["DB_NAME"])
 	}
 	mustDiffer := []string{
-		"DB_NAME", "API_PORT", "API_HOST_PORT", "DB_PORT", "DB_HOST_PORT",
+		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "API_PUBLIC_URL", "DB_PORT", "DB_HOST_PORT",
 		"DB_CONTAINER_PORT", "METRICS_PORT", "METRICS_HOST_PORT", "PROMETHEUS_HOST_PORT",
-		"DB_PASSWORD", "KOPDES_APP_PASSWORD", "POSTGRES_PASSWORD",
+		"DB_PASSWORD", "KOPDES_APP_PASSWORD", "POSTGRES_PASSWORD", "TEST_SEED_PASSWORD",
 		"JWT_SECRET", "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "QRIS_SECRET", "METRICS_TOKEN",
 		"JWT_ACCESS_TTL", "JWT_ALGORITHM", "BCRYPT_COST", "MFA_ISSUER",
 	}
@@ -157,9 +157,15 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"scripts/backup.sh",
 		"scripts/restore_drill.sh",
 		"scripts/restore_test.sh",
+		"scripts/seed_test_accounts.ps1",
+		"scripts/seed_test_accounts.sh",
 		"cmd/server/main.go",
+		"cmd/uitester/main.go",
+		"cmd/seed_test_accounts/main.go",
+		"frontend-tester/index.html",
+		"frontend-tester/app.js",
 	}
-	portRe := regexp.MustCompile(`\b(?:8080|5432|5433|9090|9100)\b`)
+	portRe := regexp.MustCompile(`\b(?:8080|8081|18080|18081|5432|5433|9090|9100)\b`)
 	for _, rel := range hardcodedTargets {
 		p := filepath.Join(root, rel)
 		data, err := os.ReadFile(p)

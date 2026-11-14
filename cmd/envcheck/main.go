@@ -138,6 +138,7 @@ func runPortAudit(cfg config.AppConfig, checkBind bool, stdout, stderr io.Writer
 	addHostPort(cfg.DBHostPort, "DB_HOST_PORT")
 	addHostPort(cfg.MetricsHostPort, "METRICS_HOST_PORT")
 	addHostPort(cfg.PrometheusHostPort, "PROMETHEUS_HOST_PORT")
+	addHostPort(cfg.UIPort, "UI_PORT")
 
 	for port, owners := range hostPorts {
 		if len(owners) > 1 {

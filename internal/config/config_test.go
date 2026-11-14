@@ -232,3 +232,48 @@ func TestValidateProduction_RejectsWideTrustedProxiesCIDR(t *testing.T) {
 		t.Fatalf("Expected ValidateProduction to accept /32 and /16 TRUSTED_PROXIES, got: %v", err)
 	}
 }
+
+func TestConfig_Load_UITesterAndSeedEnvVars(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV":            "test",
+		"DB_PASSWORD":        "pass_uji_123!",
+		"JWT_SECRET":         strings.Repeat("a1", 32),
+		"BLIND_INDEX_SECRET": strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":     strings.Repeat("c3", 32),
+		"QRIS_SECRET":        strings.Repeat("d4", 32),
+		"METRICS_TOKEN":      strings.Repeat("e5", 32),
+	}
+
+	// Default values when unset
+	cfgDefault, err := config.Load(func(k string) (string, bool) {
+		v, ok := base[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatalf("Load default failed: %v", err)
+	}
+	if cfgDefault.UIPort != 8081 || cfgDefault.UIBind != "127.0.0.1" || cfgDefault.APIPublicURL != "http://127.0.0.1:8080" {
+		t.Fatalf("Unexpected UI defaults: UIPort=%d UIBind=%q APIPublicURL=%q", cfgDefault.UIPort, cfgDefault.UIBind, cfgDefault.APIPublicURL)
+	}
+
+	// Custom Set B overrides
+	custom := make(map[string]string, len(base)+4)
+	for k, v := range base {
+		custom[k] = v
+	}
+	custom["UI_PORT"] = "18081"
+	custom["UI_BIND"] = "0.0.0.0"
+	custom["API_PUBLIC_URL"] = "http://127.0.0.1:18080"
+	custom["TEST_SEED_PASSWORD"] = "CustomSeedPass123!"
+
+	cfgCustom, err := config.Load(func(k string) (string, bool) {
+		v, ok := custom[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatalf("Load custom failed: %v", err)
+	}
+	if cfgCustom.UIPort != 18081 || cfgCustom.UIBind != "0.0.0.0" || cfgCustom.APIPublicURL != "http://127.0.0.1:18080" || cfgCustom.TestSeedPassword != "CustomSeedPass123!" {
+		t.Fatalf("Unexpected custom UI config: %+v", cfgCustom)
+	}
+}

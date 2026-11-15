@@ -8,7 +8,9 @@ Repositori ini adalah backend API **lingkup satu koperasi di satu lokasi** berba
 
 | Dokumen | Target Pembaca | Isi |
 | :--- | :--- | :--- |
-| [BACKEND_GUIDE.md](BACKEND_GUIDE.md) | Developer Backend & Ops | Arsitektur 8 domain (`internal/<domain>/`), 19 tabel PostgreSQL (`000001_init_kopdes_schema.up.sql`), `sqlc`, worker CLI (`cmd/kopdes`), enkripsi PII/KYC, backup/restore. |
+| [../README.md](../README.md) | Semua Tim | Pintu masuk repositori, peta direktori, quickstart lokal & VPS, dan daftar perintah verifikasi harian. |
+| [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) | Pemilik, Ops, Backend, Frontend, QA | Panduan end-to-end terbaru: setup lokal & VPS (Docker + Caddy HTTPS), pemasangan tiap fitur, integrasi frontend, alur lengkap 5 peran, skema 19 tabel database & enkripsi `.enc`. |
+| [BACKEND_GUIDE.md](BACKEND_GUIDE.md) | Developer Backend & Ops | Arsitektur 8 domain (`internal/<domain>/`), 19 tabel PostgreSQL (`000001_init_kopdes_schema.up.sql`), `sqlc`, worker CLI (`cmd/kopdes`), enkripsi PII/KYC & bukti bayar, backup/restore. |
 | [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) | Developer Frontend & QA | Kontrak 35 endpoint, sesi opaque (`Authorization: Bearer` / cookie `kopdes_session`), alur 2-langkah MFA TOTP, `GET /api/v1/public/config`, QRIS kode unik, idempotensi, dan daftar klaim tester. |
 | [frontend/README.md](frontend/README.md) | Frontend Engineer | Pintu masuk integrasi frontend & tautan ke Frontend Tester polos. |
 | [openapi.yaml](openapi.yaml) | Backend, Frontend, QA | Spesifikasi OpenAPI 3.0.3 untuk seluruh 35 endpoint HTTP aktual. |
@@ -18,6 +20,7 @@ Repositori ini adalah backend API **lingkup satu koperasi di satu lokasi** berba
 | [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) | Pemilik Koperasi | Daftar periksa keputusan manual hukum, akuntansi, penyedia DNS/TLS/SMTP, dan verifikasi lapangan. |
 | [SKILLS.md](SKILLS.md) | AI Coding Agent | Daftar 3 skill lokal aktif (`.agents/skills/`). |
 | [PROGRESS.md](PROGRESS.md) | Audit Trail Teknis | Riwayat pengerjaan per fase lengkap beserta hasil perintah verifikasi. |
+| [REVAMP_REPORT.md](REVAMP_REPORT.md) | Audit & Manajemen | Laporan ringkas hasil pemangkasan arsitektur, verifikasi langsung, dan penyempurnaan keamanan. |
 | [REVAMP_PLAN.md](REVAMP_PLAN.md) | Arsitektur | Rencana & target batas pemangkasan (`<= 20` tabel, `<= 35` endpoint, `<= 40` env, `<= 400` baris/handler, `<= 60` baris/fungsi). |
 | [AUDIT_REPORT.md](AUDIT_REPORT.md) | Arsip Pra-Revamp | Catatan audit historis sebelum pemangkasan arsitektur ramping satu koperasi. |
 

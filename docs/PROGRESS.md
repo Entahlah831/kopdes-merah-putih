@@ -1346,3 +1346,10 @@ Seluruh perubahan pemangkasan lingkup koperasi tunggal dijalankan bertahap di br
      - Role Matrix (`RBAC-01`..`16` x 5 peran): `80/80 pemeriksaan cocok`.
 5. **Fase 8C — Penyelarasan Dokumentasi Ramping & CI**:
    - Memperbarui [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), [openapi.yaml](openapi.yaml), [roles_matrix.json](roles_matrix.json), [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md), dan [frontend/README.md](frontend/README.md), memensiunkan bab usang multi-tenant di `docs/frontend/`, serta menulis ulang `.github/workflows/ci.yml`.
+6. **Fase 9 — Pembersihan Temuan Keamanan & Laporan Revamp (`627792d`, `59dbae4`)**:
+   - Merapikan seluruh temuan `staticcheck`, `gosec`, `govulncheck`, dan `gitleaks`, serta menambahkan [REVAMP_REPORT.md](REVAMP_REPORT.md) sebagai ringkasan hasil arsitektur ramping dan verifikasi langsung (`f9f7d1f`, `627792d`, `59dbae4`).
+7. **Fase 10 — Enkripsi Storage Bukti Bayar Terpisah & Potong Stok saat Verifikasi (`22e49ce`)**:
+   - Memisahkan penyimpanan bukti bayar ke `<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc` terenkripsi AES-256-GCM (AAD `pembayaran:bukti:<id>`) dari berkas KYC (`<STORAGE_KYC_DIR>/kyc/`).
+   - Memindahkan pemotongan stok atomik dari tahap checkout ke tahap persetujuan pembayaran (`setuju`) atau pesanan tunai masuk status `dibayar`/`diproses`, dengan pengembalian stok bersyarat hanya bila stok sudah terpotong.
+8. **Fase 11 — Dokumentasi Akhir Lengkap (Root `README.md` & `PANDUAN_SISTEM_LENGKAP.md`)**:
+   - Menambahkan [../README.md](../README.md) dan [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) mencakup setup lokal & VPS (Docker + Caddy HTTPS), konfigurasi fitur, integrasi frontend, alur lengkap 5 peran, dan skema 19 tabel PostgreSQL, serta menyelaraskan [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), dan [REVAMP_REPORT.md](REVAMP_REPORT.md).

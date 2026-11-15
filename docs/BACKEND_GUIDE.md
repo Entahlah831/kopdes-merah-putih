@@ -30,12 +30,12 @@ Backend dirancang **khusus untuk 1 koperasi di 1 lokasi** (tanpa multi-tenant RL
 | `internal/security` | Enkripsi AES-256-GCM + AAD per entitas/kolom, blind index HKDF-SHA256, opaque token hash SHA-256, TOTP RFC 6238, recovery code hash, netralisasi formula CSV. |
 | `internal/api` | Perakitan server HTTP (`server.go`, `routes.go`), middleware keamanan, pembatas laju (in-memory + DB), CORS, body limit, dan mode baca-saja (`READ_ONLY_MODE`). |
 | `internal/auth` | Login, sesi opaque (idle & absolute TTL), MFA TOTP 2-langkah, kata sandi/aktivasi, pengaturan koperasi (`PUT /api/v1/pengaturan`), manajemen user admin. |
-| `internal/pendaftaran` | Pendaftaran publik + proteksi `X-Upload-Token`, penyimpanan berkas KYC terenkripsi `.enc` setelah validasi magic bytes & `image.DecodeConfig`, verifikasi admin. |
+| `internal/pendaftaran` | Pendaftaran publik + proteksi `X-Upload-Token`, penyimpanan berkas KYC terenkripsi `.enc` di subdirektori `<STORAGE_KYC_DIR>/kyc/` setelah validasi magic bytes & `image.DecodeConfig`, verifikasi admin. |
 | `internal/anggota` | Daftar & detail anggota (NIK/HP tersamar secara default; `?unmask=true` khusus `admin` + audit log), suspend (mencabut seluruh sesi aktif), impor CSV (`?dry_run=true`). |
 | `internal/iuran` | Jenis iuran, pembuatan tagihan bulanan idempoten, daftar tagihan & tunggakan, keringanan nominal. |
 | `internal/katalog` | Kategori, promo, dan produk dengan penentuan tier harga otomatis (`harga_anggota` vs `harga_umum`). |
-| `internal/pesanan` | Checkout tanpa keranjang server (idempoten lewat `Idempotency-Key`), reservasi stok atomik, siklus status pesanan, `daftar-antar` + ekspor CSV aman. |
-| `internal/pembayaran` | Instruksi pembayaran QRIS statis (+ probe kode unik 3/4 digit) atau tunai, unggah bukti gambar dengan deteksi duplikat SHA-256, verifikasi dual control (`dibuat_oleh != claims.UserID`). |
+| `internal/pesanan` | Checkout tanpa keranjang server (idempoten lewat `Idempotency-Key`), validasi stok saat checkout tanpa memotong sebelum verifikasi bayar (pemotongan stok atomik terjadi saat pembayaran disetujui atau pesanan tunai masuk `dibayar`/`diproses`), siklus status pesanan, `daftar-antar` + ekspor CSV aman. |
+| `internal/pembayaran` | Instruksi pembayaran QRIS statis (+ probe kode unik 3/4 digit) atau tunai, unggah bukti gambar terenkripsi AES-256-GCM ke subdirektori terpisah (`<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc`, AAD `pembayaran:bukti:<id>`) dengan deteksi duplikat SHA-256, verifikasi dual control (`dibuat_oleh != claims.UserID`) sekaligus memicu pemotongan stok saat `setuju`. |
 | `internal/laporan` | Laporan operasional (`anggota`, `tunggakan`, `penjualan`, `pembayaran`) format JSON maupun CSV anti formula injection. |
 
 ---
@@ -44,7 +44,7 @@ Backend dirancang **khusus untuk 1 koperasi di 1 lokasi** (tanpa multi-tenant RL
 
 - **Autentikasi Sesi Opaque**: Login menerbitkan token acak CSPRNG 32-byte (`base64url`); database hanya menyimpan `SHA-256(token)`. Middleware memperbarui aktivitas idle (`SESSION_IDLE_TTL`) dalam batas `SESSION_ABS_TTL`.
 - **MFA TOTP (RFC 6238) + Anti-Replay**: Wajib bagi peran dalam `MFA_REQUIRED_ROLES` (default: `admin,bendahara`). Menyimpan `mfa_last_step` sehingga kode TOTP yang sama tidak dapat diputar ulang pada jendela waktu yang sama.
-- **PII & Berkas KYC**: NIK, No. HP, Tanggal Lahir, Alamat dienkripsi AES-256-GCM dengan AAD; berkas KYC disimpan dengan DEK terbungkus di direktori non-publik (`STORAGE_KYC_DIR`) dalam format `.enc`.
+- **PII, Berkas KYC, & Bukti Pembayaran Terenkripsi**: NIK, No. HP, Tanggal Lahir, Alamat dienkripsi AES-256-GCM dengan AAD; berkas KYC disimpan dengan DEK terbungkus di `<STORAGE_KYC_DIR>/kyc/*.enc`; berkas bukti pembayaran disimpan terpisah dan dienkripsi AES-256-GCM (AAD `pembayaran:bukti:<id>`) pada `<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc`.
 - **Anti-Fraud Pembayaran**:
   - `ALLOW_PERSONAL_PAYMENT_PILOT` default `false`. Bila diaktifkan secara sadar oleh pemilik, transaksi ke rekening `perorangan` tetap dibatasi oleh `PILOT_MAX_PER_TX` dan `PILOT_MAX_PER_DAY`.
   - Unggahan bukti identik ditolak `409 Conflict` berdasar hash SHA-256 berkas.

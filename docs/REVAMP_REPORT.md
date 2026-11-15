@@ -179,6 +179,11 @@ $ go run ./cmd/seed_test_accounts --env-file .env.test
 Seeded 5 akun uji sintetis ke database kopdes_test (postgres://kopdes_app:%2A%2A%2A%2A%2A%2A@127.0.0.1:5433/kopdes_test?sslmode=disable) selesai.
 ```
 
+### 4.6 Penyempurnaan Penyimpanan Bukti Terenkripsi, Potong Stok saat Verifikasi, & Dokumentasi Akhir (`22e49ce`)
+- **Pemisahan & Enkripsi Bukti Pembayaran (`22e49ce`)**: Berkas bukti pembayaran kini dipisahkan ke subdirektori `<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc` dan dienkripsi menggunakan AES-256-GCM dengan AAD `pembayaran:bukti:<id>`, terpisah dari berkas KYC di `<STORAGE_KYC_DIR>/kyc/` (dengan fallback baca berkas plaintext/lokasi lama untuk kompatibilitas migrasi).
+- **Pemotongan Stok saat Pembayaran Disetujui (`22e49ce`)**: `Checkout` tetap memvalidasi ketersediaan stok namun menunda pemotongan stok atomik hingga pembayaran QRIS diverifikasi `setuju` oleh Admin/Bendahara atau pesanan tunai masuk ke status `dibayar`/`diproses`; pembatalan hanya memulihkan stok apabila stok sudah terpotong.
+- **Dokumentasi Akhir Lengkap**: Ditambahkan [README.md](../README.md) di root repositori serta [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) yang merangkum setup lokal & VPS (Docker + Caddy HTTPS), pemasangan fitur, integrasi frontend, alur lengkap 5 peran, dan skema 19 tabel PostgreSQL.
+
 ---
 
 ## 5. Catatan Regulasi, Akuntansi, & Tindak Lanjut Pemilik

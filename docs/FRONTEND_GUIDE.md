@@ -59,10 +59,11 @@ Backend memakai **opaque session token** (tanpa JWT & tanpa `refresh_token`). Se
 2. **E-Katalog & Checkout (`claim:07-katalog-produk`, `claim:08-checkout-pesanan-daftar-antar`)**:
    - Tidak ada endpoint keranjang server; kelola keranjang sementara di state React/JS, lalu kirim array `items: [{ produk_id, kuantitas }]` ke `POST /api/v1/toko/checkout`.
    - Produk yang `harga_aktif_tersedia: false` (`harga_aktif: null`) wajib dinonaktifkan tombol belinya di UI; jika dipaksa checkout, server menolak (`409` / `400`).
+   - Saat checkout, server memeriksa ketersediaan stok namun **belum memotong stok**. Pemotongan stok atomik dilakukan saat pembayaran disetujui admin/bendahara (`setuju`) atau saat pesanan tunai masuk status `dibayar`/`diproses`.
 3. **Pembayaran QRIS Statis & Dual Control (`claim:09-pembayaran-qris-dual-control`)**:
    - `POST /api/v1/pembayaran` menghasilkan `pembayaran.nominal_total = nominal_pokok + kode_unik`. Tampilkan `nominal_total` dan QRIS `rekening_qris` secara jelas kepada pembayar agar nominal transfer persis hingga 3–4 digit terakhir.
-   - Unggah bukti dilakukan dengan `POST /api/v1/pembayaran` bertipe `multipart/form-data` (`pembayaran_id`, `file`). Gambar duplikat (SHA-256 identik) ditolak `409`.
-   - Verifikasi bendahara/admin memanggil `POST /api/v1/pembayaran/{id}/verifikasi` dengan `{ "keputusan": "setuju" | "tolak", "nominal_dibayar": <int64>, "alasan": "..." }`. Perhatikan `keputusan` bernilai `"setuju"` atau `"tolak"` (berbeda dari verifikasi pendaftaran yang memakai `"disetujui"` / `"ditolak"` / `"perlu_perbaikan"`).
+   - Unggah bukti dilakukan dengan `POST /api/v1/pembayaran` bertipe `multipart/form-data` (`pembayaran_id`, `file`). Gambar duplikat (SHA-256 identik) ditolak `409`. Server mengenkripsi file bukti ke `<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc` (terpisah dari berkas KYC).
+   - Verifikasi bendahara/admin memanggil `POST /api/v1/pembayaran/{id}/verifikasi` dengan `{ "keputusan": "setuju" | "tolak", "nominal_dibayar": <int64>, "alasan": "..." }`. Perhatikan `keputusan` bernilai `"setuju"` atau `"tolak"` (berbeda dari verifikasi pendaftaran yang memakai `"disetujui"` / `"ditolak"` / `"perlu_perbaikan"`). Tangani respons `409` (`OUT_OF_STOCK`) saat verifikasi `setuju` atau perubahan status pesanan jika stok habis terjual terlebih dahulu oleh pesanan lain.
 4. **Laporan & Ekspor CSV (`claim:10-laporan-csv`)**:
    - Gunakan `GET /api/v1/laporan?jenis=anggota|tunggakan|penjualan|pembayaran` (tambahkan `&format=csv` untuk unduh). Seluruh sel CSV sudah dinetralisasi awalan `=`, `+`, `-`, `@` terhadap *CSV formula injection*.
 

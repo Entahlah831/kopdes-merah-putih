@@ -23,6 +23,9 @@ import (
 // 3 digit (kapasitas 999 slot: 001..999). Maksimal 999 request berhasil (201), sisanya
 // menerima respons ramah HTTP 409 Conflict, dan 0 duplikasi slot aktif di database.
 func TestQRISSlotExhaustion_1500ConcurrentSameNominal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("melewati uji ketahanan 1500 konkuren pada mode standar (-short)")
+	}
 	env := setupAPITestEnv(t)
 	defer env.Pool.Close()
 

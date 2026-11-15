@@ -593,6 +593,10 @@ func TestV5_LiveScenariosAndRolesMatrix_E2E(t *testing.T) {
 	scenarioStepsCount := 0
 
 	for _, sc := range scFile.Scenarios {
+		if testing.Short() && sc.ClaimID == "CLAIM-AUTH-BRUTEFORCE-429" {
+			t.Logf("melewati skenario brute-force %s pada mode standar (-short)", sc.ClaimID)
+			continue
+		}
 		for idx, step := range sc.Steps {
 			scenarioStepsCount++
 			if step.Action == "totp_for_secret" {

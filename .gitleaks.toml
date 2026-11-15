@@ -4,8 +4,12 @@ title = "Konfigurasi Gitleaks — Kopdes Merah Putih"
 useDefault = true
 
 [allowlist]
-description = "Hanya izinkan nilai rahasia sintetis di dalam berkas profil uji .env.test dan .env.test.alt"
+description = "Hanya izinkan nilai rahasia sintetis di dalam berkas profil uji .env.test, .env.test.alt, serta fixture uji deterministik historis"
+commits = [
+  "1d347910dd5b9ef05ecd9f4e92b89cea6ca0e863",
+]
 paths = [
   '''^\.env\.test$''',
   '''^\.env\.test\.alt$''',
+  '''^internal/testseed/seed_test\.go$''',
 ]

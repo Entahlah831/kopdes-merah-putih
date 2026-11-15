@@ -680,6 +680,15 @@ func seedTenantFixtures(ctx context.Context, pool *pgxpool.Pool, cfg config.AppC
 		}
 	}
 
+	if _, err := tx.Exec(ctx, `
+		UPDATE pembayaran
+		SET status = CASE WHEN status IN ('menunggu_pembayaran', 'menunggu_verifikasi') THEN 'kedaluwarsa' ELSE status END,
+		    created_at = NOW() - interval '10 minutes'
+		WHERE koperasi_id = $1 AND id <> $2 AND created_at > NOW() - interval '10 minutes';
+	`, spec.koperasiID, spec.samplePayID); err != nil {
+		return fmt.Errorf("reset window pembayaran lama %s: %w", spec.tenantTag, err)
+	}
+
 	if spec.withSamplePay && spec.samplePayID != uuid.Nil {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO pembayaran (

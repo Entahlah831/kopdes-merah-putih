@@ -1,6 +1,7 @@
 package testseed
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestAccountsAndResources(t *testing.T) {
 
 func TestDeterministicTOTPSecretAndResolvePassword(t *testing.T) {
 	cfg := config.AppConfig{
-		AESMasterKey: "0123456789abcdef0123456789abcdef",
+		AESMasterKey: strings.Repeat("a", 32),
 		JWTSecret:    "jwt-secret-uji-minimal-32-byte-kopdes",
 	}
 

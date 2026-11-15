@@ -1230,3 +1230,91 @@ $ gitleaks detect --no-banner
 - **Live Demo 10 Modul End-to-End (`#btnRunLiveDemo`)**: `Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=10, SKIP=0, FAIL=0, Total=10` (seluruh 10 modul: Infrastruktur HTTP, Auth & MFA, Pendaftaran & KYC, Rekening QRIS, Iuran Anggota, Pembayaran QRIS, Mutasi CSV & Rekonsiliasi, Katalog & Toko, Manajemen & Laporan, serta RLS/Anti-IDOR/Zero-PII berstatus `PASS`).
 - **Uji Single-Flight Refresh Konkuren (`#btnTestSingleFlightRefresh`)**: `me_status: 200, iuran_jenis_status: 200, same_rotated_token: true` (`X-Request-ID=8af83c9c-3fcb-4734-865e-66892fe60d24`).
 - **Pindai PII Respons Terekam (`#btnBehavior64PII`)**: `{"scanned_responses": 187, "findings": [], "clean": true}` dan `0` uncaught JS/console errors.
+
+---
+
+## Prompt Antigravity v6 — Dokumentasi Mandiri Frontend, Public Config, SDK TypeScript, Lab Belajar & Verifikasi Otomatis (15 Nov 2026)
+
+- **Tahap 1 (`6098cee`) — Endpoint Konfigurasi Publik & Feature Flags**:
+  - Menambahkan `GET /api/v1/public/config` (`internal/api/handlers/public_config_handler.go`), `12` variabel env baru di `internal/config/config.go` (`95` kunci identik `.env.test` & `.env.test.alt`), serta middleware kill-switch (`PAYMENTS_ENABLED`, `REGISTRATION_ENABLED`, `LOGIN_ENABLED`, `READ_ONLY_MODE`) yang mengembalikan `503 FEATURE_DISABLED` / `503 READ_ONLY_MODE` (`internal/api/public_config_test.go`).
+  - Memperbarui `docs/openapi.yaml` (`49` path / `55` operasi), `docs/roles_matrix.json` (`447` pemeriksaan Go / `440` di browser matrix runner), `docs/kopdesClient.ts`, `docs/kopdes.postman_collection.json`, `docs/ENV_REFERENCE.md`, dan `frontend-tester/`.
+- **Tahap 2 (`fc827cf`) — Paket Dokumentasi `docs/frontend/` (26 Berkas)**:
+  - Membuat [docs/frontend/README.md](frontend/README.md), [frontend.config.schema.json](frontend/frontend.config.schema.json), [config.example.json](frontend/config.example.json), [pesan-error-id.json](frontend/pesan-error-id.json) (`15` error.code), [CHANGELOG.md](frontend/CHANGELOG.md), serta `21` bab lengkap (`00-mulai-cepat.md`–`19-deploy-dan-lingkungan.md` & `99-glosarium-koperasi.md`) dengan templat `13` bagian, marker `doc-test-response`, `KEPUTUSAN AKUNTAN`, dan `PERLU VERIFIKASI HUKUM`.
+  - Memperbarui `scripts/generate_api_artifacts.py` untuk sinkronisasi otomatis tabel peran di `docs/frontend/03-peran-dan-izin.md` dan `frontend-reference/src/generated.ts`.
+- **Tahap 3 (`7f3e668`) — SDK Referensi TypeScript (`frontend-reference/`)**:
+  - Membangun SDK zero runtime dependencies (`package.json`, `src/{generated,errors,config,format,auth,upload,polling,client,index}.ts`, contoh `react-example.tsx`, `vue-example.ts`, `vanilla-example.js`, serta `test/sdk.test.mjs` — `9` tes unit + live integration).
+- **Tahap 4 (`175e865`) — Perluasan Frontend Tester: Lab Belajar, Config Playground & 4 Halaman Referensi Minimal**:
+  - Menambahkan `CLAIM-PUBLIC-CONFIG-01` (`27` skenario di `frontend-tester/scenarios.json`), Panel `B.1`–`B.5` via [frontend-tester/lab.js](../frontend-tester/lab.js), serta 4 halaman referensi polos `/reference/{index,login,pendaftaran,pembayaran-qris}.html`.
+- **Tahap 5 (`e8b961e`) — Suite Uji Otomatis v6 (`docs_v6_frontend_test.go`), Paritas v5 & CI Node 22**:
+  - Menambahkan [internal/api/docs_v6_frontend_test.go](../internal/api/docs_v6_frontend_test.go), memperluas [internal/api/docs_v5_parity_test.go](../internal/api/docs_v5_parity_test.go) untuk memindai `docs/frontend/*.md`, serta menambahkan Node 22 + `frontend-reference` typecheck/tests ke [.github/workflows/ci.yml](../.github/workflows/ci.yml).
+  - Menemukan secara *fail-first* diskrepansi **`DISC-16`** (`RESP-HEALTHZ-200` pada `docs/frontend/00-mulai-cepat.md` diselaraskan ke `{"status":"UP","timestamp":...}` sesuai `HandleHealthz`).
+- **Tahap 6 — Perbaikan Fixture Gitleaks, Isolasi Burst `SeedAll`, & Verifikasi Penuh Set A + Live Browser**:
+  - Mengganti dummy string entropy pada `internal/testseed/seed_test.go` + allowlist commit historis `1d347910` di `.gitleaks.toml`, serta menambah reset jendela 10 menit `pembayaran` pada `internal/testseed/seed.go` agar eksekusi ulang beruntun `SeedAll` tidak terpicu anomali `transaksi_beruntun`.
+
+### Output Asli Verifikasi v6 (15 Nov 2026)
+
+```text
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 95 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080, METRICS_PORT=9100
+
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 95 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080, METRICS_PORT=19100
+
+$ go run ./cmd/envcheck --compare .env.test .env.test.alt
+envcheck COMPARE PASS: skema kunci 100% identik (95 kunci).
+
+$ npm --prefix frontend-reference run typecheck
+> tsc --noEmit   # EXIT:0
+
+$ npm --prefix frontend-reference test
+> tsc && node --test test/sdk.test.mjs
+# tests 9, pass 8, fail 0, skipped 1 (live URL unset pada mode offline)
+
+$ go test -count=1 -v -run "TestDoc|TestPublicConfig|TestV5_Discrepancy" ./internal/api
+# Termasuk TestDocV6_ErrorCatalogParity, TestDocV6_ConfigSchemaAndExampleParity,
+# TestDocV6_FrontendChaptersStructureAndNoHardcodedSecretsOrPorts,
+# TestDocV6_ExecutedResponseExamplesMatchLiveAPI (12/12 subtest PASS), dan
+# TestDocV6_TypeScriptSDKTypecheckAndLiveTests (PASS terhadap live server):
+ok  	github.com/kopdes/merah-putih/internal/api	5.529s
+
+$ gitleaks git --config .gitleaks.toml --verbose --redact
+11:24AM INF 84 commits scanned.
+11:24AM INF no leaks found   # EXIT:0
+
+$ go test -count=1 -short -race -p 1 ./...
+ok  	github.com/kopdes/merah-putih	4.592s
+ok  	github.com/kopdes/merah-putih/cmd/envcheck	1.966s
+ok  	github.com/kopdes/merah-putih/cmd/loadtest	1.545s
+ok  	github.com/kopdes/merah-putih/cmd/seed_test_accounts	1.417s
+ok  	github.com/kopdes/merah-putih/cmd/server	1.501s
+ok  	github.com/kopdes/merah-putih/cmd/uitester	2.146s
+ok  	github.com/kopdes/merah-putih/internal/api	154.550s
+ok  	github.com/kopdes/merah-putih/internal/api/handlers	1.839s
+ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.815s
+ok  	github.com/kopdes/merah-putih/internal/api/response	1.650s
+ok  	github.com/kopdes/merah-putih/internal/auth	1.581s
+ok  	github.com/kopdes/merah-putih/internal/config	1.523s
+ok  	github.com/kopdes/merah-putih/internal/db	3.831s
+ok  	github.com/kopdes/merah-putih/internal/outbox	2.384s
+ok  	github.com/kopdes/merah-putih/internal/qris	1.579s
+ok  	github.com/kopdes/merah-putih/internal/security	1.464s
+ok  	github.com/kopdes/merah-putih/internal/simkopdes	1.503s
+ok  	github.com/kopdes/merah-putih/internal/testseed	1.506s
+
+$ go vet ./...        # EXIT:0
+$ staticcheck ./...   # EXIT:0
+$ gosec -quiet ./...  # EXIT:0
+```
+
+**Verifikasi Live Browser (`http://127.0.0.1:8081` & `/reference/*.html`, API `127.0.0.1:8080`)**:
+- **B.1 Diagnostik Lingkungan**: `SEMUA SEHAT (PASS)` (`/healthz` 200 UP, `/readyz` 200 READY, `/api/v1/public/config` 200 v1.1.0, CORS 204, selisih jam `-6 ms`).
+- **B.2 Config Playground**: `"schema_valid": true`, `"schema_errors": []`, pratinjau `READ_ONLY_MODE=true` menonaktifkan tombol mutasi & form.
+- **B.3 Simulator Kondisi**: Offline, paralel 401 (`total_panggilan_refresh_ke_server: 1`), dan `503 READ_ONLY_MODE` terverifikasi.
+- **B.4 Panduan Terpandu**: Langkah `1 / 7` (`200 OK`) berpindah ke `Langkah 2 / 7: Masuk Anggota & Cek Profil (/auth/me)`.
+- **B.5 Lab Belajar**: Bab `00. Mulai Cepat 5 Menit` mengeksekusi `GET /healthz` live (`200 OK`) dan tombol salin kode berfungsi.
+- **Scenario Runner (`#btnRunAllScenarios`)**: `Selesai: PASS=25, SKIP=2, FAIL=0, Total=27` (`CLAIM-METRICS-01` & `CLAIM-AUTH-BRUTEFORCE-429` skip; `bukti-dokumentasi-kopdes.json` terunduh).
+- **Live Demo 10 Modul (`#btnRunLiveDemo`)**: `Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=10, SKIP=0, FAIL=0, Total=10`.
+- **Matriks Peran (`#btnRunRolesMatrix`)**: `Matriks selesai: Total=440, PASS=440, FAIL=0`.
+- **Web Storage & Halaman Referensi (`/reference/`)**: `localStorage.length === 0 && sessionStorage.length === 0`, `0` uncaught `pageerror`; keempat halaman (`/reference/index.html`, `login.html`, `pendaftaran.html`, `pembayaran-qris.html`) memuat `/config.json` dan `GET /api/v1/public/config` cleanly.

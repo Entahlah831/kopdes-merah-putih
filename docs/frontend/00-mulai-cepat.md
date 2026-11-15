@@ -60,9 +60,8 @@ curl -s "${API_BASE_URL}/healthz"
 {
   "success": true,
   "data": {
-    "service": "kopdes-api",
     "status": "UP",
-    "version": "1.1.0"
+    "timestamp": "2026-11-15T04:00:00Z"
   }
 }
 ```

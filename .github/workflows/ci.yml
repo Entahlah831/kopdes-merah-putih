@@ -55,6 +55,19 @@ jobs:
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           "$(go env GOPATH)/bin/gitleaks" git --config .gitleaks.toml --verbose --redact
 
+      - name: Set Up Node.js (Frontend Reference SDK)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend-reference/package-lock.json
+
+      - name: Frontend Reference SDK Typecheck & Unit Tests
+        run: |
+          npm --prefix frontend-reference ci
+          npm --prefix frontend-reference run typecheck
+          npm --prefix frontend-reference test
+
   test-and-security-setA:
     runs-on: ubuntu-latest
     services:
@@ -80,6 +93,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.27.4'
+
+      - name: Set Up Node.js (Frontend SDK Integration)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend-reference/package-lock.json
+
+      - name: Install Frontend SDK Dependencies
+        run: npm --prefix frontend-reference ci
 
       - name: Inisialisasi Database Set A (kopdes_test)
         env:
@@ -117,6 +140,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.27.4'
+
+      - name: Set Up Node.js (Frontend SDK Integration)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend-reference/package-lock.json
+
+      - name: Install Frontend SDK Dependencies
+        run: npm --prefix frontend-reference ci
 
       - name: Boot Stack Set B dari Nol (Port Non-Standar 18080/15433/19100)
         run: |

@@ -173,39 +173,45 @@ func TestDoc_RolesMatrix_Parity(t *testing.T) {
 		}
 	}
 
-	fgBytes, err := os.ReadFile(filepath.Join(root, "docs", "FRONTEND_GUIDE.md"))
+	assertRolesMatrixMarkdownBlock(t, filepath.Join(root, "docs", "FRONTEND_GUIDE.md"), matrix.Endpoints)
+	assertRolesMatrixMarkdownBlock(t, filepath.Join(root, "docs", "frontend", "03-peran-dan-izin.md"), matrix.Endpoints)
+}
+
+func assertRolesMatrixMarkdownBlock(t *testing.T, mdPath string, endpoints []docRolesMatrixRow) {
+	t.Helper()
+	rawBytes, err := os.ReadFile(mdPath)
 	if err != nil {
-		t.Fatalf("gagal baca docs/FRONTEND_GUIDE.md: %v", err)
+		t.Fatalf("gagal baca %s: %v", mdPath, err)
 	}
-	fg := string(fgBytes)
-	beginIdx := strings.Index(fg, "<!-- BEGIN_ROLES_MATRIX -->")
-	endIdx := strings.Index(fg, "<!-- END_ROLES_MATRIX -->")
+	content := string(rawBytes)
+	beginIdx := strings.Index(content, "<!-- BEGIN_ROLES_MATRIX -->")
+	endIdx := strings.Index(content, "<!-- END_ROLES_MATRIX -->")
 	if beginIdx < 0 || endIdx <= beginIdx {
-		t.Fatalf("docs/FRONTEND_GUIDE.md belum memiliki blok <!-- BEGIN_ROLES_MATRIX --> .. <!-- END_ROLES_MATRIX -->")
+		t.Fatalf("%s belum memiliki blok <!-- BEGIN_ROLES_MATRIX --> .. <!-- END_ROLES_MATRIX -->", mdPath)
 	}
-	block := fg[beginIdx:endIdx]
-	for _, ep := range matrix.Endpoints {
+	block := content[beginIdx:endIdx]
+	for _, ep := range endpoints {
 		if !strings.Contains(block, ep.Path) || !strings.Contains(block, strings.ToUpper(ep.Method)) {
-			t.Errorf("tabel peran di docs/FRONTEND_GUIDE.md belum mencantumkan %s %s", strings.ToUpper(ep.Method), ep.Path)
+			t.Errorf("tabel peran di %s belum mencantumkan %s %s", mdPath, strings.ToUpper(ep.Method), ep.Path)
 		}
 	}
 }
 
 func TestDoc_ClaimsAndScenariosParity(t *testing.T) {
 	root := filepath.Join("..", "..")
-	claimRe := regexp.MustCompile(`<!--\s*claim:([A-Za-z0-9_.-]+)(?:\s+UNVERIFIED:\s*([^>]+?))?\s*-->`)
+	claimRe := regexp.MustCompile(`<!--\s*claim:([A-Za-z0-9_-]+)(?:\s+UNVERIFIED:\s*([^>]+?))?\s*-->`)
 
 	testableClaims := make(map[string]bool)
 	unverifiedClaims := make(map[string]string)
 
-	for _, rel := range []string{filepath.Join("docs", "FRONTEND_GUIDE.md"), filepath.Join("docs", "BACKEND_GUIDE.md")} {
-		raw, err := os.ReadFile(filepath.Join(root, rel))
+	scanFile := func(absPath string, requireClaimTag bool) {
+		raw, err := os.ReadFile(absPath)
 		if err != nil {
-			t.Fatalf("gagal baca %s: %v", rel, err)
+			t.Fatalf("gagal baca %s: %v", absPath, err)
 		}
 		matches := claimRe.FindAllStringSubmatch(string(raw), -1)
-		if len(matches) == 0 {
-			t.Errorf("%s belum memiliki penanda <!-- claim:ID -->", rel)
+		if requireClaimTag && len(matches) == 0 {
+			t.Errorf("%s belum memiliki penanda <!-- claim:ID -->", absPath)
 		}
 		for _, m := range matches {
 			id := m[1]
@@ -218,8 +224,19 @@ func TestDoc_ClaimsAndScenariosParity(t *testing.T) {
 		}
 	}
 
+	for _, rel := range []string{filepath.Join("docs", "FRONTEND_GUIDE.md"), filepath.Join("docs", "BACKEND_GUIDE.md")} {
+		scanFile(filepath.Join(root, rel), true)
+	}
+	frontendChapterFiles, err := filepath.Glob(filepath.Join(root, "docs", "frontend", "*.md"))
+	if err != nil || len(frontendChapterFiles) == 0 {
+		t.Fatalf("gagal glob docs/frontend/*.md: %v (len=%d)", err, len(frontendChapterFiles))
+	}
+	for _, f := range frontendChapterFiles {
+		scanFile(f, false)
+	}
+
 	if len(testableClaims) < 20 {
-		t.Fatalf("jumlah claim teruji (%d) terlalu sedikit; pastikan FRONTEND_GUIDE dan BACKEND_GUIDE teranotasi lengkap", len(testableClaims))
+		t.Fatalf("jumlah claim teruji (%d) terlalu sedikit; pastikan FRONTEND_GUIDE, BACKEND_GUIDE, dan docs/frontend/*.md teranotasi lengkap", len(testableClaims))
 	}
 
 	scPath := filepath.Join(root, "frontend-tester", "scenarios.json")
@@ -256,7 +273,7 @@ func TestDoc_ClaimsAndScenariosParity(t *testing.T) {
 			if _, isUnv := unverifiedClaims[sc.ClaimID]; isUnv {
 				t.Errorf("skenario %s berstatus UNVERIFIED di dokumen tetapi memiliki skenario uji; selaraskan", sc.ClaimID)
 			} else {
-				t.Errorf("skenario yatim %s pada scenarios.json tidak ditemukan di FRONTEND_GUIDE.md / BACKEND_GUIDE.md", sc.ClaimID)
+				t.Errorf("skenario yatim %s pada scenarios.json tidak ditemukan di FRONTEND_GUIDE.md / BACKEND_GUIDE.md / docs/frontend/*.md", sc.ClaimID)
 			}
 		}
 	}

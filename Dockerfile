@@ -16,6 +16,7 @@ COPY . .
 
 # Kompilasi binary statis dengan strip simbol
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes ./cmd/kopdes && \
     CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/envcheck ./cmd/envcheck && \
     CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/uitester ./cmd/uitester
 
@@ -30,9 +31,10 @@ ENV TZ=${APP_TIMEZONE}
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata curl && \
     addgroup -S kopdes && adduser -S -G kopdes kopdesuser && \
-    mkdir -p /app/storage/kyc && chown -R kopdesuser:kopdes /app/storage
+    mkdir -p /app/storage/kyc /app/storage/bukti && chown -R kopdesuser:kopdes /app/storage
 
 COPY --from=builder /app/kopdes-api /app/kopdes-api
+COPY --from=builder /app/kopdes /app/kopdes
 COPY --from=builder /app/envcheck /app/envcheck
 COPY --from=builder /app/uitester /app/uitester
 COPY --from=builder /app/frontend-tester /app/frontend-tester

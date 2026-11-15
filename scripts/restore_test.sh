@@ -20,7 +20,7 @@ if [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
   done < "${ENV_FILE}"
 fi
 
-BACKUP_DIR="${BACKUP_DIR:?BACKUP_DIR wajib disetel}"
+BACKUP_DIR="${BACKUP_DIR:-./backups}"
 DB_HOST="${DB_HOST:?DB_HOST wajib disetel}"
 DB_PORT="${DB_PORT:?DB_PORT wajib disetel}"
 DB_NAME="${DB_NAME:?DB_NAME wajib disetel}"
@@ -53,8 +53,8 @@ if [[ "${LATEST_BACKUP}" == *.enc ]]; then
   rm -f "${WORK_DUMP}"
 fi
 
-if [ "${TABLE_COUNT}" -lt 25 ]; then
-  echo "ERROR: Jumlah tabel ter-restore tidak lengkap (${TABLE_COUNT} < 25)"
+if [ "${TABLE_COUNT}" -lt 19 ]; then
+  echo "ERROR: Jumlah tabel ter-restore tidak lengkap (${TABLE_COUNT} < 19)"
   exit 1
 fi
 

@@ -20,7 +20,7 @@ if [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
   done < "${ENV_FILE}"
 fi
 
-BACKUP_DIR="${BACKUP_DIR:?BACKUP_DIR wajib disetel}"
+BACKUP_DIR="${BACKUP_DIR:-./backups}"
 DB_HOST="${DB_HOST:?DB_HOST wajib disetel}"
 DB_PORT="${DB_PORT:?DB_PORT wajib disetel}"
 DB_NAME="${DB_NAME:?DB_NAME wajib disetel}"
@@ -29,7 +29,7 @@ BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 export PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${DB_PASSWORD:?PGPASSWORD/POSTGRES_PASSWORD/DB_PASSWORD wajib disetel}}}"
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-mkdir -p "${BACKUP_DIR}/daily" "${BACKUP_DIR}/wal_archive"
+mkdir -p "${BACKUP_DIR}/daily"
 
 echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Memulai backup database ${DB_NAME} (${DB_HOST}:${DB_PORT})..."
 DUMP_FILE="${BACKUP_DIR}/daily/${DB_NAME}_${TIMESTAMP}.dump"

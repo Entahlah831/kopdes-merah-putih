@@ -1,41 +1,40 @@
-name: kopdes-merah-putih
-
 networks:
   kopdes_internal:
-    internal: true
+    driver: bridge
   kopdes_edge:
+    driver: bridge
 
 volumes:
-  pgdata:
+  pg_data:
   kyc_storage:
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: kopdes_postgres
     restart: unless-stopped
-    command: ["postgres", "-p", "${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"]
+    command: ["postgres", "-c", "port=${DB_PORT:?DB_PORT wajib disetel}"]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib disetel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib disetel}
+      APP_ENV: ${APP_ENV:-production}
       POSTGRES_DB: ${DB_NAME:?DB_NAME wajib disetel}
-      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
-      APP_ENV: ${APP_ENV:?APP_ENV wajib disetel}
+      POSTGRES_USER: kopdes_migrator
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib disetel}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      TZ: ${APP_TIMEZONE:-Asia/Jakarta}
     ports:
-      - "${DB_BIND_HOST:-127.0.0.1}:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}"
+      - "127.0.0.1:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_PORT:?DB_PORT wajib disetel}"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
       - ./db/docker-init:/docker-entrypoint-initdb.d:ro
       - ./db/migrations:/docker-migrations:ro
     networks:
       - kopdes_internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${DB_CONTAINER_PORT}"]
+      test: ["CMD-SHELL", "pg_isready -U kopdes_migrator -d ${DB_NAME} -p ${DB_PORT}"]
       interval: 5s
       timeout: 5s
       retries: 10
-    cpus: "1.5"
-    mem_limit: 1024m
+    cpus: "1.0"
+    mem_limit: 512m
 
   api:
     build:
@@ -43,80 +42,53 @@ services:
       dockerfile: Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
-    container_name: kopdes_api
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      APP_ENV: ${APP_ENV:?APP_ENV wajib disetel}
+      APP_ENV: ${APP_ENV:-production}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
-      METRICS_PORT: ${METRICS_PORT:?METRICS_PORT wajib disetel}
+      API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
+      UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
-      DB_PORT: ${DB_CONTAINER_PORT:?DB_CONTAINER_PORT wajib disetel}
+      DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
+      DB_HOST_PORT: ${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}
       DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
-      DB_USER: ${DB_USER:?DB_USER wajib disetel}
+      DB_USER: ${DB_USER:-kopdes_app}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
-      DATABASE_URL: ""
-      DB_APP_ROLE: ${DB_APP_ROLE:-kopdes_app}
-      KOPDES_APP_PASSWORD: ${KOPDES_APP_PASSWORD:?KOPDES_APP_PASSWORD wajib disetel}
-      ALLOW_SUPERUSER_DB: ${ALLOW_SUPERUSER_DB:-false}
-      DB_POOL_MAX_CONNS: ${DB_POOL_MAX_CONNS:-25}
-      DB_POOL_MIN_CONNS: ${DB_POOL_MIN_CONNS:-2}
-      DB_STATEMENT_TIMEOUT: ${DB_STATEMENT_TIMEOUT:-15s}
-      DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-5s}
-      DB_IDLE_IN_TX_TIMEOUT: ${DB_IDLE_IN_TX_TIMEOUT:-30s}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET wajib disetel}
-      JWT_PREVIOUS_SECRET: ${JWT_PREVIOUS_SECRET:-}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      JWT_ISSUER: ${JWT_ISSUER:-kopdes-merah-putih}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
-      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
-      AES_KEY_VERSION: ${AES_KEY_VERSION:-v1}
-      AES_KEY_ID: ${AES_KEY_ID:-k1}
       AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
       BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
-      QRIS_SECRET: ${QRIS_SECRET:?QRIS_SECRET wajib disetel}
-      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN wajib disetel}
-      METRICS_PREVIOUS_TOKEN: ${METRICS_PREVIOUS_TOKEN:-}
-      BCRYPT_COST: ${BCRYPT_COST:-12}
-      MFA_ISSUER: ${MFA_ISSUER:-Kopdes Merah Putih}
-      MFA_MAX_ATTEMPTS: ${MFA_MAX_ATTEMPTS:-3}
-      MFA_SESSION_TTL: ${MFA_SESSION_TTL:-5m}
-      MFA_SETUP_TTL: ${MFA_SETUP_TTL:-10m}
+      SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-30m}
+      SESSION_ABS_TTL: ${SESSION_ABS_TTL:-12h}
+      MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-admin,bendahara}
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCKOUT_DURATION: ${LOGIN_LOCKOUT_DURATION:-15m}
-      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
-      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
-      RATE_LIMIT_MAX_CLIENTS: ${RATE_LIMIT_MAX_CLIENTS:-10000}
-      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
-      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
-      HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-10s}
-      HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-15s}
-      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
-      PARTITION_MONTHS_AHEAD: ${PARTITION_MONTHS_AHEAD:-3}
-      PARTITION_JOB_INTERVAL: ${PARTITION_JOB_INTERVAL:-24h}
-      PDP_REJECTED_RETENTION_DAYS: ${PDP_REJECTED_RETENTION_DAYS:-30}
-      PDP_PURGE_INTERVAL: ${PDP_PURGE_INTERVAL:-24h}
-      QRIS_DYNAMIC_ENABLED: ${QRIS_DYNAMIC_ENABLED:-false}
+      CAPTCHA_ENABLED: ${CAPTCHA_ENABLED:-false}
+      CAPTCHA_SITE_KEY: ${CAPTCHA_SITE_KEY:-}
+      CAPTCHA_SECRET_KEY: ${CAPTCHA_SECRET_KEY:-}
+      PAYMENTS_ENABLED: ${PAYMENTS_ENABLED:-true}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       ALLOW_PERSONAL_PAYMENT_PILOT: ${ALLOW_PERSONAL_PAYMENT_PILOT:-false}
-      PILOT_DEFAULT_MAX_PER_TX: ${PILOT_DEFAULT_MAX_PER_TX:-500000}
-      PILOT_DEFAULT_MAX_PER_DAY: ${PILOT_DEFAULT_MAX_PER_DAY:-2000000}
-      DUAL_APPROVAL_DEFAULT_THRESHOLD: ${DUAL_APPROVAL_DEFAULT_THRESHOLD:-500000}
+      PILOT_MAX_PER_TX: ${PILOT_MAX_PER_TX:-500000}
+      PILOT_MAX_PER_DAY: ${PILOT_MAX_PER_DAY:-2000000}
+      QRIS_UNIQUE_DIGITS: ${QRIS_UNIQUE_DIGITS:-3}
+      PAYMENT_EXPIRY_DURATION: ${PAYMENT_EXPIRY_DURATION:-24h}
+      PENDING_LIMIT_PER_MEMBER: ${PENDING_LIMIT_PER_MEMBER:-3}
+      PENDING_LIMIT_GLOBAL: ${PENDING_LIMIT_GLOBAL:-200}
+      PDP_REJECTED_RETENTION_DAYS: ${PDP_REJECTED_RETENTION_DAYS:-30}
       STORAGE_KYC_DIR: /app/storage/kyc
-      MAX_KYC_UPLOAD_BYTES: ${MAX_KYC_UPLOAD_BYTES:-5242880}
-      NOTIFIER_PROVIDER: ${NOTIFIER_PROVIDER:-noop}
-      WHATSAPP_API_KEY: ${WHATSAPP_API_KEY:-}
-      SMS_API_KEY: ${SMS_API_KEY:-}
-      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-}
+      BACKUP_DIR: ${BACKUP_DIR:-./backups}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
     ports:
       - "${API_HOST_PORT:?API_HOST_PORT wajib disetel}:${API_PORT:?API_PORT wajib disetel}"
-      - "127.0.0.1:${METRICS_HOST_PORT:?METRICS_HOST_PORT wajib disetel}:${METRICS_PORT:?METRICS_PORT wajib disetel}"
     volumes:
       - kyc_storage:/app/storage/kyc
     networks:

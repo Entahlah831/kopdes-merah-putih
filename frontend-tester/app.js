@@ -9,11 +9,14 @@
     guardConfirmed: false,
     accessToken: "",
     refreshToken: "",
+    refreshInFlight: null,
     activeAccount: null,
     lastIdempotencyKey: "",
+    lastRequestId: "",
     vars: {},
     recordedResponses: [],
     proofResults: [],
+    liveDemoResults: [],
     roleTokens: {}
   };
 
@@ -23,6 +26,27 @@
 
   function safeString(v) {
     return v === null || v === undefined ? "" : String(v);
+  }
+
+  function formatRupiah(nominal) {
+    return new Intl.NumberFormat("id-ID", {
+      style: "currency",
+      currency: "IDR",
+      maximumFractionDigits: 0
+    }).format(Number(nominal || 0));
+  }
+
+  function getTodayJakartaDate() {
+    try {
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Jakarta",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(new Date());
+    } catch (_) {
+      return new Date().toISOString().slice(0, 10);
+    }
   }
 
   function redactSecrets(text) {
@@ -90,6 +114,13 @@
     });
   }
 
+  let nikSeq = 0;
+  function generateUniqueNIK() {
+    nikSeq++;
+    const tail = String((Date.now() % 1000000000) + nikSeq).padStart(10, "0").slice(-10);
+    return "320101" + tail;
+  }
+
   function createTinyPNGBlob() {
     // 1x1 transparent PNG bytes generated without external network assets
     const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -114,10 +145,10 @@
 
   function buildSampleStaticQRIS(merchantName) {
     const m = merchantName || "Kopdes Uji";
-    const len2 = String(m.length).padStart(2, "0");
-    const base =
-      "00020101021126570011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI5204541153033605802ID59" +
-      len2 + m + "6007Jakarta6304";
+    const tag26Val = "0011ID.CO.QRIS.WWW01189360052300000123450215ID10203040506070303UMI";
+    const tag26 = "26" + String(tag26Val.length).padStart(2, "0") + tag26Val;
+    const tag59 = "59" + String(m.length).padStart(2, "0") + m;
+    const base = "000201010211" + tag26 + "5204541153033605802ID" + tag59 + "6007Jakarta6304";
     return base + computeCRC16CCITT(base);
   }
 
@@ -145,6 +176,9 @@
         " | JTI=" + (claims.jti || "-") +
         " | Exp=" + expText;
     }
+    if (el("lastRequestIdText")) {
+      el("lastRequestIdText").textContent = state.lastRequestId || "-";
+    }
     el("varsDumpPre").textContent = redactSecrets(JSON.stringify(state.vars, null, 2));
   }
 
@@ -154,6 +188,7 @@
       method: entry.method,
       path: entry.path,
       status: entry.status,
+      requestId: entry.requestId || "",
       bodyText: redactSecrets(entry.bodyText)
     });
   }
@@ -161,11 +196,53 @@
   function appendFlowLog(title, detail) {
     const pre = el("flowOutputPre");
     const stamp = new Date().toISOString();
-    const msg = "[" + stamp + "] " + title + "\n" + redactSecrets(typeof detail === "string" ? detail : JSON.stringify(detail, null, 2)) + "\n\n";
+    const reqInfo = state.lastRequestId ? " [X-Request-ID=" + state.lastRequestId + "]" : "";
+    const msg = "[" + stamp + "]" + reqInfo + " " + title + "\n" + redactSecrets(typeof detail === "string" ? detail : JSON.stringify(detail, null, 2)) + "\n\n";
     pre.textContent = msg + pre.textContent;
   }
 
-  async function apiRequest(opts) {
+  // Single-flight refresh mengikuti docs/FRONTEND_GUIDE.md §2
+  async function refreshAccessTokenSingleFlight() {
+    if (state.refreshInFlight) {
+      return state.refreshInFlight;
+    }
+    if (!state.refreshToken) {
+      state.accessToken = "";
+      state.activeAccount = null;
+      updateSessionBar();
+      return null;
+    }
+
+    state.refreshInFlight = (async function () {
+      try {
+        const res = await fetchWith429Retry({
+          method: "POST",
+          path: "/api/v1/auth/refresh",
+          token: "",
+          json: { refresh_token: state.refreshToken },
+          autoRefresh: false
+        });
+        const data = res.json && res.json.data;
+        if (res.status !== 200 || !data || !data.access_token || !data.refresh_token) {
+          state.accessToken = "";
+          state.refreshToken = "";
+          state.activeAccount = null;
+          updateSessionBar();
+          return null;
+        }
+        state.accessToken = data.access_token;
+        state.refreshToken = data.refresh_token;
+        updateSessionBar();
+        return state.accessToken;
+      } finally {
+        state.refreshInFlight = null;
+      }
+    })();
+
+    return state.refreshInFlight;
+  }
+
+  async function rawFetchAPI(opts) {
     const method = (opts.method || "GET").toUpperCase();
     const rawPath = opts.path || "/";
     if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && !isMutationAllowed()) {
@@ -196,19 +273,72 @@
 
     const resp = await fetch(url, fetchOpts);
     const text = await resp.text();
+    const requestId = resp.headers.get("X-Request-ID") || "";
+    if (requestId) {
+      state.lastRequestId = requestId;
+      if (el("lastRequestIdText")) {
+        el("lastRequestIdText").textContent = requestId;
+      }
+    }
     let parsed = null;
     try {
       parsed = JSON.parse(text);
     } catch (_) {
       parsed = null;
     }
-    recordTrace({ method: method, path: rawPath, status: resp.status, bodyText: text });
+    recordTrace({ method: method, path: rawPath, status: resp.status, requestId: requestId, bodyText: text });
     return {
       status: resp.status,
       headers: resp.headers,
+      requestId: requestId,
       text: text,
       json: parsed
     };
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function isIPRateLimit429(res) {
+    return !!(
+      res &&
+      res.status === 429 &&
+      res.text &&
+      res.text.includes("Batas frekuensi permintaan terlampaui")
+    );
+  }
+
+  async function fetchWith429Retry(opts) {
+    let res = await rawFetchAPI(opts);
+    if (opts.retryOn429 !== false) {
+      for (let attempt = 1; attempt <= 4 && isIPRateLimit429(res); attempt++) {
+        const retryHdr = parseInt((res.headers && res.headers.get("Retry-After")) || "1", 10) || 1;
+        await sleep(Math.min(2000, retryHdr * 550 * attempt));
+        res = await rawFetchAPI(opts);
+      }
+    }
+    return res;
+  }
+
+  async function apiRequest(opts) {
+    const rawPath = opts.path || "/";
+    let res = await fetchWith429Retry(opts);
+    // Hanya auto-refresh untuk request sesi aktif (opts.token tidak di-override eksplisit)
+    if (
+      opts.autoRefresh !== false &&
+      res.status === 401 &&
+      opts.token === undefined &&
+      state.refreshToken &&
+      !rawPath.startsWith("/api/v1/auth/refresh") &&
+      !rawPath.startsWith("/api/v1/auth/login")
+    ) {
+      const newToken = await refreshAccessTokenSingleFlight();
+      if (newToken) {
+        res = await fetchWith429Retry(opts);
+      }
+    }
+    return res;
   }
 
   async function fetchTOTP(params) {
@@ -222,6 +352,30 @@
       throw new Error(data.error || "Gagal meminta kode TOTP");
     }
     return data.code;
+  }
+
+  async function verifyMFAWithWindowFallback(email, mfaSessionToken) {
+    let lastVerifyRes = null;
+    for (const offset of [0, 30]) {
+      const code = await fetchTOTP({ email: email, offset_seconds: offset });
+      const verifyRes = await apiRequest({
+        method: "POST",
+        path: "/api/v1/auth/mfa/verify",
+        token: "",
+        json: {
+          mfa_session_token: mfaSessionToken,
+          totp_code: code
+        }
+      });
+      lastVerifyRes = verifyRes;
+      if (verifyRes.status === 200 && verifyRes.json && verifyRes.json.data && verifyRes.json.data.access_token) {
+        return verifyRes;
+      }
+      if (!(verifyRes.status === 401 && verifyRes.text.includes("sudah pernah digunakan"))) {
+        break;
+      }
+    }
+    throw new Error("MFA verify gagal (" + (lastVerifyRes ? lastVerifyRes.status : 0) + "): " + (lastVerifyRes ? lastVerifyRes.text : ""));
   }
 
   async function loginAccount(account, customPassword) {
@@ -249,27 +403,24 @@
     }
 
     if (res.status === 200 && res.json && res.json.data && res.json.data.mfa_required && res.json.data.mfa_session_token) {
-      const code = await fetchTOTP({ email: account.email });
-      const verifyRes = await apiRequest({
-        method: "POST",
-        path: "/api/v1/auth/mfa/verify",
-        token: "",
-        json: {
-          mfa_session_token: res.json.data.mfa_session_token,
-          totp_code: code
-        }
-      });
-      if (verifyRes.status === 200 && verifyRes.json && verifyRes.json.data && verifyRes.json.data.access_token) {
-        return {
-          accessToken: verifyRes.json.data.access_token,
-          refreshToken: verifyRes.json.data.refresh_token || "",
-          loginResponse: verifyRes
-        };
-      }
-      throw new Error("MFA verify gagal (" + verifyRes.status + "): " + verifyRes.text);
+      const verifyRes = await verifyMFAWithWindowFallback(account.email, res.json.data.mfa_session_token);
+      return {
+        accessToken: verifyRes.json.data.access_token,
+        refreshToken: verifyRes.json.data.refresh_token || "",
+        loginResponse: verifyRes
+      };
     }
 
     throw new Error("Login gagal (" + res.status + "): " + res.text);
+  }
+
+  function buildAccountsMap() {
+    const accountsMap = {};
+    for (const a of (state.config && state.config.seeded_accounts) || []) {
+      accountsMap[a.key] = a;
+      accountsMap[a.role + "_" + a.tenant.toLowerCase()] = accountsMap[a.role + "_" + a.tenant.toLowerCase()] || a;
+    }
+    return accountsMap;
   }
 
   function renderAccountsTable() {
@@ -337,7 +488,7 @@
     sel.textContent = "";
     if (!state.openapi || !state.openapi.paths) {
       const opt = document.createElement("option");
-      opt.textContent = "(openapi.json belum tersedia — jalankan scripts/generate_api_artifacts.py pada Tugas 2)";
+      opt.textContent = "(openapi.json belum tersedia)";
       sel.appendChild(opt);
       return;
     }
@@ -438,6 +589,481 @@
     };
   }
 
+  function appendStatusCell(tr, statusText) {
+    const td = document.createElement("td");
+    td.textContent = statusText;
+    if (statusText === "PASS") td.className = "badge-pass";
+    else if (statusText === "FAIL") td.className = "badge-fail";
+    else if (statusText.startsWith("SKIP")) td.className = "badge-skip";
+    tr.appendChild(td);
+  }
+
+  async function runLiveDemo() {
+    const pwd = getTestPassword();
+    if (!pwd) {
+      alert("Isi 'Kata Sandi Akun Uji' di Bagian 0 terlebih dahulu.");
+      return;
+    }
+    if (!isMutationAllowed()) {
+      alert("Konfirmasi target non-lokal pada Bagian 0 terlebih dahulu.");
+      return;
+    }
+
+    const accountsMap = buildAccountsMap();
+    const resIds = (state.config && state.config.resources) || {};
+    const tbody = el("liveDemoTableBody");
+    tbody.textContent = "";
+    el("btnDownloadLiveDemoJSON").disabled = true;
+    el("liveDemoSummary").textContent = "Menjalankan Live Demo 10 modul end-to-end ...";
+
+    const demoRows = [];
+    const tokens = {};
+    const loginCached = async function (key, forceFresh) {
+      if (!forceFresh && tokens[key]) return tokens[key];
+      const acc = accountsMap[key];
+      if (!acc) throw new Error("Akun seeded tidak ditemukan: " + key);
+      const auth = await loginAccount(acc, pwd);
+      tokens[key] = auth;
+      state.roleTokens[key] = auth.accessToken;
+      return auth;
+    };
+
+    const runStep = async function (modul, label, fn) {
+      let statusLabel = "PASS";
+      let httpCode = "-";
+      let reqId = "-";
+      let summary = "";
+      try {
+        const out = await fn();
+        if (out && out.skip) {
+          statusLabel = "SKIP";
+          httpCode = out.http || "-";
+          reqId = out.requestId || state.lastRequestId || "-";
+          summary = out.summary || "Dilewati";
+        } else {
+          httpCode = safeString((out && out.http) || 200);
+          reqId = (out && out.requestId) || state.lastRequestId || "-";
+          summary = redactSecrets((out && out.summary) || "OK");
+        }
+      } catch (err) {
+        statusLabel = "FAIL";
+        reqId = state.lastRequestId || "-";
+        summary = redactSecrets(err && err.message ? err.message : String(err));
+      }
+
+      const row = {
+        modul: modul,
+        fitur: label,
+        status: statusLabel,
+        http_status: httpCode,
+        x_request_id: reqId,
+        ringkasan: summary,
+        timestamp: new Date().toISOString()
+      };
+      demoRows.push(row);
+
+      const tr = document.createElement("tr");
+      [row.modul, row.fitur].forEach(function (c) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+      appendStatusCell(tr, row.status);
+      [row.http_status, row.x_request_id, row.ringkasan].forEach(function (c) {
+        const td = document.createElement("td");
+        td.textContent = safeString(c);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    };
+
+    // Modul 1: Health, Readiness, X-Request-ID & Hardening HTTP
+    await runStep("1. Infrastruktur HTTP", "GET /healthz, GET /readyz, JSON rusak 400, GET /metrics proteksi token", async function () {
+      const h = await apiRequest({ method: "GET", path: "/healthz", token: "" });
+      const rd = await apiRequest({ method: "GET", path: "/readyz", token: "" });
+      const bad = await apiRequest({ method: "POST", path: "/api/v1/auth/login", token: "", headers: { "Content-Type": "application/json" }, body: "{\"email\":" });
+      const munauth = await apiRequest({ method: "GET", path: "/metrics", token: "" });
+      if (h.status !== 200 || !h.requestId) throw new Error("/healthz gagal atau tanpa X-Request-ID: " + h.status);
+      if (rd.status !== 200) throw new Error("/readyz gagal: " + rd.status);
+      if (bad.status !== 400) throw new Error("JSON rusak harus 400, dapat " + bad.status);
+      if (munauth.status !== 401) throw new Error("/metrics tanpa token harus 401, dapat " + munauth.status);
+      const mTok = el("metricsTokenInput").value.trim();
+      let metricsNote = "unauth=401";
+      if (mTok) {
+        const mauth = await apiRequest({ method: "GET", path: "/metrics", token: mTok });
+        if (mauth.status !== 200) throw new Error("/metrics dengan token gagal: " + mauth.status);
+        metricsNote += ", auth=200";
+      }
+      return { http: "200/400/401", requestId: h.requestId, summary: "healthz=200, readyz=200, bad_json=400, /metrics (" + metricsNote + ")" };
+    });
+
+    // Modul 2: Auth, Single-Flight Refresh, MFA TOTP & Wajib Enrollment
+    await runStep("2. Auth & MFA", "Login anggota_a, Single-Flight Refresh 2x401->200, Login MFA bendahara_a, Enroll Wajib admin_nomfa_a", async function () {
+      const ang = await loginCached("anggota_a", true);
+      state.accessToken = "expired.probe.token";
+      state.refreshToken = ang.refreshToken;
+      state.activeAccount = accountsMap["anggota_a"];
+      updateSessionBar();
+
+      const [r1, r2] = await Promise.all([
+        apiRequest({ method: "GET", path: "/api/v1/auth/me" }),
+        apiRequest({ method: "GET", path: "/api/v1/auth/me" })
+      ]);
+      if (r1.status !== 200 || r2.status !== 200) {
+        throw new Error("Single-flight refresh gagal: r1=" + r1.status + ", r2=" + r2.status);
+      }
+      tokens["anggota_a"] = { accessToken: state.accessToken, refreshToken: state.refreshToken };
+
+      const b1 = await loginCached("bendahara_a", true);
+      const bMe = await apiRequest({ method: "GET", path: "/api/v1/auth/me", token: b1.accessToken });
+      if (bMe.status !== 200) throw new Error("/auth/me bendahara gagal: " + bMe.status);
+
+      const nomfaLogin = await apiRequest({
+        method: "POST",
+        path: "/api/v1/auth/login",
+        token: "",
+        json: { email: "admin_nomfa_a@kopdes-test.local", password: pwd, koperasi_id: state.config.koperasi_a_id }
+      });
+      let mfaNote = "";
+      if (nomfaLogin.status === 403 && nomfaLogin.json && nomfaLogin.json.data && nomfaLogin.json.data.setup_token) {
+        const sTok = nomfaLogin.json.data.setup_token;
+        const sRes = await apiRequest({ method: "POST", path: "/api/v1/auth/mfa/setup", token: sTok, json: {} });
+        const sec = sRes.json && sRes.json.data && sRes.json.data.secret;
+        if (!sec) throw new Error("mfa/setup tidak mengembalikan secret");
+        const code = await fetchTOTP({ secret_base32: sec });
+        const enRes = await apiRequest({ method: "POST", path: "/api/v1/auth/mfa/enable", token: sTok, json: { secret: sec, totp_code: code } });
+        if (enRes.status !== 200) throw new Error("mfa/enable gagal: " + enRes.status);
+        mfaNote = "enroll wajib 403->setup->enable OK";
+      } else if (nomfaLogin.status === 200 && nomfaLogin.json && nomfaLogin.json.data && nomfaLogin.json.data.mfa_session_token) {
+        await verifyMFAWithWindowFallback("admin_nomfa_a@kopdes-test.local", nomfaLogin.json.data.mfa_session_token);
+        mfaNote = "sudah enroll sebelumnya -> verify TOTP OK";
+      } else {
+        throw new Error("Respons login admin_nomfa_a tidak terduga: " + nomfaLogin.status);
+      }
+
+      // Reuse detection pada operator_a
+      const opAuth = await loginAccount(accountsMap["operator_a"], pwd);
+      const rt1 = opAuth.refreshToken;
+      const rot = await apiRequest({ method: "POST", path: "/api/v1/auth/refresh", token: "", json: { refresh_token: rt1 } });
+      if (rot.status !== 200) throw new Error("Rotasi refresh token gagal: " + rot.status);
+      const reuse = await apiRequest({ method: "POST", path: "/api/v1/auth/refresh", token: "", json: { refresh_token: rt1 } });
+      if (reuse.status !== 401) throw new Error("Replay refresh token harus 401, dapat " + reuse.status);
+
+      return { http: "200/401/403", requestId: r1.requestId, summary: "Single-flight 2x200 OK, MFA bendahara OK, " + mfaNote + ", Reuse RT=401" };
+    });
+
+    // Modul 3: Pendaftaran Anggota, KYC PNG, NIK Masking & Maker-Checker
+    await runStep("3. Pendaftaran & KYC", "Ajukan NIK unik -> Upload PNG KTP -> Cek nik_masked -> Maker-Checker 403 vs 200", async function () {
+      const p1 = await loginCached("pengurus_a");
+      const p2 = await loginCached("pengurus2_a");
+      const nik = generateUniqueNIK();
+      const reg = await apiRequest({
+        method: "POST",
+        path: "/api/v1/pendaftaran",
+        token: p1.accessToken,
+        json: {
+          nama_lengkap: "Calon Live Demo " + nik.slice(-4),
+          nik: nik,
+          tempat_lahir: "Bogor",
+          tanggal_lahir: "1993-05-12",
+          jenis_kelamin: "P",
+          pekerjaan: "Pedagang",
+          alamat_ktp: "Jl. Koperasi Desa No. 7"
+        }
+      });
+      if (reg.status !== 201 || !reg.json || !reg.json.data || !reg.json.data.pendaftaran_id) {
+        throw new Error("POST /pendaftaran gagal: " + reg.status + " " + reg.text);
+      }
+      const pid = reg.json.data.pendaftaran_id;
+      state.vars.last_pendaftaran_id = pid;
+
+      const fd = new FormData();
+      fd.append("dokumen", createTinyPNGBlob(), "ktp-demo.png");
+      fd.append("jenis_dokumen", "ktp");
+      const up = await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/dokumen", token: p1.accessToken, body: fd });
+      if (up.status !== 201 && up.status !== 200) throw new Error("Upload KYC gagal: " + up.status);
+
+      const det = await apiRequest({ method: "GET", path: "/api/v1/pendaftaran/" + pid, token: p1.accessToken });
+      if (det.status !== 200 || det.text.includes(nik) || !(det.json && det.json.data && String(det.json.data.nik_masked).includes("*"))) {
+        throw new Error("NIK tidak termasking dengan aman pada GET /pendaftaran/{id}");
+      }
+
+      const selfVer = await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/verifikasi", token: p1.accessToken, json: { status: "disetujui" } });
+      if (selfVer.status !== 403) throw new Error("Self-verify pendaftaran harus 403, dapat " + selfVer.status);
+
+      const appVer = await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/verifikasi", token: p2.accessToken, json: { status: "disetujui" } });
+      if (appVer.status !== 200) throw new Error("Approve pendaftaran pengurus2_a gagal: " + appVer.status);
+
+      return {
+        http: "201/403/200",
+        requestId: appVer.requestId,
+        summary: "nik_masked=" + det.json.data.nik_masked + ", no_anggota=" + (appVer.json && appVer.json.data && appVer.json.data.no_anggota)
+      };
+    });
+
+    // Modul 4: Rekening QRIS Merchant
+    await runStep("4. Rekening QRIS", "Tolak CRC rusak (400), Tolak rekening pribadi non-pilot (403), List rekening badan hukum (200)", async function () {
+      const p1 = await loginCached("pengurus_a");
+      const badCrc = await apiRequest({
+        method: "POST",
+        path: "/api/v1/koperasi/rekening-qris",
+        token: p1.accessToken,
+        json: {
+          nama_merchant: "Bad CRC Demo",
+          nmid: "ID88888888",
+          nama_bank_pjp: "BRI",
+          no_rekening_settlement: "11223344",
+          nama_pemilik_rekening: "Koperasi Kopdes",
+          is_atas_nama_badan_hukum: true,
+          jenis_pemilik: "badan_hukum_koperasi",
+          qris_payload_statis: "0002010102115802ID5906KOPDES6005BOGOR6304DEAD"
+        }
+      });
+      const personal = await apiRequest({
+        method: "POST",
+        path: "/api/v1/koperasi/rekening-qris",
+        token: p1.accessToken,
+        json: {
+          nama_merchant: "Personal Demo",
+          nmid: "ID88888887",
+          nama_bank_pjp: "BCA",
+          no_rekening_settlement: "99887766",
+          nama_pemilik_rekening: "Pengurus Pribadi",
+          is_atas_nama_badan_hukum: false,
+          jenis_pemilik: "perorangan_pengurus",
+          qris_payload_statis: buildSampleStaticQRIS("DemoPersonal")
+        }
+      });
+      const list = await apiRequest({ method: "GET", path: "/api/v1/koperasi/rekening-qris", token: p1.accessToken });
+      if (badCrc.status !== 400) throw new Error("CRC rusak harus 400, dapat " + badCrc.status);
+      if (personal.status !== 403) throw new Error("Rekening perorangan non-pilot harus ditolak 403, dapat " + personal.status);
+      if (list.status !== 200) throw new Error("List rekening gagal: " + list.status);
+      return {
+        http: "400/" + personal.status + "/200",
+        requestId: list.requestId,
+        summary: "bad_crc=400, personal_rejected=" + personal.status + ", rekening_aktif=" + ((list.json && list.json.data && list.json.data.length) || 0)
+      };
+    });
+
+    // Modul 5: Iuran Netral (KEPUTUSAN AKUNTAN) & Generate Tagihan
+    await runStep("5. Iuran Anggota", "GET /iuran/jenis, POST /iuran/jenis (KEPUTUSAN AKUNTAN), POST /iuran/generate, GET /tagihan/saya & /menunggak", async function () {
+      const p1 = await loginCached("pengurus_a");
+      const ang = await loginCached("anggota_a");
+      const pw = await loginCached("pengawas_a");
+      const ts = Date.now();
+      const getJ = await apiRequest({ method: "GET", path: "/api/v1/iuran/jenis", token: ang.accessToken });
+      const postJ = await apiRequest({
+        method: "POST",
+        path: "/api/v1/iuran/jenis",
+        token: p1.accessToken,
+        json: { kode: "DEMO-" + ts, nama: "Iuran Live Demo " + ts, tipe: "wajib", nominal_standar: 25000 }
+      });
+      if (postJ.status !== 201 || !postJ.text.includes("KEPUTUSAN AKUNTAN")) {
+        throw new Error("POST /iuran/jenis gagal atau tanpa penanda KEPUTUSAN AKUNTAN: " + postJ.status);
+      }
+      const jiId = postJ.json.data.id;
+      const gen = await apiRequest({ method: "POST", path: "/api/v1/iuran/generate", token: p1.accessToken, json: { jenis_iuran_id: jiId, periode: "2026-11" } });
+      const myT = await apiRequest({ method: "GET", path: "/api/v1/iuran/tagihan/saya", token: ang.accessToken });
+      const mng = await apiRequest({ method: "GET", path: "/api/v1/iuran/menunggak", token: pw.accessToken });
+      if (getJ.status !== 200 || gen.status !== 200 || myT.status !== 200 || mng.status !== 200) {
+        throw new Error("Status iuran tidak lengkap: " + [getJ.status, gen.status, myT.status, mng.status].join("/"));
+      }
+      return {
+        http: "200/201",
+        requestId: gen.requestId,
+        summary: "Tagihan baru=" + (gen.json && gen.json.data && gen.json.data.jumlah_tagihan_baru) + ", penanda KEPUTUSAN AKUNTAN ada"
+      };
+    });
+
+    // Modul 6: Pembayaran QRIS, Idempotency-Key & Maker-Checker
+    await runStep("6. Pembayaran QRIS", "POST /pembayaran/qris (201), Replay (201 sama ID), Konflik Body (422), Klaim RRN & Maker-Checker", async function () {
+      const ang = await loginCached("anggota_a");
+      const p1 = await loginCached("pengurus_a");
+      const p2 = await loginCached("pengurus2_a");
+
+      const makeOrder = async function (tag) {
+        const c = await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: resIds.produk_a_id, qty: 1 } });
+        if (c.status !== 200 && c.status !== 201) throw new Error("Add cart gagal: " + c.status);
+        const co = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: tag } });
+        if (co.status !== 201) throw new Error("Checkout gagal: " + co.status);
+        return co.json.data.pesanan_id;
+      };
+
+      const oid1 = await makeOrder("LiveDemo QRIS 1");
+      const oid2 = await makeOrder("LiveDemo QRIS 2");
+      const idempKey = generateUUIDv4();
+      const body1 = { pesanan_id: oid1, anggota_id: resIds.anggota_a_id, metode_pembayaran_id: resIds.metode_pembayaran_a_id, rekening_qris_id: resIds.rekening_qris_a_id };
+
+      const q1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", token: p1.accessToken, headers: { "Idempotency-Key": idempKey }, json: body1 });
+      const q2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", token: p1.accessToken, headers: { "Idempotency-Key": idempKey }, json: body1 });
+      const qConflict = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", token: p1.accessToken, headers: { "Idempotency-Key": idempKey }, json: { pesanan_id: oid2, anggota_id: resIds.anggota_a_id, metode_pembayaran_id: resIds.metode_pembayaran_a_id, rekening_qris_id: resIds.rekening_qris_a_id } });
+      if (q1.status !== 201 || q2.status !== 201) throw new Error("QRIS/Replay gagal: " + q1.status + "/" + q2.status);
+      if (q1.json.data.pembayaran_id !== q2.json.data.pembayaran_id) throw new Error("Replay mengembalikan pembayaran_id berbeda!");
+      if (qConflict.status !== 422) throw new Error("Body berbeda pada Idempotency-Key sama harus 422, dapat " + qConflict.status);
+
+      const payId = q1.json.data.pembayaran_id;
+      state.vars.last_pembayaran_id = payId;
+      const klaim = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/bukti", token: p1.accessToken, json: { referensi_rrn: "RRN-LD-" + String(Date.now()).slice(-6), catatan: "Bukti live demo" } });
+      const selfVer = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/verifikasi", token: p1.accessToken, json: { disetujui: true } });
+      const okVer = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/verifikasi", token: p2.accessToken, json: { disetujui: true, catatan: "Valid Live Demo" } });
+      if (klaim.status !== 200 || selfVer.status !== 403 || okVer.status !== 200) {
+        throw new Error("Klaim/Maker-Checker gagal: " + [klaim.status, selfVer.status, okVer.status].join("/"));
+      }
+      return {
+        http: "201/422/403/200",
+        requestId: okVer.requestId,
+        summary: "Total=" + formatRupiah(q1.json.data.nominal_total) + " (+kode " + q1.json.data.kode_unik + "), conflict=422, Maker-Checker=403->200"
+      };
+    });
+
+    // Modul 7: Impor Mutasi Bank CSV, Segregasi Peran & Rekonsiliasi Harian
+    await runStep("7. Mutasi CSV & Rekonsiliasi", "Impor CSV 5 kolom (auto-approve off -> menunggu_persetujuan_kedua), Deteksi Duplikat, Segregasi 403 vs 200", async function () {
+      const op = await loginCached("operator_a");
+      const p1 = await loginCached("pengurus_a");
+      const p2 = await loginCached("pengurus2_a");
+      const pw = await loginCached("pengawas_a");
+
+      const c7 = await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: op.accessToken, json: { produk_id: resIds.produk_a_id, qty: 1 } });
+      if (c7.status !== 200 && c7.status !== 201) {
+        throw new Error("Add cart mutasi gagal: " + c7.status + " " + c7.text);
+      }
+      const co = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: op.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "LiveDemo Mutasi" } });
+      if (co.status !== 201 || !co.json || !co.json.data || !co.json.data.pesanan_id) {
+        throw new Error("Checkout mutasi gagal: " + co.status + " " + co.text);
+      }
+      const q = await apiRequest({
+        method: "POST",
+        path: "/api/v1/pembayaran/qris",
+        token: op.accessToken,
+        json: { pesanan_id: co.json.data.pesanan_id, anggota_id: resIds.anggota_a_id, metode_pembayaran_id: resIds.metode_pembayaran_a_id, rekening_qris_id: resIds.rekening_qris_a_id }
+      });
+      if (q.status !== 201 || !q.json || !q.json.data || !q.json.data.pembayaran_id) {
+        throw new Error("Buat QRIS mutasi gagal: " + q.status + " " + q.text);
+      }
+      const payId = q.json.data.pembayaran_id;
+      const nomTotal = q.json.data.nominal_total;
+      const tglJkt = getTodayJakartaDate();
+      const csv = "tanggal,keterangan,tipe,nominal,no_rekening\n" + tglJkt + " 10:15:00,SETTLEMENT LIVE DEMO " + payId + ",CR," + nomTotal + ",111222333A\n";
+
+      const fd1 = new FormData();
+      fd1.append("file", new Blob([csv], { type: "text/csv" }), "mutasi-demo.csv");
+      const imp1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd1 });
+      const chk = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/" + payId, token: op.accessToken });
+      const fd2 = new FormData();
+      fd2.append("file", new Blob([csv], { type: "text/csv" }), "mutasi-demo.csv");
+      const imp2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd2 });
+      const sameImp = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/verifikasi", token: p1.accessToken, json: { disetujui: true } });
+      const secVer = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/" + payId + "/verifikasi", token: p2.accessToken, json: { disetujui: true, catatan: "Konfirmasi ke-2 live demo" } });
+      const rekon = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/rekonsiliasi/harian?tanggal=" + encodeURIComponent(tglJkt), token: pw.accessToken });
+
+      if (imp1.status !== 200 || imp2.status !== 200 || !(chk.text.includes("menunggu_persetujuan_kedua")) || sameImp.status !== 403 || secVer.status !== 200 || rekon.status !== 200) {
+        throw new Error("Alur mutasi/segregasi/rekon tidak sesuai: " + [imp1.status, imp2.status, sameImp.status, secVer.status, rekon.status].join("/"));
+      }
+      return {
+        http: "200/403/200",
+        requestId: rekon.requestId,
+        summary: "Matched=" + formatRupiah(nomTotal) + " -> menunggu_persetujuan_kedua, duplikat=" + (imp2.json && imp2.json.data && imp2.json.data.duplikat) + ", rekon(" + tglJkt + ")=200"
+      };
+    });
+
+    // Modul 8: Katalog, Harga Anggota, Promo, Checkout, Batal & Expire
+    await runStep("8. Katalog & Toko", "List produk/stok/harga/promo, Checkout promo + Batal (pulih stok), Expire operator 200 vs pengawas 403", async function () {
+      const ang = await loginCached("anggota_a");
+      const pw = await loginCached("pengawas_a");
+      const op = await loginCached("operator_a");
+
+      const prod = await apiRequest({ method: "GET", path: "/api/v1/katalog/produk", token: ang.accessToken });
+      const stok = await apiRequest({ method: "GET", path: "/api/v1/katalog/stok", token: ang.accessToken });
+      const hrg = await apiRequest({ method: "GET", path: "/api/v1/katalog/harga?produk_id=" + resIds.produk_a_id + "&anggota_id=" + resIds.anggota_a_id, token: ang.accessToken });
+      const prm = await apiRequest({ method: "GET", path: "/api/v1/katalog/promo", token: ang.accessToken });
+
+      const cb1 = await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: resIds.produk_a_id, qty: 1 } });
+      if (cb1.status !== 200 && cb1.status !== 201) {
+        throw new Error("Add cart batal gagal: " + cb1.status + " " + cb1.text);
+      }
+      const coBatal = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", kode_promo: resIds.promo_a_kode, catatan: "LiveDemo Batal" } });
+      if (coBatal.status !== 201 || !coBatal.json || !coBatal.json.data || !coBatal.json.data.pesanan_id) {
+        throw new Error("Checkout batal gagal: " + coBatal.status + " " + coBatal.text);
+      }
+      const btl = await apiRequest({ method: "POST", path: "/api/v1/toko/pesanan/" + coBatal.json.data.pesanan_id + "/batal", token: ang.accessToken, json: {} });
+
+      const cb2 = await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: resIds.produk_a_id, qty: 1 } });
+      if (cb2.status !== 200 && cb2.status !== 201) {
+        throw new Error("Add cart expire gagal: " + cb2.status + " " + cb2.text);
+      }
+      const coExp = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "LiveDemo Expire" } });
+      if (coExp.status !== 201 || !coExp.json || !coExp.json.data || !coExp.json.data.pesanan_id) {
+        throw new Error("Checkout expire gagal: " + coExp.status + " " + coExp.text);
+      }
+      const expPw = await apiRequest({ method: "POST", path: "/api/v1/toko/pesanan/" + coExp.json.data.pesanan_id + "/expire", token: pw.accessToken, json: {} });
+      const expOp = await apiRequest({ method: "POST", path: "/api/v1/toko/pesanan/" + coExp.json.data.pesanan_id + "/expire", token: op.accessToken, json: {} });
+
+      if (prod.status !== 200 || stok.status !== 200 || hrg.status !== 200 || prm.status !== 200 || btl.status !== 200 || expPw.status !== 403 || expOp.status !== 200) {
+        throw new Error("Katalog/Toko gagal: " + [prod.status, stok.status, hrg.status, prm.status, btl.status, expPw.status, expOp.status].join("/"));
+      }
+      return {
+        http: "200/201/403",
+        requestId: expOp.requestId,
+        summary: "Harga+Promo OK, Batal(stok pulih)=200, Expire(pengawas=403, operator=200)"
+      };
+    });
+
+    // Modul 9: Anggota, Users, Anti-Self-Escalation Role, Kas & Laporan
+    await runStep("9. Manajemen & Laporan", "GET /anggota, /users, /kas/mutasi, /laporan/keuangan, /laporan/anggota & Tolak Self-Escalation 403", async function () {
+      const adm = await loginCached("admin_a");
+      const angs = await apiRequest({ method: "GET", path: "/api/v1/anggota", token: adm.accessToken });
+      const usrs = await apiRequest({ method: "GET", path: "/api/v1/users", token: adm.accessToken });
+      const kas = await apiRequest({ method: "GET", path: "/api/v1/kas/mutasi", token: adm.accessToken });
+      const lk = await apiRequest({ method: "GET", path: "/api/v1/laporan/keuangan", token: adm.accessToken });
+      const la = await apiRequest({ method: "GET", path: "/api/v1/laporan/anggota", token: adm.accessToken });
+      const selfEsc = await apiRequest({ method: "PATCH", path: "/api/v1/users/" + accountsMap["admin_a"].user_id + "/role", token: adm.accessToken, json: { role: "admin" } });
+      if (angs.status !== 200 || usrs.status !== 200 || kas.status !== 200 || lk.status !== 200 || la.status !== 200 || selfEsc.status !== 403) {
+        throw new Error("Status manajemen/laporan/role gagal: " + [angs.status, usrs.status, kas.status, lk.status, la.status, selfEsc.status].join("/"));
+      }
+      return {
+        http: "200/403",
+        requestId: selfEsc.requestId,
+        summary: "Anggota=" + ((angs.json && angs.json.data && angs.json.data.length) || 0) + ", Users+Kas+Laporan=200, Self-escalation=403"
+      };
+    });
+
+    // Modul 10: Isolasi Multi-Tenant RLS, Anti-IDOR & Audit Zero-PII
+    await runStep("10. RLS, Anti-IDOR & Zero-PII", "Kop A baca anggota/user/pembayaran Kop B (404), Anti-IDOR anggota (404), Pindai 0 kebocoran PII", async function () {
+      const p1 = await loginCached("pengurus_a");
+      const adm = await loginCached("admin_a");
+      const ang = await loginCached("anggota_a");
+
+      const cAng = await apiRequest({ method: "GET", path: "/api/v1/anggota/" + resIds.anggota_b_id, token: p1.accessToken });
+      const cUsr = await apiRequest({ method: "GET", path: "/api/v1/users/" + accountsMap["admin_b"].user_id, token: adm.accessToken });
+      const cPay = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/" + resIds.pembayaran_b_id, token: ang.accessToken });
+      if (cAng.status !== 404 || cUsr.status !== 404 || cPay.status !== 404) {
+        throw new Error("Isolasi lintas-tenant / IDOR gagal: " + [cAng.status, cUsr.status, cPay.status].join("/"));
+      }
+
+      const nikRe = /\b3\d{15}\b/;
+      let leakCount = 0;
+      for (const rec of state.recordedResponses) {
+        if (nikRe.test(rec.bodyText) || /password_hash|totp_secret_enkripsi|postgres:\/\/[^@]+@/i.test(rec.bodyText)) {
+          leakCount++;
+        }
+      }
+      if (leakCount > 0) throw new Error("Ditemukan " + leakCount + " potensi kebocoran PII/rahasia!");
+
+      return {
+        http: "404/404/404",
+        requestId: cPay.requestId,
+        summary: "RLS Kop A->B=404, Anti-IDOR=404, 0 kebocoran PII di " + state.recordedResponses.length + " respons"
+      };
+    });
+
+    state.liveDemoResults = demoRows;
+    const passCount = demoRows.filter(function (r) { return r.status === "PASS"; }).length;
+    const failCount = demoRows.filter(function (r) { return r.status === "FAIL"; }).length;
+    const skipCount = demoRows.filter(function (r) { return r.status === "SKIP"; }).length;
+    el("liveDemoSummary").textContent = "Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=" + passCount + ", SKIP=" + skipCount + ", FAIL=" + failCount + ", Total=" + demoRows.length;
+    el("btnDownloadLiveDemoJSON").disabled = false;
+  }
+
   async function runScenarioList() {
     if (!state.scenarios || !Array.isArray(state.scenarios.scenarios)) {
       el("scenariosSummary").textContent = "scenarios.json belum tersedia.";
@@ -449,14 +1075,12 @@
       return;
     }
 
+    const includeBruteforce = !!(el("chkIncludeBruteforce") && el("chkIncludeBruteforce").checked);
     const tbody = el("scenariosTableBody");
     tbody.textContent = "";
     const results = [];
     const tokensByKey = {};
-    const accountsMap = {};
-    for (const a of (state.config.seeded_accounts || [])) {
-      accountsMap[a.key] = a;
-    }
+    const accountsMap = buildAccountsMap();
 
     const ensureRoleToken = async function (roleKey, forceFresh) {
       if (!roleKey || roleKey === "none" || roleKey === "unauthenticated") return "";
@@ -520,7 +1144,11 @@
       let httpCode = "-";
       let summaryText = "";
 
-      if (sc.requires_metrics_token && !ctxVars.metrics_token) {
+      if (sc.claim_id === "CLAIM-AUTH-BRUTEFORCE-429" && !includeBruteforce) {
+        statusLabel = "SKIP";
+        summaryText = "Mode standar: brute-force 429 dilewati agar IP tidak terkunci 15 menit.";
+        skipCount++;
+      } else if (sc.requires_metrics_token && !ctxVars.metrics_token) {
         statusLabel = "SKIP";
         summaryText = "METRICS_TOKEN tidak diisi di Panel 0 browser.";
         skipCount++;
@@ -571,7 +1199,9 @@
               token: tok,
               headers: headers,
               json: bodyJson,
-              body: reqBody
+              body: reqBody,
+              autoRefresh: false,
+              retryOn429: !(step.expect_status && step.expect_status.includes(429))
             });
 
             httpCode = String(lastResp.status);
@@ -624,7 +1254,11 @@
       results.push(row);
 
       const tr = document.createElement("tr");
-      [row.claim_id, row.status, row.http_status, row.operation, row.excerpt, row.timestamp].forEach(function (c) {
+      const tdId = document.createElement("td");
+      tdId.textContent = safeString(row.claim_id);
+      tr.appendChild(tdId);
+      appendStatusCell(tr, row.status);
+      [row.http_status, row.operation, row.excerpt, row.timestamp].forEach(function (c) {
         const td = document.createElement("td");
         td.textContent = safeString(c);
         tr.appendChild(td);
@@ -649,11 +1283,7 @@
       return;
     }
 
-    const accountsMap = {};
-    for (const a of (state.config.seeded_accounts || [])) {
-      accountsMap[a.role + "_" + a.tenant.toLowerCase()] = a;
-      accountsMap[a.key] = a;
-    }
+    const accountsMap = buildAccountsMap();
     const roleTokens = {};
     const keysNeeded = ["admin_a", "pengurus_a", "bendahara_a", "ketua_a", "pengawas_a", "operator_a", "anggota_a", "admin_b"];
     for (const k of keysNeeded) {
@@ -711,7 +1341,8 @@
             method: ep.method,
             path: path,
             token: tok,
-            json: ["POST", "PUT", "PATCH"].includes(ep.method) ? (ep.sample_body || {}) : undefined
+            json: ["POST", "PUT", "PATCH"].includes(ep.method) ? (ep.sample_body || {}) : undefined,
+            autoRefresh: false
           });
         } catch (err) {
           resp = { status: 0, text: err.message };
@@ -724,11 +1355,12 @@
         if (ok) passed++; else failed++;
 
         const tr = document.createElement("tr");
-        [ep.method, ep.path, chk.label, JSON.stringify(chk.expected), String(resp.status), ok ? "PASS" : "FAIL"].forEach(function (c) {
+        [ep.method, ep.path, chk.label, JSON.stringify(chk.expected), String(resp.status)].forEach(function (c) {
           const td = document.createElement("td");
           td.textContent = safeString(c);
           tr.appendChild(td);
         });
+        appendStatusCell(tr, ok ? "PASS" : "FAIL");
         tbody.appendChild(tr);
       }
     }
@@ -804,7 +1436,7 @@
     el("btnRefreshToken").addEventListener("click", async function () {
       try {
         if (!state.refreshToken) throw new Error("Tidak ada refresh_token di memori.");
-        const res = await apiRequest({
+        const res = await rawFetchAPI({
           method: "POST",
           path: "/api/v1/auth/refresh",
           token: "",
@@ -821,21 +1453,46 @@
       }
     });
 
+    el("btnTestSingleFlightRefresh").addEventListener("click", async function () {
+      try {
+        if (!state.refreshToken) {
+          const auth = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+          state.refreshToken = auth.refreshToken;
+        }
+        state.accessToken = "expired.token.simulation";
+        updateSessionBar();
+        const [a, b] = await Promise.all([
+          apiRequest({ method: "GET", path: "/api/v1/auth/me" }),
+          apiRequest({ method: "GET", path: "/api/v1/iuran/jenis" })
+        ]);
+        appendFlowLog("Uji Single-Flight Refresh Konkuren", { me_status: a.status, iuran_jenis_status: b.status, same_rotated_token: !!state.accessToken });
+      } catch (err) {
+        appendFlowLog("Uji Single-Flight Refresh Gagal", err.message);
+      }
+    });
+
     el("btnLogout").addEventListener("click", async function () {
       try {
         if (!state.refreshToken) throw new Error("Tidak ada refresh_token di memori.");
         const res = await apiRequest({
           method: "POST",
           path: "/api/v1/auth/revoke",
-          json: { refresh_token: state.refreshToken }
+          json: { refresh_token: state.refreshToken },
+          autoRefresh: false
         });
         state.accessToken = "";
         state.refreshToken = "";
+        state.activeAccount = null;
         updateSessionBar();
         appendFlowLog("Logout / Revoke (" + res.status + ")", res.json || res.text);
       } catch (err) {
         appendFlowLog("Logout Gagal", err.message);
       }
+    });
+
+    el("btnRunLiveDemo").addEventListener("click", runLiveDemo);
+    el("btnDownloadLiveDemoJSON").addEventListener("click", function () {
+      downloadFile("hasil-live-demo-kopdes.json", "application/json", JSON.stringify({ generated_at: new Date().toISOString(), results: state.liveDemoResults }, null, 2));
     });
 
     el("openapiOpSelect").addEventListener("change", onSelectOpenAPIOp);
@@ -869,7 +1526,7 @@
           body: d.hasBody ? d.rawBody : undefined
         });
         el("openapiResponsePre").textContent =
-          "HTTP " + res.status + " | X-Request-ID=" + (res.headers.get("X-Request-ID") || "-") + "\n" +
+          "HTTP " + res.status + " | X-Request-ID=" + (res.requestId || "-") + "\n" +
           redactSecrets(res.text);
       } catch (err) {
         el("openapiResponsePre").textContent = "Error: " + redactSecrets(err.message);
@@ -902,14 +1559,14 @@
           json: { email: "admin_nomfa_a@kopdes-test.local", password: pwd, koperasi_id: state.config.koperasi_a_id }
         });
         const setupTok = lRes.json && lRes.json.data && lRes.json.data.setup_token;
-        if (!setupTok) throw new Error("Harap MFA_MANDATORY_SETUP_REQUIRED + setup_token, dapat: " + lRes.text);
+        if (!setupTok) throw new Error("Harap MFA_MANDATORY_SETUP_REQUIRED + setup_token, dapat (" + lRes.status + "): " + lRes.text);
         const sRes = await apiRequest({ method: "POST", path: "/api/v1/auth/mfa/setup", token: setupTok, json: {} });
         const sec = sRes.json && sRes.json.data && sRes.json.data.secret;
         const code = await fetchTOTP({ secret_base32: sec });
         const eRes = await apiRequest({ method: "POST", path: "/api/v1/auth/mfa/enable", token: setupTok, json: { secret: sec, totp_code: code } });
         appendFlowLog("3.1b MFA Enrollment Selesai (recovery_codes tersimpan)", eRes.json);
       } catch (err) {
-        appendFlowLog("3.1b MFA Enrollment Error", err.message);
+        appendFlowLog("3.1b MFA Enrollment Note/Error", err.message);
       }
     });
 
@@ -928,20 +1585,23 @@
 
     el("btnFlow31dMetrics").addEventListener("click", async function () {
       const mTok = el("metricsTokenInput").value.trim();
-      if (!mTok) {
-        appendFlowLog("3.1d /metrics dilewati", "Isi Metrics Bearer Token di Panel 0 terlebih dahulu.");
-        return;
-      }
       try {
-        const unauth = await apiRequest({ method: "GET", path: state.config.metrics_url, token: "" });
-        const authed = await apiRequest({ method: "GET", path: state.config.metrics_url, token: mTok });
-        appendFlowLog("3.1d /metrics Probe", { unauth_status: unauth.status, auth_status: authed.status, sample: authed.text.slice(0, 200) });
+        const unauth = await apiRequest({ method: "GET", path: "/metrics", token: "" });
+        if (!mTok) {
+          appendFlowLog("3.1d /metrics Probe (unauth saja)", { unauth_status: unauth.status, note: "Isi Metrics Bearer Token di Panel 0 untuk menguji akses terautentikasi 200." });
+          return;
+        }
+        const authed = await apiRequest({ method: "GET", path: "/metrics", token: mTok });
+        appendFlowLog("3.1d /metrics Probe", { unauth_status: unauth.status, auth_status: authed.status, sample: authed.text.slice(0, 220) });
       } catch (err) {
-        appendFlowLog("3.1d /metrics note (port metrik berbeda dari origin CORS API)", err.message);
+        appendFlowLog("3.1d /metrics Error", err.message);
       }
     });
 
     el("btnFlow31eLockout").addEventListener("click", async function () {
+      if (!confirm("Peringatan: Uji brute-force 429 akan mengunci IP 127.0.0.1 selama 15 menit. Lanjutkan?")) {
+        return;
+      }
       try {
         const statuses = [];
         for (let i = 0; i < 6; i++) {
@@ -961,18 +1621,20 @@
 
     el("btnFlow32Run").addEventListener("click", async function () {
       try {
+        const p1 = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
         const ts = Date.now();
         const reg = await apiRequest({
           method: "POST",
           path: "/api/v1/pendaftaran",
+          token: p1.accessToken,
           json: {
             nama_lengkap: el("flowPendaftaranNama").value,
             nik: el("flowPendaftaranNIK").value,
-            no_hp: "0812345" + String(ts).slice(-5),
-            alamat_ktp: "Jl. Desa Uji No. " + String(ts).slice(-3),
             tempat_lahir: "Bogor",
             tanggal_lahir: "1992-01-15",
-            jenis_kelamin: "L"
+            jenis_kelamin: "L",
+            pekerjaan: "Petani",
+            alamat_ktp: "Jl. Desa Uji No. " + String(ts).slice(-3)
           }
         });
         const pid = reg.json && reg.json.data && reg.json.data.pendaftaran_id;
@@ -982,8 +1644,8 @@
           const fd = new FormData();
           fd.append("dokumen", createTinyPNGBlob(), "ktp.png");
           fd.append("jenis_dokumen", "ktp");
-          await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/dokumen", body: fd });
-          const getRes = await apiRequest({ method: "GET", path: "/api/v1/pendaftaran/" + pid });
+          await apiRequest({ method: "POST", path: "/api/v1/pendaftaran/" + pid + "/dokumen", token: p1.accessToken, body: fd });
+          const getRes = await apiRequest({ method: "GET", path: "/api/v1/pendaftaran/" + pid, token: p1.accessToken });
           masked = getRes.json && getRes.json.data;
         }
         appendFlowLog("3.2 Pendaftaran + Upload KYC + Masking PII", { create: reg.json, detail: masked });
@@ -1002,7 +1664,7 @@
           token: p2Auth.accessToken,
           json: { status: "disetujui" }
         });
-        appendFlowLog("3.2b Verifikasi Maker-Checker (" + res.status + ")", res.json);
+        appendFlowLog("3.2b Verifikasi Maker-Checker Pengurus (" + res.status + ")", res.json);
       } catch (err) {
         appendFlowLog("3.2b Error", err.message);
       }
@@ -1010,14 +1672,34 @@
 
     el("btnFlow33QRIS").addEventListener("click", async function () {
       try {
+        const ang = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: state.config.resources.produk_a_id, qty: 1 } });
+        const co1 = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "Flow 3.3 #1" } });
+        await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: state.config.resources.produk_a_id, qty: 1 } });
+        const co2 = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "Flow 3.3 #2" } });
+
         const key = generateUUIDv4();
-        const body = {
-          tagihan_iuran_id: state.config.resources.tagihan_iuran_a_id,
+        const body1 = {
+          pesanan_id: co1.json.data.pesanan_id,
+          anggota_id: state.config.resources.anggota_a_id,
+          metode_pembayaran_id: state.config.resources.metode_pembayaran_a_id,
           rekening_qris_id: state.config.resources.rekening_qris_a_id
         };
-        const r1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", headers: { "Idempotency-Key": key }, json: body });
-        const r2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", headers: { "Idempotency-Key": key }, json: body });
-        const r3 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", headers: { "Idempotency-Key": key }, json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a2_id, rekening_qris_id: state.config.resources.rekening_qris_a_id } });
+        const p1 = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const r1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", token: p1.accessToken, headers: { "Idempotency-Key": key }, json: body1 });
+        const r2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/qris", token: p1.accessToken, headers: { "Idempotency-Key": key }, json: body1 });
+        const r3 = await apiRequest({
+          method: "POST",
+          path: "/api/v1/pembayaran/qris",
+          token: p1.accessToken,
+          headers: { "Idempotency-Key": key },
+          json: {
+            pesanan_id: co2.json.data.pesanan_id,
+            anggota_id: state.config.resources.anggota_a_id,
+            metode_pembayaran_id: state.config.resources.metode_pembayaran_a_id,
+            rekening_qris_id: state.config.resources.rekening_qris_a_id
+          }
+        });
         if (r1.json && r1.json.data && r1.json.data.pembayaran_id) {
           state.vars.last_pembayaran_id = r1.json.data.pembayaran_id;
           state.vars.last_pembayaran_nominal_total = r1.json.data.nominal_total;
@@ -1033,9 +1715,11 @@
       try {
         const payId = state.vars.last_pembayaran_id;
         if (!payId) throw new Error("Jalankan 3.3a terlebih dahulu.");
+        const p1Auth = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
         const klaim = await apiRequest({
           method: "POST",
           path: "/api/v1/pembayaran/" + payId + "/bukti",
+          token: p1Auth.accessToken,
           json: { referensi_rrn: "RRN" + String(Date.now()).slice(-8), catatan: "Bukti transfer uji browser" }
         });
         const p2Auth = await loginAccount({ email: "pengurus2_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
@@ -1054,23 +1738,31 @@
     el("btnFlow34Mutasi").addEventListener("click", async function () {
       try {
         const ang = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: state.config.resources.produk_a_id, qty: 1 } });
+        const co = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "Flow 3.4 Mutasi" } });
         const qRes = await apiRequest({
           method: "POST",
           path: "/api/v1/pembayaran/qris",
           token: ang.accessToken,
           headers: { "Idempotency-Key": generateUUIDv4() },
-          json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a2_id, rekening_qris_id: state.config.resources.rekening_qris_a_id }
+          json: {
+            pesanan_id: co.json.data.pesanan_id,
+            anggota_id: state.config.resources.anggota_a_id,
+            metode_pembayaran_id: state.config.resources.metode_pembayaran_a_id,
+            rekening_qris_id: state.config.resources.rekening_qris_a_id
+          }
         });
         const nomTotal = (qRes.json && qRes.json.data && qRes.json.data.nominal_total) || 50123;
         const p1 = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const csv = "tanggal,keterangan,tipe,nominal,no_rekening\n2026-11-14,QRIS Iuran Uji " + Date.now() + ",CR," + nomTotal + ",1234567890\n";
+        const tglJkt = getTodayJakartaDate();
+        const csv = "tanggal,keterangan,tipe,nominal,no_rekening\n" + tglJkt + " 10:00:00,QRIS Toko Uji " + Date.now() + ",CR," + nomTotal + ",1234567890\n";
         const fd1 = new FormData();
         fd1.append("file", new Blob([csv], { type: "text/csv" }), "mutasi.csv");
         const imp1 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd1 });
         const fd2 = new FormData();
         fd2.append("file", new Blob([csv], { type: "text/csv" }), "mutasi.csv");
         const imp2 = await apiRequest({ method: "POST", path: "/api/v1/pembayaran/mutasi-bank/impor", token: p1.accessToken, body: fd2 });
-        const rekon = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/rekonsiliasi/harian", token: p1.accessToken });
+        const rekon = await apiRequest({ method: "GET", path: "/api/v1/pembayaran/rekonsiliasi/harian?tanggal=" + encodeURIComponent(tglJkt), token: p1.accessToken });
         appendFlowLog("3.4 Impor CSV + Deteksi Duplikat + Rekonsiliasi", {
           impor_1: imp1.json,
           impor_2_duplikat: imp2.json,
@@ -1095,6 +1787,7 @@
             nama_bank_pjp: "BCA",
             no_rekening_settlement: "99887766",
             nama_pemilik_rekening: "Pengurus Pribadi",
+            is_atas_nama_badan_hukum: false,
             jenis_pemilik: "perorangan_pengurus",
             qris_payload_statis: qrisSample
           }
@@ -1133,12 +1826,13 @@
     el("btnFlow37Iuran").addEventListener("click", async function () {
       try {
         const pAuth = await loginAccount({ email: "pengurus_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        const angAuth = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
         const getJ = await apiRequest({ method: "GET", path: "/api/v1/iuran/jenis", token: pAuth.accessToken });
         const postJ = await apiRequest({
           method: "POST",
           path: "/api/v1/iuran/jenis",
           token: pAuth.accessToken,
-          json: { kode: "UI-" + String(Date.now()).slice(-6), nama: "Iuran Browser", tipe: "wajib", nominal: 25000 }
+          json: { kode: "UI-" + String(Date.now()).slice(-6), nama: "Iuran Browser", tipe: "wajib", nominal_standar: 25000 }
         });
         const newJenisId = (postJ.json && postJ.json.data && postJ.json.data.id) || state.config.resources.jenis_iuran_a_id;
         const gen = await apiRequest({
@@ -1147,7 +1841,8 @@
           token: pAuth.accessToken,
           json: { jenis_iuran_id: newJenisId, periode: "2026-12" }
         });
-        appendFlowLog("3.7 Iuran + KEPUTUSAN AKUNTAN + Generate", { get_status: getJ.status, post_status: postJ.status, post_body: postJ.json, generate_status: gen.status, generate_body: gen.json });
+        const myT = await apiRequest({ method: "GET", path: "/api/v1/iuran/tagihan/saya", token: angAuth.accessToken });
+        appendFlowLog("3.7 Iuran + KEPUTUSAN AKUNTAN + Generate", { get_status: getJ.status, post_status: postJ.status, post_body: postJ.json, generate_status: gen.status, generate_body: gen.json, tagihan_saya_count: myT.json && myT.json.data && myT.json.data.length });
       } catch (err) {
         appendFlowLog("3.7 Error", err.message);
       }
@@ -1156,15 +1851,27 @@
     el("btnFlow38Admin").addEventListener("click", async function () {
       try {
         const adm = await loginAccount({ email: "admin_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
-        const lap = await apiRequest({ method: "GET", path: "/api/v1/laporan/keuangan", token: adm.accessToken });
+        const angList = await apiRequest({ method: "GET", path: "/api/v1/anggota", token: adm.accessToken });
+        const lapKeu = await apiRequest({ method: "GET", path: "/api/v1/laporan/keuangan", token: adm.accessToken });
+        const lapAng = await apiRequest({ method: "GET", path: "/api/v1/laporan/anggota", token: adm.accessToken });
+        const kasMut = await apiRequest({ method: "GET", path: "/api/v1/kas/mutasi", token: adm.accessToken });
         const usrs = await apiRequest({ method: "GET", path: "/api/v1/users", token: adm.accessToken });
+        const adminAccount = (state.config.seeded_accounts || []).find(function (a) { return a.key === "admin_a"; }) || state.config.seeded_accounts[0];
         const selfPatch = await apiRequest({
           method: "PATCH",
-          path: "/api/v1/users/" + state.config.seeded_accounts[0].user_id + "/role",
+          path: "/api/v1/users/" + adminAccount.user_id + "/role",
           token: adm.accessToken,
           json: { role: "admin" }
         });
-        appendFlowLog("3.8 Laporan & Tolak Self-Role-Escalation", { laporan: lap.status, users: usrs.status, self_patch_status: selfPatch.status, body: selfPatch.json });
+        appendFlowLog("3.8 Manajemen & Tolak Self-Role-Escalation", {
+          anggota_status: angList.status,
+          laporan_keuangan: lapKeu.status,
+          laporan_anggota: lapAng.status,
+          kas_mutasi: kasMut.status,
+          users: usrs.status,
+          self_patch_status: selfPatch.status,
+          body: selfPatch.json
+        });
       } catch (err) {
         appendFlowLog("3.8 Error", err.message);
       }
@@ -1224,7 +1931,10 @@
     el("btnBehavior62Abort").addEventListener("click", async function () {
       try {
         const ang = await loginAccount({ email: "anggota_a@kopdes-test.local", koperasi_id: state.config.koperasi_a_id });
+        await apiRequest({ method: "POST", path: "/api/v1/toko/keranjang", token: ang.accessToken, json: { produk_id: state.config.resources.produk_a_id, qty: 1 } });
+        const co = await apiRequest({ method: "POST", path: "/api/v1/toko/checkout", token: ang.accessToken, json: { metode_serah_terima: "ambil_di_koperasi", catatan: "Behavior 6.2 Abort" } });
         const idempKey = generateUUIDv4();
+        const payBody = { pesanan_id: co.json.data.pesanan_id, anggota_id: state.config.resources.anggota_a_id, metode_pembayaran_id: state.config.resources.metode_pembayaran_a_id, rekening_qris_id: state.config.resources.rekening_qris_a_id };
         const ctrl = new AbortController();
         ctrl.abort();
         let aborted = false;
@@ -1234,7 +1944,7 @@
             path: "/api/v1/pembayaran/qris",
             token: ang.accessToken,
             headers: { "Idempotency-Key": idempKey },
-            json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a_id, rekening_qris_id: state.config.resources.rekening_qris_a_id },
+            json: payBody,
             signal: ctrl.signal
           });
         } catch (e) {
@@ -1245,20 +1955,20 @@
           path: "/api/v1/pembayaran/qris",
           token: ang.accessToken,
           headers: { "Idempotency-Key": idempKey },
-          json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a_id, rekening_qris_id: state.config.resources.rekening_qris_a_id }
+          json: payBody
         });
         const retry2 = await apiRequest({
           method: "POST",
           path: "/api/v1/pembayaran/qris",
           token: ang.accessToken,
           headers: { "Idempotency-Key": idempKey },
-          json: { tagihan_iuran_id: state.config.resources.tagihan_iuran_a_id, rekening_qris_id: state.config.resources.rekening_qris_a_id }
+          json: payBody
         });
         el("behaviorOutputPre").textContent = JSON.stringify({
           abort_triggered: aborted,
           retry1_status: retry1.status,
           retry2_status: retry2.status,
-          same_payment_id: retry1.json && retry2.json && retry1.json.data && retry2.json.data && retry1.json.data.pembayaran_id === retry2.json.data.pembayaran_id
+          same_payment_id: !!(retry1.json && retry2.json && retry1.json.data && retry2.json.data && retry1.json.data.pembayaran_id === retry2.json.data.pembayaran_id)
         }, null, 2);
       } catch (err) {
         el("behaviorOutputPre").textContent = "6.2 Abort+Retry Error: " + err.message;

@@ -2,11 +2,26 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <title>Kopdes Merah Putih — Frontend Tester Polos</title>
+  <title>Kopdes Merah Putih — Frontend Tester &amp; Live Demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.45; margin: 16px; color: #111; background: #fff; }
+    fieldset { margin-bottom: 16px; padding: 12px 16px; border: 1px solid #999; }
+    legend { font-weight: 700; padding: 0 6px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 13px; }
+    th, td { border: 1px solid #ccc; padding: 5px 8px; text-align: left; vertical-align: top; }
+    th { background: #f2f2f2; }
+    pre { background: #f7f7f7; border: 1px solid #ddd; padding: 8px; overflow-x: auto; max-height: 280px; font-size: 12px; }
+    button { padding: 5px 10px; margin: 2px 4px 2px 0; cursor: pointer; }
+    .badge-pass { font-weight: 700; color: #0a6e2e; }
+    .badge-fail { font-weight: 700; color: #b00020; }
+    .badge-skip { font-weight: 700; color: #8a5a00; }
+    .demo-box { border: 2px solid #0b5394; background: #f8fbff; }
+    .note { font-size: 13px; color: #444; }
+  </style>
 </head>
 <body>
-  <h1>Kopdes Merah Putih — Frontend Tester Polos</h1>
-  <p>Alat uji langsung di browser (tanpa framework, tanpa build step, tanpa CDN, token hanya di memori halaman).</p>
+  <h1>Kopdes Merah Putih — Frontend Tester Polos &amp; Live Demo</h1>
+  <p>Alat uji langsung di browser (tanpa framework, tanpa build step, tanpa CDN, token hanya di memori halaman, mengikuti kontrak <code>docs/FRONTEND_GUIDE.md</code>).</p>
 
   <fieldset>
     <legend>0. Status Lingkungan, Konfigurasi &amp; Guard Keamanan</legend>
@@ -22,11 +37,13 @@
     </p>
     <p>
       <label>Kata Sandi Akun Uji (di memori, tidak disimpan): <input type="password" id="testSeedPasswordInput" size="32" autocomplete="off"></label>
-      <label>Metrics Bearer Token (opsional, >=32 byte): <input type="password" id="metricsTokenInput" size="36" autocomplete="off"></label>
+      <label>Metrics Bearer Token (opsional, &gt;=32 byte): <input type="password" id="metricsTokenInput" size="36" autocomplete="off"></label>
     </p>
     <p>
       <strong>Sesi Aktif:</strong> <span id="sessionStatusText">Belum login (Unauthenticated)</span> |
+      <strong>Last X-Request-ID:</strong> <code id="lastRequestIdText">-</code> |
       <button type="button" id="btnRefreshToken">Refresh Token</button>
+      <button type="button" id="btnTestSingleFlightRefresh">Uji Single-Flight Refresh</button>
       <button type="button" id="btnLogout">Logout / Revoke</button>
       <button type="button" id="btnClearSession">Hapus Sesi Memori</button>
     </p>
@@ -36,9 +53,38 @@
     </details>
   </fieldset>
 
+  <fieldset class="demo-box">
+    <legend>A. Live Demo End-to-End Semua Fitur (Standar Tanpa Brute-Force Lockout)</legend>
+    <p class="note">
+      Menjalankan pengujian langsung seluruh 10 modul fitur Kopdes Merah Putih end-to-end menggunakan pola klien di <code>docs/FRONTEND_GUIDE.md</code>
+      (single-flight refresh, <code>Idempotency-Key</code>, <code>X-Request-ID</code>, multipart KYC PNG, <code>Intl.NumberFormat</code> IDR, zona waktu <code>Asia/Jakarta</code>)
+      <strong>tanpa brute-force 429</strong> agar IP tester tidak terkunci 15 menit.
+    </p>
+    <p>
+      <button type="button" id="btnRunLiveDemo" data-mutates="true">Jalankan Live Demo Semua Fitur (10 Modul End-to-End)</button>
+      <button type="button" id="btnDownloadLiveDemoJSON" disabled>Unduh Hasil Live Demo (JSON)</button>
+    </p>
+    <div id="liveDemoSummary">Belum dijalankan.</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Modul</th>
+          <th>Fitur &amp; Penanganan yang Diuji</th>
+          <th>Status</th>
+          <th>HTTP</th>
+          <th>X-Request-ID</th>
+          <th>Ringkasan Bukti</th>
+        </tr>
+      </thead>
+      <tbody id="liveDemoTableBody">
+        <tr><td colspan="6">Klik tombol di atas setelah mengisi Kata Sandi Akun Uji pada Panel 0.</td></tr>
+      </tbody>
+    </table>
+  </fieldset>
+
   <fieldset>
     <legend>1. Pengalih Akun Cepat (Seeded Role Accounts)</legend>
-    <table border="1" cellpadding="4">
+    <table>
       <thead>
         <tr>
           <th>Key</th>
@@ -103,7 +149,7 @@
         <button type="button" id="btnFlow31bEnroll" data-mutates="true">3.1b Uji MFA Mandatory Enrollment (admin_nomfa_a)</button>
         <button type="button" id="btnFlow31cReuse" data-mutates="true">3.1c Uji Refresh Rotation &amp; Token Reuse Revocation</button>
         <button type="button" id="btnFlow31dMetrics">3.1d Uji GET /metrics Token</button>
-        <button type="button" id="btnFlow31eLockout" data-mutates="true">3.1e Uji Brute-Force Lockout (429 + Retry-After)</button>
+        <button type="button" id="btnFlow31eLockout" data-mutates="true">3.1e Uji Brute-Force Lockout 429 (OPT-IN Mengunci IP 15 Menit)</button>
       </p>
     </details>
 
@@ -120,15 +166,15 @@
     <details>
       <summary>3.3 Pembayaran QRIS Statis, Kode Unik, Idempotency-Key (201/Replay/422) &amp; Maker-Checker</summary>
       <p>
-        <button type="button" id="btnFlow33QRIS" data-mutates="true">3.3a Buat QRIS Tagihan (201, Replay 201, Body Beda 422)</button>
-        <button type="button" id="btnFlow33ClaimAndApprove" data-mutates="true">3.3b Upload Bukti, Klaim RRN &amp; Approve Pengurus2</button>
+        <button type="button" id="btnFlow33QRIS" data-mutates="true">3.3a Checkout + Buat QRIS Tagihan (201, Replay 201, Body Beda 422)</button>
+        <button type="button" id="btnFlow33ClaimAndApprove" data-mutates="true">3.3b Klaim RRN &amp; Approve Pengurus2</button>
       </p>
     </details>
 
     <details>
       <summary>3.4 Impor Mutasi Bank CSV, Segregasi Peran &amp; Rekonsiliasi Harian</summary>
       <p>
-        <button type="button" id="btnFlow34Mutasi" data-mutates="true">3.4 Jalankan Impor CSV &amp; Uji Deteksi Duplikat</button>
+        <button type="button" id="btnFlow34Mutasi" data-mutates="true">3.4 Jalankan Impor CSV &amp; Uji Deteksi Duplikat + Rekonsiliasi</button>
       </p>
     </details>
 
@@ -156,7 +202,7 @@
     <details>
       <summary>3.8 Laporan Keuangan, Rekonsiliasi, Manajemen Anggota, Users &amp; Anti-Escalation Role</summary>
       <p>
-        <button type="button" id="btnFlow38Admin" data-mutates="true">3.8 Jalankan Laporan + Users + Tolak Self-Escalation</button>
+        <button type="button" id="btnFlow38Admin" data-mutates="true">3.8 Jalankan Anggota + Laporan + Users + Tolak Self-Escalation</button>
       </p>
     </details>
 
@@ -173,12 +219,15 @@
   <fieldset>
     <legend>4. Eksekutor Pembuktian Dokumentasi (scenarios.json)</legend>
     <p>
-      <button type="button" id="btnRunAllScenarios" data-mutates="true">Jalankan semua skenario</button>
+      <label><input type="checkbox" id="chkIncludeBruteforce"> Sertakan skenario Brute-Force Lockout 429 (mengunci IP 127.0.0.1 selama 15 menit; default tidak aktif untuk pengujian standar)</label>
+    </p>
+    <p>
+      <button type="button" id="btnRunAllScenarios" data-mutates="true">Jalankan Skenario Standar (Tanpa Brute-Force)</button>
       <button type="button" id="btnDownloadProofJSON" disabled>Unduh laporan bukti (JSON)</button>
       <button type="button" id="btnDownloadProofMD" disabled>Unduh laporan bukti (Markdown)</button>
     </p>
     <div id="scenariosSummary">Belum dijalankan.</div>
-    <table border="1" cellpadding="4">
+    <table>
       <thead>
         <tr>
           <th>Claim ID</th>
@@ -201,7 +250,7 @@
       <button type="button" id="btnRunRolesMatrix" data-mutates="true">Uji matriks</button>
     </p>
     <div id="rolesMatrixSummary">Belum dijalankan.</div>
-    <table border="1" cellpadding="4">
+    <table>
       <thead>
         <tr>
           <th>Method</th>

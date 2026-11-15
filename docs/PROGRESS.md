@@ -1152,3 +1152,81 @@ EXIT:0
   - `test-and-security-setA` (`132357603168`, `06:13:23Z`–`06:17:35Z`): `completed/success` — Step 5 (`Inisialisasi Database Set A`), Step 6 (`Jalankan Full Suite -race (Set A)`), Step 7 (`Pemindaian Keamanan Go (govulncheck, staticcheck, gosec)` tanpa `-exclude` global).
   - `docker-setB-e2e-and-load` (`132357786607`, `06:14:05Z`–`06:18:52Z`): `completed/success` — Step 4 (`Boot Stack Set B dari Nol`: build Docker, `trivy image`, `/readyz`, `/metrics`), Step 5 (`Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B`), Step 6 (`Bersihkan Container Set B`).
 - **Catatan Log Mentah**: Unduhan berkas log stdout mentah GitHub Actions mengembalikan `403 Forbidden` pada endpoint REST API anonim (`/jobs/{id}/logs`) serta menampilkan `"Sign in to view logs"` pada antarmuka web tanpa login (`gh` CLI belum terpasang di mesin host), sehingga seluruh status keberhasilan step di atas mengacu langsung pada status resmi GitHub Actions Jobs API + pemeriksaan lokal lengkap.
+
+---
+
+## Pembaruan Paket Uji Lengkap, Mode Standar Non-Bruteforce & Live Demo 10 Modul Frontend Tester (15 Nov 2026)
+
+- **Penghapusan Seluruh `[no test files]` (18/18 Paket Teruji)**:
+  - Menambah file uji unit untuk keenam paket yang sebelumnya belum memiliki berkas tes:
+    - [cmd/server/main_test.go](../cmd/server/main_test.go): `TestSanitizeLogValue`, `TestValidSQLIdentifier`
+    - [cmd/loadtest/main_test.go](../cmd/loadtest/main_test.go): `TestComputePercentiles`, `TestReadIDsFile`
+    - [internal/api/handlers/handlers_test.go](../internal/api/handlers/handlers_test.go): `TestHealthHandler_HandleHealthz`, `TestMatchMetricsTokenConstantTime`, `TestMetricsHandler_RejectsUnauthorizedEvenFromPrivateIP`
+    - [internal/api/response/response_test.go](../internal/api/response/response_test.go): `TestJSONResponse`, `TestErrorHelpers`
+    - [internal/simkopdes/adapter_test.go](../internal/simkopdes/adapter_test.go): `TestStubAdapterDeScoped`
+    - [internal/testseed/seed_test.go](../internal/testseed/seed_test.go): `TestAccountsAndResources`, `TestDeterministicTOTPSecretAndResolvePassword`
+- **Mode Pengujian Standar Tanpa Brute-Force**:
+  - [internal/api/qris_slot_exhaustion_test.go](../internal/api/qris_slot_exhaustion_test.go): `TestQRISSlotExhaustion_1500ConcurrentSameNominal` dilewati saat `-short`.
+  - [internal/api/scenarios_and_matrix_e2e_test.go](../internal/api/scenarios_and_matrix_e2e_test.go): skenario `CLAIM-AUTH-BRUTEFORCE-429` dilewati saat `-short`.
+  - [frontend-tester/index.html](../frontend-tester/index.html) & [frontend-tester/app.js](../frontend-tester/app.js): menambahkan opsi opt-in `#chkIncludeBruteforce` (default non-aktif) agar IP lokal `127.0.0.1` tidak terkunci 15 menit saat uji standar.
+- **Rancangan Live Demo End-to-End 10 Modul & Perbaikan Diskrepansi (`DISC-12`–`DISC-15`)**:
+  - Menambahkan **Bagian A — Live Demo End-to-End Semua Fitur (10 Modul)** (`#btnRunLiveDemo`), tampilan `#lastRequestIdText`, `#btnTestSingleFlightRefresh`, `refreshAccessTokenSingleFlight()`, serta `fetchWith429Retry()` (backoff `Retry-After` untuk rate-limit IP saat non-lockout) pada `frontend-tester/` dan mendokumentasikannya di [frontend-tester/README.md](../frontend-tester/README.md) & [docs/FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) (§10, §12).
+  - Menemukan & memperbaiki `DISC-12` (`regJson.data?.pendaftaran_id` di contoh React `FRONTEND_GUIDE.md`), `DISC-13` (panjang Tag 26 QRIS `2666` & kolisi TOTP `bendahara_a`/`pengurus2_a`), `DISC-14` (`Retry-After` 429 backoff + penjagaan status checkout Modul 7/8), dan bug backend nyata `DISC-15` (`COALESCE(pb.storage_key, '')` & `COALESCE(pb.file_hash_sha256, '')` di [db/queries/kopdes.sql](../db/queries/kopdes.sql) & [internal/db/kopdes.sql.go](../internal/db/kopdes.sql.go), disertai tes gagal-lalu-lulus `TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti`).
+
+### Output Asli Verifikasi Terbaru (15 Nov 2026)
+
+```text
+$ go test -count=1 -v -run TestV5_Discrepancy15 ./internal/api   # SEBELUM FIX COALESCE
+=== RUN   TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti
+    v5_discrepancies_test.go:194: Expected 200 for GET /api/v1/pembayaran/antrean, got 500 ({"success":false,"error":{"code":"INTERNAL_SERVER_ERROR","message":"Gagal mengambil antrean verifikasi: can't scan into dest[14] (col: bukti_storage_key): cannot scan NULL into *string"}}
+        )
+--- FAIL: TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti (0.32s)
+FAIL
+
+$ go test -count=1 -v -run TestV5_Discrepancy15 ./internal/api   # SETELAH FIX COALESCE
+=== RUN   TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti
+--- PASS: TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti (0.31s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	0.455s
+
+$ go test -count=1 -short -race -p 1 ./...
+ok  	github.com/kopdes/merah-putih	4.624s
+ok  	github.com/kopdes/merah-putih/cmd/envcheck	1.454s
+ok  	github.com/kopdes/merah-putih/cmd/loadtest	1.514s
+ok  	github.com/kopdes/merah-putih/cmd/seed_test_accounts	1.471s
+ok  	github.com/kopdes/merah-putih/cmd/server	1.497s
+ok  	github.com/kopdes/merah-putih/cmd/uitester	2.160s
+ok  	github.com/kopdes/merah-putih/internal/api	146.936s
+ok  	github.com/kopdes/merah-putih/internal/api/handlers	1.809s
+ok  	github.com/kopdes/merah-putih/internal/api/middleware	1.826s
+ok  	github.com/kopdes/merah-putih/internal/api/response	1.643s
+ok  	github.com/kopdes/merah-putih/internal/auth	1.587s
+ok  	github.com/kopdes/merah-putih/internal/config	1.632s
+ok  	github.com/kopdes/merah-putih/internal/db	4.096s
+ok  	github.com/kopdes/merah-putih/internal/outbox	2.297s
+ok  	github.com/kopdes/merah-putih/internal/qris	1.541s
+ok  	github.com/kopdes/merah-putih/internal/security	1.427s
+ok  	github.com/kopdes/merah-putih/internal/simkopdes	1.444s
+ok  	github.com/kopdes/merah-putih/internal/testseed	1.488s
+
+$ go vet ./...        # EXIT:0
+$ staticcheck ./...   # EXIT:0
+$ gosec -exclude=G104 -exclude-dir=scripts ./...
+Summary:
+  Gosec  : dev
+  Files  : 47
+  Lines  : 14144
+  Nosec  : 20
+  Issues : 0
+
+$ gitleaks detect --no-banner
+8:31AM INF 76 commits scanned.
+8:31AM INF scanned ~2014275 bytes (2.01 MB) in 5.8s
+8:31AM INF no leaks found
+```
+
+**Verifikasi Live Browser (`http://127.0.0.1:8081/?v=5`, server API `127.0.0.1:8080`, mode standar tanpa brute-force)**:
+- **Runner 26 Skenario (`#btnRunAllScenarios`)**: `Selesai: PASS=25, SKIP=1, FAIL=0, Total=26` (`CLAIM-REKONSILIASI-LAPORAN-01`: `PASS`; `CLAIM-AUTH-BRUTEFORCE-429`: `SKIP`).
+- **Live Demo 10 Modul End-to-End (`#btnRunLiveDemo`)**: `Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=10, SKIP=0, FAIL=0, Total=10` (seluruh 10 modul: Infrastruktur HTTP, Auth & MFA, Pendaftaran & KYC, Rekening QRIS, Iuran Anggota, Pembayaran QRIS, Mutasi CSV & Rekonsiliasi, Katalog & Toko, Manajemen & Laporan, serta RLS/Anti-IDOR/Zero-PII berstatus `PASS`).
+- **Uji Single-Flight Refresh Konkuren (`#btnTestSingleFlightRefresh`)**: `me_status: 200, iuran_jenis_status: 200, same_rotated_token: true` (`X-Request-ID=8af83c9c-3fcb-4734-865e-66892fe60d24`).
+- **Pindai PII Respons Terekam (`#btnBehavior64PII`)**: `{"scanned_responses": 187, "findings": [], "clean": true}` dan `0` uncaught JS/console errors.

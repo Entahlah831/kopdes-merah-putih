@@ -27,7 +27,7 @@ func CheckDatabaseRole(ctx context.Context, pool *pgxpool.Pool, allowSuperuser b
 	}
 
 	if (rolsuper || rolbypassrls) && !allowSuperuser {
-		return fmt.Errorf("PELANGGARAN KEAMANAN KRITIS (K1): Aplikasi dilarang berjalan sebagai role superuser/bypassrls ('%s', rolsuper=%t, rolbypassrls=%t) karena RLS akan di-bypass", rolname, rolsuper, rolbypassrls)
+		return fmt.Errorf("PELANGGARAN KEAMANAN: Aplikasi dilarang berjalan sebagai role superuser/bypassrls ('%s', rolsuper=%t, rolbypassrls=%t)", rolname, rolsuper, rolbypassrls)
 	}
 
 	return nil

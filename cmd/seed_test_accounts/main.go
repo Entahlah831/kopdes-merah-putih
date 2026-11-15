@@ -67,9 +67,9 @@ func main() {
 		log.Fatalf("Seed akun uji gagal: %v", err)
 	}
 
-	fmt.Printf("Seeded 11 akun uji sintetis ke database %s (%s) selesai.\n", cfg.DBName, security.RedactDSN(dsn))
+	fmt.Printf("Seeded %d akun uji sintetis ke database %s (%s) selesai.\n", len(testseed.Accounts()), cfg.DBName, security.RedactDSN(dsn))
 	fmt.Printf("Gunakan kata sandi uji dari TEST_SEED_PASSWORD (panjang %d karakter) di input UI Tester.\n", len(usedPass))
 	for _, a := range testseed.Accounts() {
-		fmt.Printf("- [%s] %-32s role=%-10s mfa=%t\n", a.TenantLabel, a.Email, a.Role, a.MFAEnabled)
+		fmt.Printf("- %-13s %-32s hp=%-12s mfa=%t\n", a.Role, a.Email, a.NoHP, a.MFAEnabled)
 	}
 }

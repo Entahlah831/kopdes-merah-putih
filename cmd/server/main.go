@@ -119,20 +119,11 @@ func main() {
 
 	server := api.NewServer(pool, srvCfg)
 
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()
-	db.StartPartitionMaintenanceJob(workerCtx, pool, appCfg.PartitionJobInterval, appCfg.PartitionMonthsAhead)
-	db.StartPDPPurgeWorker(workerCtx, pool, appCfg.PDPPurgeInterval)
-
-	// Channel sinyal shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		log.Printf("Server API Kopdes Merah Putih berjalan pada http://0.0.0.0:%d", appCfg.APIPort) // #nosec G706 -- port sudah tervalidasi numerik dari AppConfig
-		if mAddr := sanitizeLogValue(server.MetricsAddr()); mAddr != "" {
-			log.Printf("Endpoint internal Prometheus /metrics berjalan pada http://0.0.0.0%s/metrics", mAddr) // #nosec G706 -- alamat internal sudah tervalidasi & disanitasi CR/LF
-		}
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server berhenti karena error: %v", err)
 		}

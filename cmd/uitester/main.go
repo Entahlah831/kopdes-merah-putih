@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/config"
 	"github.com/kopdes/merah-putih/internal/security"
@@ -26,9 +25,6 @@ type configResponse struct {
 	APIPublicURL   string                 `json:"api_public_url"`
 	UIBind         string                 `json:"ui_bind"`
 	UIPort         int                    `json:"ui_port"`
-	MetricsURL     string                 `json:"metrics_url"`
-	KoperasiAID    string                 `json:"koperasi_a_id"`
-	KoperasiBID    string                 `json:"koperasi_b_id"`
 	Resources      testseed.ResourceIDs   `json:"resources"`
 	SeededAccounts []testseed.AccountSpec `json:"seeded_accounts"`
 }
@@ -48,7 +44,7 @@ func isAllowedProbeURL(targetRaw string, apiPublicURL string) bool {
 	return false
 }
 
-func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) (http.Handler, error) {
+func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (http.Handler, error) {
 	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
 		return nil, fmt.Errorf("KEAMANAN UITESTER: ditolak berjalan ketika APP_ENV=production")
 	}
@@ -68,18 +64,11 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) 
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		metricsHostPort := cfg.MetricsHostPort
-		if metricsHostPort <= 0 {
-			metricsHostPort = cfg.MetricsPort
-		}
 		payload := configResponse{
 			AppEnv:         cfg.AppEnv,
 			APIPublicURL:   apiBase,
 			UIBind:         cfg.UIBind,
 			UIPort:         cfg.UIPort,
-			MetricsURL:     fmt.Sprintf("http://127.0.0.1:%d/metrics", metricsHostPort),
-			KoperasiAID:    testseed.KoperasiAID.String(),
-			KoperasiBID:    testseed.KoperasiBID.String(),
 			Resources:      testseed.Resources(),
 			SeededAccounts: testseed.Accounts(),
 		}
@@ -162,7 +151,6 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) 
 
 		var req struct {
 			SecretBase32  string `json:"secret_base32"`
-			Email         string `json:"email"`
 			OffsetSeconds int    `json:"offset_seconds,omitempty"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
@@ -171,59 +159,8 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir string) 
 		}
 
 		secret := strings.TrimSpace(req.SecretBase32)
-		if secret == "" && strings.TrimSpace(req.Email) != "" {
-			if !strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "test") || !strings.HasSuffix(strings.TrimSpace(cfg.DBName), "_test") {
-				http.Error(w, `{"error":"Lookup TOTP DB hanya diizinkan pada APP_ENV=test dan database *_test"}`, http.StatusForbidden)
-				return
-			}
-			if pool == nil {
-				http.Error(w, `{"error":"Koneksi database uji tidak tersedia untuk lookup email"}`, http.StatusServiceUnavailable)
-				return
-			}
-			kp, kpErr := security.NewMultiKeyProviderFromConfig(cfg.AESKeyVersion, cfg.AESKeyID, cfg.AESMasterKey, cfg.AESPreviousKeys)
-			if kpErr != nil {
-				http.Error(w, `{"error":"KeyProvider tidak valid"}`, http.StatusInternalServerError)
-				return
-			}
-			emailHash := security.HashBlindIndex(strings.TrimSpace(req.Email), []byte(cfg.BlindIndexSecret))
-			var (
-				userID    uuid.UUID
-				pwdHash   string
-				nama      string
-				isAdmin   bool
-				statusAct bool
-				kopID     uuid.NullUUID
-				roleName  string
-			)
-			err := pool.QueryRow(r.Context(), `
-				SELECT user_id, password_hash, nama_lengkap, is_super_admin, status_aktif, koperasi_id, role_name
-				FROM fn_lookup_user_login($1, NULL);
-			`, emailHash).Scan(&userID, &pwdHash, &nama, &isAdmin, &statusAct, &kopID, &roleName)
-			if err != nil {
-				http.Error(w, `{"error":"Akun uji tidak ditemukan"}`, http.StatusNotFound)
-				return
-			}
-			var (
-				mfaEnabled  bool
-				encSecret   []byte
-				lastStep    int64
-				encRecovery []byte
-			)
-			if err := pool.QueryRow(r.Context(), "SELECT mfa_enabled, totp_secret_enkripsi, last_totp_step, mfa_recovery_codes FROM fn_get_user_mfa($1);", userID).
-				Scan(&mfaEnabled, &encSecret, &lastStep, &encRecovery); err != nil || !mfaEnabled || len(encSecret) == 0 {
-				http.Error(w, `{"error":"MFA tidak aktif pada akun ini"}`, http.StatusNotFound)
-				return
-			}
-			plain, decErr := kp.DecryptWithAAD(encSecret, []byte(fmt.Sprintf("users:totp:%s", userID)))
-			if decErr != nil {
-				http.Error(w, `{"error":"Gagal mendekripsi secret TOTP uji"}`, http.StatusInternalServerError)
-				return
-			}
-			secret = string(plain)
-		}
-
 		if secret == "" {
-			http.Error(w, `{"error":"Sertakan secret_base32 atau email akun uji"}`, http.StatusBadRequest)
+			http.Error(w, `{"error":"Sertakan secret_base32"}`, http.StatusBadRequest)
 			return
 		}
 		targetTime := time.Now().UTC().Add(time.Duration(req.OffsetSeconds) * time.Second)

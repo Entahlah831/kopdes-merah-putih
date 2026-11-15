@@ -1318,3 +1318,31 @@ $ gosec -quiet ./...  # EXIT:0
 - **Live Demo 10 Modul (`#btnRunLiveDemo`)**: `Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=10, SKIP=0, FAIL=0, Total=10`.
 - **Matriks Peran (`#btnRunRolesMatrix`)**: `Matriks selesai: Total=440, PASS=440, FAIL=0`.
 - **Web Storage & Halaman Referensi (`/reference/`)**: `localStorage.length === 0 && sessionStorage.length === 0`, `0` uncaught `pageerror`; keempat halaman (`/reference/index.html`, `login.html`, `pendaftaran.html`, `pembayaran-qris.html`) memuat `/config.json` dan `GET /api/v1/public/config` cleanly.
+
+
+---
+
+## Ringkasan Pelaksanaan Lean Revamp (`lean-revamp`, Fase 1–8C)
+
+Seluruh perubahan pemangkasan lingkup koperasi tunggal dijalankan bertahap di branch `lean-revamp`:
+
+1. **Fase 1–2 (Skema 19 Tabel & Env 40 Variabel)**:
+   - Mengkonsolidasikan `db/migrations/` menjadi `000001_init_kopdes_schema.up.sql` (`19` tabel inti tanpa multi-tenant RLS, SIMKOPDES, simpan-pinjam/SHU, double-entry ledger, maupun mutasi bank CSV).
+   - Memangkas konfigurasi `.env.example`, `.env.test`, `.env.test.alt` menjadi tepat `40` variabel yang divalidasi oleh `cmd/envcheck` & [docs/ENV_REFERENCE.md](ENV_REFERENCE.md).
+2. **Fase 3–7 (`sqlc`, 8 Domain, 35 Endpoint HTTP, CLI `cmd/kopdes`, Seeder & `cmd/uitester`)**:
+   - Menghasilkan seluruh query database bertipe kuat ke `internal/db/*.go` via `sqlc generate`.
+   - Membangun `8` paket domain ramping (`auth`, `pendaftaran`, `anggota`, `iuran`, `katalog`, `pesanan`, `pembayaran`, `laporan`) + `internal/security` + `internal/api` dengan tepat `35` rute HTTP.
+   - Menghapus `frontend-reference/` serta berkas pre-revamp usang (`67a79c1`) dan menyelaraskan `Dockerfile`, `docker-compose*.yml`, serta [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) (`d3c97af`).
+3. **Fase 8A (`dd87ec9`) — Pengujian Unit & Integrasi Set A + Set B**:
+   - Menambahkan uji struktural (`internal/api/structural_lint_test.go`), `9` berkas unit test baru (zero `[no test files]`), dan `4` rangkaian E2E integrasi HTTP (`internal/api/e2e_integration_test.go`) terhadap `kopdes_test` & `kopdes_alt_test`.
+   - Memperbaiki hash recovery code (`security.HashRecoveryCode`) pada `internal/testseed/seed.go` dan memecah 4 fungsi >60 baris.
+4. **Fase 8B (`1e665dc`) — Frontend Tester Polos 35 Endpoint & Verifikasi Live Browser**:
+   - Menulis ulang seluruh `frontend-tester/` (`index.html`, `app.js`, `lab.js`, `openapi.json`, `roles_matrix.json`, `scenarios.json`, `reference/*.html`, `README.md`) tanpa framework, tanpa build step, tanpa CDN, dan tanpa literal port/rahasia.
+   - Menemukan serta memperbaiki validasi kosong `UpdatePengaturan` (`INVALID_NAMA_KOPERASI`), kontrak 2-langkah `/auth/mfa/setup` (`mfa_setup`), serta `keputusan` pembayaran (`setuju|tolak`).
+   - Bukti verifikasi live browser terhadap `cmd/server` & `cmd/uitester` (`Set A`):
+     - Diagnostics: `/healthz` `200`, `/readyz` `200`, `/api/v1/public/config` `200` (`api_version=2.0.0-lean`), CORS `204`.
+     - Live Demo (`DEMO-01`..`05`): `5/5 langkah PASS`.
+     - Scenario Runner (`SCEN-01`..`10`): `10/10 skenario dijalankan PASS` (`SCEN-11` opt-in dilewati bersih).
+     - Role Matrix (`RBAC-01`..`16` x 5 peran): `80/80 pemeriksaan cocok`.
+5. **Fase 8C — Penyelarasan Dokumentasi Ramping & CI**:
+   - Memperbarui [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), [openapi.yaml](openapi.yaml), [roles_matrix.json](roles_matrix.json), [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md), dan [frontend/README.md](frontend/README.md), memensiunkan bab usang multi-tenant di `docs/frontend/`, serta menulis ulang `.github/workflows/ci.yml`.

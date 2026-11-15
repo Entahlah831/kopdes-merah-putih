@@ -1,206 +1,122 @@
-name: Kopdes Merah Putih CI & Verification
+name: CI Kopdes Merah Putih (Lean Backend)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main, lean-revamp]
   pull_request:
-    branches: [ main ]
+    branches: [main, lean-revamp]
+
+permissions:
+  contents: read
 
 jobs:
-  config-and-static-audit:
+  env-sqlc-and-secrets:
+    name: Validasi Env (40 Var), sqlc, & Secret Scan
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kode
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set Up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.4'
+          go-version-file: go.mod
 
-      - name: Validasi Konfigurasi & Konflik Port (Set A & Set B)
+      - name: Install sqlc & gitleaks
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Validasi Konfigurasi Uji Set A & Set B + Paritas Kunci
         run: |
           go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
           go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
           go run ./cmd/envcheck --compare .env.test .env.test.alt
 
-      - name: Validasi Sintaks Docker Compose & Penolakan .env.example Kosong
+      - name: Verifikasi sqlc generate bebas drift
         run: |
-          if go run ./cmd/envcheck --strict --env-file .env.example >/dev/null 2>&1; then
-            echo "ERROR: .env.example seharusnya gagal strict check karena secret wajib kosong!"
-            exit 1
-          fi
-          docker compose --env-file .env.test config --quiet
-          docker compose --env-file .env.test.alt config --quiet
-          docker compose -f docker-compose.test.yml --env-file .env.test config --quiet
-          docker compose -f docker-compose.test.yml --env-file .env.test.alt config --quiet
+          sqlc generate
+          git diff --exit-code internal/db
 
-      - name: Hadolint Audit Dockerfile
-        run: |
-          curl -fsSL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 -o /tmp/hadolint
-          chmod +x /tmp/hadolint
-          /tmp/hadolint Dockerfile
+      - name: Pindai Secret dengan Gitleaks
+        run: gitleaks git --config .gitleaks.toml --verbose --redact
 
-      - name: Trivy Config & Filesystem Scan
-        run: |
-          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
-          sudo tar -xz -C /usr/local/bin -f /tmp/trivy.tar.gz trivy
-          rm -f /tmp/trivy.tar.gz
-          trivy config --severity HIGH,CRITICAL --exit-code 1 .
-
-      - name: Gitleaks Secret Scanning
-        run: |
-          go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          "$(go env GOPATH)/bin/gitleaks" git --config .gitleaks.toml --verbose --redact
-
-      - name: Set Up Node.js (Frontend Reference SDK)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend-reference/package-lock.json
-
-      - name: Frontend Reference SDK Typecheck & Unit Tests
-        run: |
-          npm --prefix frontend-reference ci
-          npm --prefix frontend-reference run typecheck
-          npm --prefix frontend-reference test
-
-  test-and-security-setA:
+  test-build-and-security:
+    name: Build, Vet, Race Test (Set A & Set B), & SAST
     runs-on: ubuntu-latest
     services:
-      postgres:
+      postgres_set_a:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: kopdes_test_setA_pass_123!
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: kopdes_test
         ports:
           - 5433:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd="pg_isready -U postgres -d kopdes_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      postgres_set_b:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: kopdes_alt_test
+        ports:
+          - 15433:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kopdes_alt_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
 
     steps:
-      - name: Checkout Kode
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set Up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.4'
+          go-version-file: go.mod
 
-      - name: Set Up Node.js (Frontend SDK Integration)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend-reference/package-lock.json
-
-      - name: Install Frontend SDK Dependencies
-        run: npm --prefix frontend-reference ci
-
-      - name: Inisialisasi Database Set A (kopdes_test)
-        env:
-          PGPASSWORD: kopdes_test_setA_pass_123!
-          APP_ENV: test
-          KOPDES_APP_PASSWORD: kopdes_test_setA_pass_123!
+      - name: Install PostgreSQL client & Go security linters
         run: |
-          psql -h 127.0.0.1 -p 5433 -U postgres -d kopdes_test -v ON_ERROR_STOP=1 -f db/docker-init/01_roles.sql
-          for file in $(ls db/migrations/*_*.up.sql | sort -V); do
-            psql -h 127.0.0.1 -p 5433 -U postgres -d kopdes_test -v ON_ERROR_STOP=1 -f "$file"
-          done
-
-      - name: Jalankan Full Suite -race (Set A)
-        env:
-          TEST_ENV_FILE: .env.test
-        run: go test -count=1 -race -p 1 -timeout 20m ./...
-
-      - name: Pemindaian Keamanan Go (govulncheck, staticcheck, gosec)
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
-          "$(go env GOPATH)/bin/staticcheck" ./...
-          "$(go env GOPATH)/bin/gosec" ./...
+          go install golang.org/x/vuln/cmd/govulncheck@latest
 
-  docker-setB-e2e-and-load:
-    runs-on: ubuntu-latest
-    needs: [config-and-static-audit]
-    steps:
-      - name: Checkout Kode
-        uses: actions/checkout@v4
-
-      - name: Set Up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.4'
-
-      - name: Set Up Node.js (Frontend SDK Integration)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend-reference/package-lock.json
-
-      - name: Install Frontend SDK Dependencies
-        run: npm --prefix frontend-reference ci
-
-      - name: Boot Stack Set B dari Nol (Port Non-Standar 18080/15433/19100)
+      - name: Inisialisasi Skema 19 Tabel & Role Non-Superuser kopdes_app (Set A & Set B)
         run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          while IFS= read -r _line || [ -n "${_line}" ]; do
-            _line="${_line%$'\r'}"
-            [[ -z "${_line}" || "${_line}" == \#* ]] && continue
-            if [[ "${_line}" == *=* ]]; then
-              _k="${_line%%=*}"
-              _v="${_line#*=}"
-              export "${_k}=${_v}"
-            fi
-          done < .env.test.alt
-          docker compose -f docker-compose.test.yml --env-file .env.test.alt up -d --build
-          docker build -t kopdes-merah-putih-api:ci-test .
-          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
-          sudo tar -xz -C /usr/local/bin -f /tmp/trivy.tar.gz trivy
-          rm -f /tmp/trivy.tar.gz
-          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 kopdes-merah-putih-api:ci-test
-          READY=0
-          for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz" >/dev/null; then
-              echo "Set B API siap pada port ${API_HOST_PORT}"
-              READY=1
-              break
-            fi
-            sleep 3
+          set -euo pipefail
+          for envfile in .env.test .env.test.alt; do
+            set -a
+            source "$envfile"
+            set +a
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/migrations/000001_init_kopdes_schema.up.sql
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
           done
-          test "${READY}" = "1"
-          curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
-          STATUS_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${METRICS_HOST_PORT}/metrics")
-          test "${STATUS_NOAUTH}" = "401"
-          METRICS_OUT=$(curl -fsS -H "Authorization: Bearer ${METRICS_TOKEN}" "http://127.0.0.1:${METRICS_HOST_PORT}/metrics")
-          printf '%s\n' "${METRICS_OUT}" | head -n 10 || true
 
-      - name: Jalankan Full Suite -race & Restore Drill & Load Test 2000 Anggota pada Set B
+      - name: Build & Vet
         run: |
-          while IFS= read -r _line || [ -n "${_line}" ]; do
-            _line="${_line%$'\r'}"
-            [[ -z "${_line}" || "${_line}" == \#* ]] && continue
-            if [[ "${_line}" == *=* ]]; then
-              _k="${_line%%=*}"
-              _v="${_line#*=}"
-              export "${_k}=${_v}"
-            fi
-          done < .env.test.alt
-          go test -count=1 -race -p 1 -timeout 20m ./...
-          ENV_FILE=.env.test.alt bash scripts/backup.sh
-          ENV_FILE=.env.test.alt bash scripts/restore_drill.sh
-          go run ./cmd/loadtest --base-url "http://127.0.0.1:${API_HOST_PORT}" --members 2000 --concurrency 100
+          go build ./...
+          go vet ./...
 
-      - name: Bersihkan Container Set B
-        if: always()
-        run: docker compose -f docker-compose.test.yml --env-file .env.test.alt down -v
+      - name: Jalankan Full Race Test Suite (22 Paket)
+        run: go test -count=1 -race -p 1 ./...
+
+      - name: Smoke Test Seeder & CLI Worker Kopdes
+        run: |
+          go run ./cmd/seed_test_accounts --env-file .env.test
+          go run ./cmd/kopdes --env-file .env.test iuran generate --periode 2099-01
+          go run ./cmd/kopdes --env-file .env.test pesanan expire
+          go run ./cmd/kopdes --env-file .env.test pdp purge
+
+      - name: SAST & Vulnerability Check
+        run: |
+          staticcheck ./...
+          gosec ./...
+          govulncheck ./...

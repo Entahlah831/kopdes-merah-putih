@@ -1,5 +1,8 @@
-# Laporan Audit Mandiri Keamanan & Remediasi (Audit Report)
+# Laporan Audit Mandiri Keamanan & Remediasi (Audit Report — Arsip Pra-Revamp)
 **Sistem Backend Koperasi Desa Merah Putih (PostgreSQL 16 & Go)**
+
+> [!WARNING]
+> **CATATAN ARSIP PRA-REVAMP**: Laporan di bawah ini adalah catatan audit historis sebelum pemangkasan arsitektur pada branch `lean-revamp` (ketika backend masih memakai 65 tabel, 18 migrasi multi-tenant RLS, JWT refresh token, dan 83–95 variabel env). Untuk arsitektur **terkini dan aktif** (`1` koperasi tunggal, `19` tabel PostgreSQL, `35` endpoint HTTP, `40` variabel env, sesi opaque, dan `sqlc`), rujuk [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), dan [REVAMP_REPORT.md](REVAMP_REPORT.md).
 
 > [!NOTE]
 > **Status Tinjauan**: Audit mandiri oleh agen pengembang; belum ada peninjauan pihak ketiga (*third-party security audit / legal review*). Seluruh status **TERVERIFIKASI DI LINGKUNGAN UJI** di bawah ini didasarkan pada kode sumber, migrasi SQL (`000001`–`000018`), serta pengujian otomatis di profil terisolasi Set A (`kopdes_test`) dan Set B (`kopdes_alt_test`), dengan daftar lengkap keterbatasan dan hal tertunda pada Bagian 8.

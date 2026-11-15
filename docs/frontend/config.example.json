@@ -1,0 +1,35 @@
+{
+  "api_base_url": "https://api.kopdes-contoh.example",
+  "api_version": "1.1.0",
+  "timezone": "Asia/Jakarta",
+  "request_timeout_ms": 15000,
+  "upload_limits": {
+    "max_body_bytes": 10485760,
+    "max_kyc_upload_bytes": 5242880,
+    "allowed_mime_types": ["image/jpeg", "image/png", "application/pdf"],
+    "allowed_csv_mime_types": ["text/csv", "application/csv", "text/plain"]
+  },
+  "kyc_required_document_types": ["ktp"],
+  "kyc_supported_document_types": ["ktp", "kk", "foto_diri", "surat_domisili"],
+  "payment_expiry_seconds": 900,
+  "polling_interval_ms": 3000,
+  "features": {
+    "payments_enabled": true,
+    "registration_enabled": true,
+    "login_enabled": true,
+    "read_only_mode": false,
+    "qris_dynamic_enabled": false,
+    "personal_payment_pilot_enabled": false
+  },
+  "captcha": {
+    "enabled": false,
+    "provider": "turnstile",
+    "site_key": ""
+  },
+  "mfa_mandatory_roles": ["admin", "bendahara", "ketua"],
+  "access_token_ttl_seconds": 900,
+  "pagination": {
+    "default_limit": 20,
+    "max_limit": 100
+  }
+}

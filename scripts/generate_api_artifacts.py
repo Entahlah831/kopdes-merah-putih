@@ -210,8 +210,13 @@ def main():
             lines.append(f"      fetcher({url_expr}, {{ {', '.join(opts)} }}),")
 
     lines.extend(["  };", "}"])
+    ts_content = "\n".join(lines) + "\n"
     with open(TS_CLIENT_PATH, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(ts_content)
+    ref_ts_path = os.path.join("frontend-reference", "src", "generated.ts")
+    if os.path.isdir(os.path.dirname(ref_ts_path)):
+        with open(ref_ts_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(ts_content)
 
     sync_frontend_tester_and_roles_table(spec)
     print(f"[OK] Generated {POSTMAN_PATH}, {TS_CLIENT_PATH}, frontend-tester/openapi.json, frontend-tester/roles_matrix.json from {OPENAPI_PATH}")
@@ -251,17 +256,9 @@ def sync_frontend_tester_and_roles_table(spec):
     with open(docs_matrix_path, "r", encoding="utf-8") as f:
         matrix = json.load(f)
 
-    # 3. Render Markdown table inside docs/FRONTEND_GUIDE.md between BEGIN_ROLES_MATRIX / END_ROLES_MATRIX
-    fg_path = os.path.join("docs", "FRONTEND_GUIDE.md")
-    if not os.path.exists(fg_path):
-        return
-    with open(fg_path, "r", encoding="utf-8") as f:
-        fg_text = f.read()
-
+    # 3. Render Markdown table inside docs/FRONTEND_GUIDE.md and docs/frontend/03-peran-dan-izin.md
     begin_marker = "<!-- BEGIN_ROLES_MATRIX -->"
     end_marker = "<!-- END_ROLES_MATRIX -->"
-    if begin_marker not in fg_text or end_marker not in fg_text:
-        return
 
     roles = matrix.get("roles", ["admin", "pengurus", "bendahara", "ketua", "pengawas", "operator", "anggota"])
     header_cols = ["Method", "Path"] + roles + ["Unauth", "Cross-Tenant", "Catatan"]
@@ -284,12 +281,24 @@ def sync_frontend_tester_and_roles_table(spec):
         row.append(str(ep.get("notes", "")).replace("|", "/"))
         md_lines.append("| " + " | ".join(row) + " |")
     md_lines.extend(["", end_marker])
+    rendered_block = "\n".join(md_lines)
 
-    start_idx = fg_text.index(begin_marker)
-    end_idx = fg_text.index(end_marker) + len(end_marker)
-    updated_fg = fg_text[:start_idx] + "\n".join(md_lines) + fg_text[end_idx:]
-    with open(fg_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(updated_fg)
+    targets = [
+        os.path.join("docs", "FRONTEND_GUIDE.md"),
+        os.path.join("docs", "frontend", "03-peran-dan-izin.md"),
+    ]
+    for target_path in targets:
+        if not os.path.exists(target_path):
+            continue
+        with open(target_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+        if begin_marker not in txt or end_marker not in txt:
+            continue
+        start_idx = txt.index(begin_marker)
+        end_idx = txt.index(end_marker) + len(end_marker)
+        updated = txt[:start_idx] + rendered_block + txt[end_idx:]
+        with open(target_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(updated)
 
 
 if __name__ == "__main__":

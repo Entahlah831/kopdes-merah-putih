@@ -60,6 +60,18 @@ type Config struct {
 	MaxKYCUploadBytes            int64
 	MetricsToken                 string
 	MetricsPreviousToken         string
+	APIVersion                   string
+	PaymentsDisabled             bool
+	RegistrationDisabled         bool
+	LoginDisabled                bool
+	ReadOnlyMode                 bool
+	CaptchaEnabled               bool
+	CaptchaProvider              string
+	CaptchaSiteKey               string
+	PaymentExpiryDuration        time.Duration
+	PollingIntervalMS            int
+	PaginationDefaultLimit       int
+	PaginationMaxLimit           int
 }
 
 func decodeSecretBytes(secret string) []byte {
@@ -111,6 +123,18 @@ func ConfigFromAppConfig(c config.AppConfig) Config {
 		MaxKYCUploadBytes:            c.MaxKYCUploadBytes,
 		MetricsToken:                 c.MetricsToken,
 		MetricsPreviousToken:         c.MetricsPreviousToken,
+		APIVersion:                   c.APIVersion,
+		PaymentsDisabled:             !c.PaymentsEnabled,
+		RegistrationDisabled:         !c.RegistrationEnabled,
+		LoginDisabled:                !c.LoginEnabled,
+		ReadOnlyMode:                 c.ReadOnlyMode,
+		CaptchaEnabled:               c.CaptchaEnabled,
+		CaptchaProvider:              c.CaptchaProvider,
+		CaptchaSiteKey:               c.CaptchaSiteKey,
+		PaymentExpiryDuration:        c.PaymentExpiryDuration,
+		PollingIntervalMS:            c.PollingIntervalMS,
+		PaginationDefaultLimit:       c.PaginationDefaultLimit,
+		PaginationMaxLimit:           c.PaginationMaxLimit,
 	}
 }
 
@@ -201,6 +225,12 @@ func DefaultConfig() Config {
 		DualApprovalDefaultThreshold: 5000000,
 		StorageKYCDir:                "./storage/kyc",
 		MaxKYCUploadBytes:            5 * 1024 * 1024,
+		APIVersion:                   "1.1.0",
+		PaymentExpiryDuration:        15 * time.Minute,
+		PollingIntervalMS:            3000,
+		PaginationDefaultLimit:       20,
+		PaginationMaxLimit:           100,
+		CaptchaProvider:              "turnstile",
 	}
 }
 
@@ -319,6 +349,26 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	katalogH := handlers.NewKatalogHandler(pool)
 	healthH := handlers.NewHealthHandler(pool)
 	metricsH := handlers.NewMetricsHandlerWithRotation(pool, cfg.MetricsToken, cfg.MetricsPreviousToken, trustedMatcher)
+	publicConfigH := handlers.NewPublicConfigHandler(handlers.PublicConfigOptions{
+		APIVersion:                  cfg.APIVersion,
+		Timezone:                    cfg.AppTimezone,
+		MaxBodyBytes:                cfg.MaxBodyBytes,
+		MaxKYCUploadBytes:           cfg.MaxKYCUploadBytes,
+		PaymentExpirySeconds:        int64(cfg.PaymentExpiryDuration.Seconds()),
+		PollingIntervalMS:           cfg.PollingIntervalMS,
+		AccessTokenTTLSeconds:       900,
+		PaymentsEnabled:             !cfg.PaymentsDisabled,
+		RegistrationEnabled:         !cfg.RegistrationDisabled,
+		LoginEnabled:                !cfg.LoginDisabled,
+		ReadOnlyMode:                cfg.ReadOnlyMode,
+		QRISDynamicEnabled:          cfg.QRISDynamicEnabled,
+		PersonalPaymentPilotEnabled: cfg.AllowPersonalPaymentPilot,
+		CaptchaEnabled:              cfg.CaptchaEnabled,
+		CaptchaProvider:             cfg.CaptchaProvider,
+		CaptchaSiteKey:              cfg.CaptchaSiteKey,
+		PaginationDefaultLimit:      cfg.PaginationDefaultLimit,
+		PaginationMaxLimit:          cfg.PaginationMaxLimit,
+	})
 	pendaftaranH := handlers.NewPendaftaranHandlerWithConfig(pool, keyProvider, []byte(cfg.BlindIndexSecret), cfg.StorageKYCDir, cfg.MaxKYCUploadBytes)
 	kasH := handlers.NewKasHandler(pool)
 	anggotaH := handlers.NewAnggotaHandler(pool)
@@ -332,6 +382,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	mux.HandleFunc("GET /healthz", healthH.HandleHealthz)
 	mux.HandleFunc("GET /readyz", healthH.HandleReadyz)
 	mux.HandleFunc("GET /metrics", metricsH.HandleMetrics)
+	mux.HandleFunc("GET /api/v1/public/config", publicConfigH.HandleGetPublicConfig)
 	mux.HandleFunc("POST /api/v1/auth/login", authH.HandleLogin)
 	mux.HandleFunc("POST /api/v1/auth/mfa/verify", authH.HandleMFAVerify)
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.HandleRefreshToken)
@@ -465,7 +516,42 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		corsCfg.AllowedOrigins = cfg.AllowedOrigins
 	}
 
+	hasPrefix := func(s, p string) bool {
+		return len(s) >= len(p) && s[:len(p)] == p
+	}
+	writeBlocked := func(w http.ResponseWriter, code, msg string) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"success":false,"error":{"code":"` + code + `","message":"` + msg + `"}}`))
+	}
+	featureAndReadOnly := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			isMutation := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+
+			if cfg.LoginDisabled && r.Method == http.MethodPost && (path == "/api/v1/auth/login" || path == "/api/v1/auth/mfa/verify") {
+				writeBlocked(w, "FEATURE_DISABLED", "Fitur masuk (login) sedang dinonaktifkan sementara oleh pengelola.")
+				return
+			}
+			if cfg.RegistrationDisabled && isMutation && (path == "/api/v1/pendaftaran" || hasPrefix(path, "/api/v1/pendaftaran/")) {
+				writeBlocked(w, "FEATURE_DISABLED", "Fitur pendaftaran anggota sedang dinonaktifkan sementara oleh pengelola.")
+				return
+			}
+			if cfg.PaymentsDisabled && isMutation && (hasPrefix(path, "/api/v1/pembayaran") || path == "/api/v1/toko/checkout") {
+				writeBlocked(w, "FEATURE_DISABLED", "Fitur pembayaran sedang dinonaktifkan sementara oleh pengelola.")
+				return
+			}
+			if cfg.ReadOnlyMode && isMutation && !hasPrefix(path, "/api/v1/auth/") {
+				writeBlocked(w, "READ_ONLY_MODE", "Sistem sedang dalam mode baca-saja (pemeliharaan). Operasi perubahan data ditutup sementara.")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	var handler http.Handler = mux
+	handler = featureAndReadOnly(handler)
 	handler = middleware.BodyLimit(cfg.MaxBodyBytes)(handler)
 	handler = middleware.RateLimit(rateLimiter)(handler)
 	handler = middleware.CORS(corsCfg)(handler)

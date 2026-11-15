@@ -1,6 +1,14 @@
 {
   "version": "1.1.0",
-  "roles": ["admin", "pengurus", "bendahara", "ketua", "pengawas", "operator", "anggota"],
+  "roles": [
+    "admin",
+    "pengurus",
+    "bendahara",
+    "ketua",
+    "pengawas",
+    "operator",
+    "anggota"
+  ],
   "endpoints": [
     {
       "method": "GET",
@@ -60,6 +68,25 @@
       "notes": "Wajib Bearer METRICS_TOKEN / METRICS_PREVIOUS_TOKEN (>=32 byte). JWT user/unauth ditolak 401."
     },
     {
+      "method": "GET",
+      "path": "/api/v1/public/config",
+      "group": "Health & Metrics",
+      "auth_mode": "public",
+      "sample_path": "/api/v1/public/config",
+      "roles": {
+        "admin": 200,
+        "pengurus": 200,
+        "bendahara": 200,
+        "ketua": 200,
+        "pengawas": 200,
+        "operator": 200,
+        "anggota": 200
+      },
+      "unauthenticated": 200,
+      "cross_tenant": "N/A (global non-secret)",
+      "notes": "Konfigurasi publik aman (metadata API, batas unggahan, flag fitur, status CAPTCHA, paginasi); Cache-Control singkat."
+    },
+    {
       "method": "POST",
       "path": "/api/v1/auth/login",
       "group": "Auth & MFA",
@@ -67,15 +94,39 @@
       "sample_path": "/api/v1/auth/login",
       "sample_body": {},
       "roles": {
-        "admin": [400, 401],
-        "pengurus": [400, 401],
-        "bendahara": [400, 401],
-        "ketua": [400, 401],
-        "pengawas": [400, 401],
-        "operator": [400, 401],
-        "anggota": [400, 401]
+        "admin": [
+          400,
+          401
+        ],
+        "pengurus": [
+          400,
+          401
+        ],
+        "bendahara": [
+          400,
+          401
+        ],
+        "ketua": [
+          400,
+          401
+        ],
+        "pengawas": [
+          400,
+          401
+        ],
+        "operator": [
+          400,
+          401
+        ],
+        "anggota": [
+          400,
+          401
+        ]
       },
-      "unauthenticated": [400, 401],
+      "unauthenticated": [
+        400,
+        401
+      ],
       "cross_tenant": "N/A (fn_lookup_user_login)",
       "notes": "Publik; email/password wajib. Role admin/bendahara/ketua wajib MFA (403 setup jika belum aktif)."
     },
@@ -127,15 +178,39 @@
       "sample_path": "/api/v1/auth/mfa/verify",
       "sample_body": {},
       "roles": {
-        "admin": [400, 401],
-        "pengurus": [400, 401],
-        "bendahara": [400, 401],
-        "ketua": [400, 401],
-        "pengawas": [400, 401],
-        "operator": [400, 401],
-        "anggota": [400, 401]
+        "admin": [
+          400,
+          401
+        ],
+        "pengurus": [
+          400,
+          401
+        ],
+        "bendahara": [
+          400,
+          401
+        ],
+        "ketua": [
+          400,
+          401
+        ],
+        "pengawas": [
+          400,
+          401
+        ],
+        "operator": [
+          400,
+          401
+        ],
+        "anggota": [
+          400,
+          401
+        ]
       },
-      "unauthenticated": [400, 401],
+      "unauthenticated": [
+        400,
+        401
+      ],
       "cross_tenant": "N/A (mfa_session_token)",
       "notes": "Publik tahap 2 MFA menggunakan mfa_session_token + totp_code/recovery_code."
     },
@@ -147,15 +222,39 @@
       "sample_path": "/api/v1/auth/refresh",
       "sample_body": {},
       "roles": {
-        "admin": [400, 401],
-        "pengurus": [400, 401],
-        "bendahara": [400, 401],
-        "ketua": [400, 401],
-        "pengawas": [400, 401],
-        "operator": [400, 401],
-        "anggota": [400, 401]
+        "admin": [
+          400,
+          401
+        ],
+        "pengurus": [
+          400,
+          401
+        ],
+        "bendahara": [
+          400,
+          401
+        ],
+        "ketua": [
+          400,
+          401
+        ],
+        "pengawas": [
+          400,
+          401
+        ],
+        "operator": [
+          400,
+          401
+        ],
+        "anggota": [
+          400,
+          401
+        ]
       },
-      "unauthenticated": [400, 401],
+      "unauthenticated": [
+        400,
+        401
+      ],
       "cross_tenant": "N/A (refresh_token)",
       "notes": "Publik dengan refresh_token rotasi; token reuse mencabut seluruh sesi user."
     },
@@ -167,15 +266,39 @@
       "sample_path": "/api/v1/auth/revoke",
       "sample_body": {},
       "roles": {
-        "admin": [400, 200],
-        "pengurus": [400, 200],
-        "bendahara": [400, 200],
-        "ketua": [400, 200],
-        "pengawas": [400, 200],
-        "operator": [400, 200],
-        "anggota": [400, 200]
+        "admin": [
+          400,
+          200
+        ],
+        "pengurus": [
+          400,
+          200
+        ],
+        "bendahara": [
+          400,
+          200
+        ],
+        "ketua": [
+          400,
+          200
+        ],
+        "pengawas": [
+          400,
+          200
+        ],
+        "operator": [
+          400,
+          200
+        ],
+        "anggota": [
+          400,
+          200
+        ]
       },
-      "unauthenticated": [400, 200],
+      "unauthenticated": [
+        400,
+        200
+      ],
       "cross_tenant": "N/A (refresh_token)",
       "notes": "Logout eksplisit mencabut refresh token."
     },
@@ -235,7 +358,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (RLS + anti-IDOR pemilik pendaftaran)",
-      "cross_tenant_probe": { "path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/pendaftaran/00000000-0000-4000-8000-000000000999",
+        "expect": [
+          404
+        ]
+      },
       "notes": "Privileged lihat tenant aktif; anggota hanya lihat pendaftaran miliknya (404 jika milik orang lain)."
     },
     {
@@ -334,7 +462,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (RLS anggota Kop B ditolak)",
-      "cross_tenant_probe": { "path": "/api/v1/anggota/{anggota_b_id}", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/anggota/{anggota_b_id}",
+        "expect": [
+          404
+        ]
+      },
       "notes": "Detail anggota tenant aktif; anggota biasa dilarang mengakses indeks seluruh anggota."
     },
     {
@@ -393,7 +526,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (RLS pol_isolasi_users_select)",
-      "cross_tenant_probe": { "path": "/api/v1/users/{user_admin_b_id}", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/users/{user_admin_b_id}",
+        "expect": [
+          404
+        ]
+      },
       "notes": "RequireRoles(admin, pengurus, ketua); detail user Kop B diblokir RLS -> 404."
     },
     {
@@ -549,7 +687,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (produk/anggota Kop B tidak ditemukan via RLS)",
-      "cross_tenant_probe": { "path": "/api/v1/katalog/harga?produk_id={produk_b_id}&anggota_id={anggota_a_id}", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/katalog/harga?produk_id={produk_b_id}&anggota_id={anggota_a_id}",
+        "expect": [
+          404
+        ]
+      },
       "notes": "Wajib query produk_id dan anggota_id (UUID)."
     },
     {
@@ -843,7 +986,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (RLS + anti-IDOR anggota)",
-      "cross_tenant_probe": { "path": "/api/v1/pembayaran/{pembayaran_b_id}", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/pembayaran/{pembayaran_b_id}",
+        "expect": [
+          404
+        ]
+      },
       "notes": "Anggota biasa hanya dapat mengakses pembayaran miliknya sendiri (404 jika milik pihak lain)."
     },
     {
@@ -864,7 +1012,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "404 (fn_klaim_bukti_pembayaran + RLS)",
-      "cross_tenant_probe": { "path": "/api/v1/pembayaran/{pembayaran_b_id}/bukti", "expect": [404] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/pembayaran/{pembayaran_b_id}/bukti",
+        "expect": [
+          404
+        ]
+      },
       "notes": "Klaim RRN bukti transfer oleh pembayar -> status menunggu_verifikasi."
     },
     {
@@ -1001,7 +1154,12 @@
       },
       "unauthenticated": 401,
       "cross_tenant": "400 (rekening Kop B tidak ditemukan via RLS)",
-      "cross_tenant_probe": { "path": "/api/v1/koperasi/rekening-qris/{rekening_qris_b_id}", "expect": [400] },
+      "cross_tenant_probe": {
+        "path": "/api/v1/koperasi/rekening-qris/{rekening_qris_b_id}",
+        "expect": [
+          400
+        ]
+      },
       "notes": "RequireRoles(admin, pengurus)."
     },
     {

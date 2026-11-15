@@ -255,6 +255,7 @@ Seluruh endpoint JSON API mengembalikan struktur envelope seragam:
 | `GET` | `/healthz` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | 200 | N/A (public) | Liveness probe publik tanpa JWT; dikecualikan dari rate limiter. |
 | `GET` | `/readyz` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | 200 | N/A (public) | Readiness probe PostgreSQL tanpa JWT; dikecualikan dari rate limiter. |
 | `GET` | `/metrics` | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | N/A (Bearer METRICS_TOKEN) | Wajib Bearer METRICS_TOKEN / METRICS_PREVIOUS_TOKEN (>=32 byte). JWT user/unauth ditolak 401. |
+| `GET` | `/api/v1/public/config` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | 200 | N/A (global non-secret) | Konfigurasi publik aman (metadata API, batas unggahan, flag fitur, status CAPTCHA, paginasi); Cache-Control singkat. |
 | `POST` | `/api/v1/auth/login` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | [400, 401] | N/A (fn_lookup_user_login) | Publik; email/password wajib. Role admin/bendahara/ketua wajib MFA (403 setup jika belum aktif). |
 | `POST` | `/api/v1/auth/mfa/setup` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | 401 | N/A (self JWT) | Diizinkan untuk seluruh user terautentikasi termasuk token terbatas scope mfa_setup. |
 | `POST` | `/api/v1/auth/mfa/enable` | Ya | Ya | Ya | Ya | Ya | Ya | Ya | 401 | N/A (self JWT) | Mengaktifkan TOTP + menerbitkan 8 recovery code; probe {} mengembalikan 400 (tidak mengubah DB). |

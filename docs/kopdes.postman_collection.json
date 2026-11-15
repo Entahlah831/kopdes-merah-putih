@@ -100,6 +100,31 @@
             },
             "description": "Metrik Operasional Prometheus (dilindungi Bearer METRICS_TOKEN; juga tersedia pada METRICS_PORT)"
           }
+        },
+        {
+          "name": "GET /api/v1/public/config",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "config"
+              ]
+            },
+            "description": "Konfigurasi publik runtime non-rahasia untuk bootstrap frontend (tanpa autentikasi)"
+          }
         }
       ]
     },

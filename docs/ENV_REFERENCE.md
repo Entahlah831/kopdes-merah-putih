@@ -115,3 +115,15 @@ Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` 
 | `TEST_ENV_FILE` | `string` | `.env.test` | `optional` | Tidak | `tests` | Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt) | `.env.test` |
 | `TEST_DATABASE_URL` | `string` | _(kosong)_ | `test` | **Ya** | `tests` | DSN khusus suite tes Go (wajib berakhiran *_test) | `postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable` |
 | `TEST_SEED_PASSWORD` | `string` | _(kosong)_ | `optional` | **Ya** | `seed_test_accounts` | Kata sandi akun uji sintetis untuk cmd/seed_test_accounts (kosong di template; dilarang di produksi) | `kopdes_test_setA_user_pass_123!` |
+| `API_VERSION` | `string` | `1.1.0` | `optional` | Tidak | `api,frontend` | Versi kontrak API yang dilaporkan oleh GET /api/v1/public/config | `1.1.0` |
+| `PAYMENTS_ENABLED` | `bool` | `true` | `optional` | Tidak | `api,frontend` | Feature flag status fitur pembuatan dan verifikasi pembayaran QRIS | `true` |
+| `REGISTRATION_ENABLED` | `bool` | `true` | `optional` | Tidak | `api,frontend` | Feature flag status fitur pendaftaran anggota baru dan unggah KYC | `true` |
+| `LOGIN_ENABLED` | `bool` | `true` | `optional` | Tidak | `api,frontend` | Feature flag status endpoint login autentikasi pengguna | `true` |
+| `READ_ONLY_MODE` | `bool` | `false` | `optional` | Tidak | `api,frontend` | Mode baca-saja darurat/pemeliharaan (menolak mutasi HTTP 503 READ_ONLY_MODE) | `false` |
+| `CAPTCHA_ENABLED` | `bool` | `false` | `optional` | Tidak | `api,frontend` | Status aktivasi CAPTCHA pada antarmuka login/pendaftaran | `false` |
+| `CAPTCHA_PROVIDER` | `string` | `turnstile` | `optional` | Tidak | `api,frontend` | Penyedia CAPTCHA opsional yang diberitahukan ke frontend | `turnstile` |
+| `CAPTCHA_SITE_KEY` | `string` | _(kosong)_ | `optional` | Tidak | `api,frontend` | Public site key CAPTCHA (kosongkan/disembunyikan bila CAPTCHA_ENABLED=false) | _(opsional)_ |
+| `PAYMENT_EXPIRY_DURATION` | `duration` | `15m` | `optional` | Tidak | `api,frontend` | Durasi indikatif batas bayar pembayaran QRIS untuk timer UI | `15m` |
+| `POLLING_INTERVAL_MS` | `int` | `3000` | `optional` | Tidak | `api,frontend` | Interval polling status pembayaran yang disarankan untuk frontend (ms) | `3000` |
+| `PAGINATION_DEFAULT_LIMIT` | `int` | `20` | `optional` | Tidak | `api,frontend` | Batas item default per halaman pada daftar berpaginasi | `20` |
+| `PAGINATION_MAX_LIMIT` | `int` | `100` | `optional` | Tidak | `api,frontend` | Batas maksimum item per halaman pada daftar berpaginasi | `100` |

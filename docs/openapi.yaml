@@ -72,6 +72,61 @@ paths:
                 type: string
         '401':
           description: Token metrik tidak valid atau tidak disertakan
+  /api/v1/public/config:
+    get:
+      tags: [Health & Metrics]
+      operationId: getPublicConfig
+      summary: Konfigurasi publik runtime non-rahasia untuk bootstrap frontend (tanpa autentikasi)
+      security: []
+      responses:
+        '200':
+          description: Metadata API, batas unggah, flag fitur, status CAPTCHA aman, dan paginasi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      api_version:
+                        type: string
+                      server_time:
+                        type: string
+                        format: date-time
+                      server_unix_ms:
+                        type: integer
+                      timezone:
+                        type: string
+                      upload_limits:
+                        type: object
+                      kyc_required_document_types:
+                        type: array
+                        items:
+                          type: string
+                      kyc_supported_document_types:
+                        type: array
+                        items:
+                          type: string
+                      payment_expiry_seconds:
+                        type: integer
+                      polling_interval_ms:
+                        type: integer
+                      features:
+                        type: object
+                      captcha:
+                        type: object
+                      mfa_mandatory_roles:
+                        type: array
+                        items:
+                          type: string
+                      access_token_ttl_seconds:
+                        type: integer
+                      pagination:
+                        type: object
   /api/v1/auth/login:
     post:
       tags: [Auth & MFA]

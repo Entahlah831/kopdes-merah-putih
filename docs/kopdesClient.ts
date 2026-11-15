@@ -150,6 +150,8 @@ export function createKopdesEndpoints(fetcher: KopdesFetcher) {
       fetcher(`/readyz`, { method: "GET" }),
     getMetrics: () =>
       fetcher(`/metrics`, { method: "GET" }),
+    getPublicConfig: () =>
+      fetcher(`/api/v1/public/config`, { method: "GET" }),
     authLogin: (body: LoginRequest) =>
       fetcher(`/api/v1/auth/login`, { method: "POST", body: JSON.stringify(body) }),
     authMfaSetup: () =>

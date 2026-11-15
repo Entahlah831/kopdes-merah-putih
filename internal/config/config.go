@@ -121,6 +121,20 @@ type AppConfig struct {
 	TestEnvFile          string `env:"TEST_ENV_FILE" type:"string" default:".env.test" required:"optional" secret:"false" component:"tests" desc:"Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt)" example:".env.test"`
 	TestDatabaseURL      string `env:"TEST_DATABASE_URL" type:"string" default:"" required:"test" secret:"true" component:"tests" desc:"DSN khusus suite tes Go (wajib berakhiran *_test)" example:"postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable"`
 	TestSeedPassword     string `env:"TEST_SEED_PASSWORD" type:"string" default:"" required:"optional" secret:"true" component:"seed_test_accounts" desc:"Kata sandi akun uji sintetis untuk cmd/seed_test_accounts (kosong di template; dilarang di produksi)" example:"kopdes_test_setA_user_pass_123!"`
+
+	// --- Konfigurasi Publik & Feature Flags Frontend ---
+	APIVersion             string        `env:"API_VERSION" type:"string" default:"1.1.0" required:"optional" secret:"false" component:"api,frontend" desc:"Versi kontrak API yang dilaporkan oleh GET /api/v1/public/config" example:"1.1.0"`
+	PaymentsEnabled        bool          `env:"PAYMENTS_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status fitur pembuatan dan verifikasi pembayaran QRIS" example:"true"`
+	RegistrationEnabled    bool          `env:"REGISTRATION_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status fitur pendaftaran anggota baru dan unggah KYC" example:"true"`
+	LoginEnabled           bool          `env:"LOGIN_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status endpoint login autentikasi pengguna" example:"true"`
+	ReadOnlyMode           bool          `env:"READ_ONLY_MODE" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Mode baca-saja darurat/pemeliharaan (menolak mutasi HTTP 503 READ_ONLY_MODE)" example:"false"`
+	CaptchaEnabled         bool          `env:"CAPTCHA_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Status aktivasi CAPTCHA pada antarmuka login/pendaftaran" example:"false"`
+	CaptchaProvider        string        `env:"CAPTCHA_PROVIDER" type:"string" default:"turnstile" required:"optional" secret:"false" component:"api,frontend" desc:"Penyedia CAPTCHA opsional yang diberitahukan ke frontend" example:"turnstile"`
+	CaptchaSiteKey         string        `env:"CAPTCHA_SITE_KEY" type:"string" default:"" required:"optional" secret:"false" component:"api,frontend" desc:"Public site key CAPTCHA (kosongkan/disembunyikan bila CAPTCHA_ENABLED=false)" example:""`
+	PaymentExpiryDuration  time.Duration `env:"PAYMENT_EXPIRY_DURATION" type:"duration" default:"15m" required:"optional" secret:"false" component:"api,frontend" desc:"Durasi indikatif batas bayar pembayaran QRIS untuk timer UI" example:"15m"`
+	PollingIntervalMS      int           `env:"POLLING_INTERVAL_MS" type:"int" default:"3000" required:"optional" secret:"false" component:"api,frontend" desc:"Interval polling status pembayaran yang disarankan untuk frontend (ms)" example:"3000"`
+	PaginationDefaultLimit int           `env:"PAGINATION_DEFAULT_LIMIT" type:"int" default:"20" required:"optional" secret:"false" component:"api,frontend" desc:"Batas item default per halaman pada daftar berpaginasi" example:"20"`
+	PaginationMaxLimit     int           `env:"PAGINATION_MAX_LIMIT" type:"int" default:"100" required:"optional" secret:"false" component:"api,frontend" desc:"Batas maksimum item per halaman pada daftar berpaginasi" example:"100"`
 }
 
 // Load membaca seluruh parameter AppConfig dari fungsi lookup (mis. os.LookupEnv).
@@ -259,6 +273,18 @@ func (c AppConfig) validateBasic() error {
 	}
 	if c.PDPRejectedRetentionDays <= 0 {
 		return fmt.Errorf("PDP_REJECTED_RETENTION_DAYS harus > 0, dapat %d", c.PDPRejectedRetentionDays)
+	}
+	if c.PollingIntervalMS <= 0 {
+		return fmt.Errorf("POLLING_INTERVAL_MS harus > 0, dapat %d", c.PollingIntervalMS)
+	}
+	if c.PaginationDefaultLimit <= 0 {
+		return fmt.Errorf("PAGINATION_DEFAULT_LIMIT harus > 0, dapat %d", c.PaginationDefaultLimit)
+	}
+	if c.PaginationMaxLimit <= 0 {
+		return fmt.Errorf("PAGINATION_MAX_LIMIT harus > 0, dapat %d", c.PaginationMaxLimit)
+	}
+	if c.PaginationDefaultLimit > c.PaginationMaxLimit {
+		return fmt.Errorf("PAGINATION_DEFAULT_LIMIT (%d) tidak boleh melebihi PAGINATION_MAX_LIMIT (%d)", c.PaginationDefaultLimit, c.PaginationMaxLimit)
 	}
 	if c.AppTimezone != "" {
 		if _, err := time.LoadLocation(c.AppTimezone); err != nil {

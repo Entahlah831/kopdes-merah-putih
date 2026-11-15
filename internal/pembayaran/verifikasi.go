@@ -54,26 +54,9 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	cur, err := qtx.GetPembayaranForUpdate(ctx, idPG)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
-	}
+	cur, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, ext, buktiHash, rawBytes)
 	if err != nil {
 		return nil, err
-	}
-	if err := validateBuktiAttachEligibility(claims, cur); err != nil {
-		return nil, err
-	}
-	if _, err := qtx.GetPembayaranByBuktiHash(ctx, response.ToPGText(buktiHash)); err == nil {
-		return nil, response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti transfer yang sama sudah pernah digunakan")
-	}
-	target, err := s.proofTargetPath(response.FromPGUUID(cur.ID), ext)
-	if err != nil {
-		return nil, err
-	}
-	// #nosec G304 -- target dibangun dari UUID tervalidasi dan prefix direktori terkontrol
-	if err := os.WriteFile(target, rawBytes, 0o600); err != nil {
-		return nil, fmt.Errorf("simpan berkas bukti: %w", err)
 	}
 	buktiURL := "/api/v1/pembayaran?bukti_id=" + response.FromPGUUID(cur.ID).String() + "&ext=" + ext
 	updated, err := qtx.AttachPembayaranBukti(ctx, db.AttachPembayaranBuktiParams{
@@ -99,6 +82,31 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 		return nil, err
 	}
 	return &updated, nil
+}
+
+func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, ext, buktiHash string, rawBytes []byte) (db.GetPembayaranForUpdateRow, error) {
+	cur, err := qtx.GetPembayaranForUpdate(ctx, idPG)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cur, response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
+	}
+	if err != nil {
+		return cur, err
+	}
+	if err := validateBuktiAttachEligibility(claims, cur); err != nil {
+		return cur, err
+	}
+	if _, err := qtx.GetPembayaranByBuktiHash(ctx, response.ToPGText(buktiHash)); err == nil {
+		return cur, response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti transfer yang sama sudah pernah digunakan")
+	}
+	target, err := s.proofTargetPath(response.FromPGUUID(cur.ID), ext)
+	if err != nil {
+		return cur, err
+	}
+	// #nosec G304 -- target dibangun dari UUID tervalidasi dan prefix direktori terkontrol
+	if err := os.WriteFile(target, rawBytes, 0o600); err != nil {
+		return cur, fmt.Errorf("simpan berkas bukti: %w", err)
+	}
+	return cur, nil
 }
 
 func validateBuktiAttachEligibility(claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow) error {

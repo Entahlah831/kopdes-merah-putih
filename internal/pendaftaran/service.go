@@ -149,6 +149,28 @@ func (s *Service) RegisterPublic(ctx context.Context, in RegisterInput, ip strin
 	return s.persistRegistration(ctx, in, nik, nikHash, normHP, ip)
 }
 
+type encryptedRegistrationPII struct {
+	nikEnc, hpEnc, dobEnc, addrEnc, emailEnc []byte
+	emailHash                                pgtype.Text
+}
+
+func (s *Service) encryptRegistrationPII(idStr string, in RegisterInput, nik, normHP string) (encryptedRegistrationPII, error) {
+	var out encryptedRegistrationPII
+	var err error
+	out.nikEnc, err = s.cfg.KeyProvider.EncryptWithAAD([]byte(nik), security.FormatAAD("pendaftaran", "nik", idStr))
+	if err != nil {
+		return out, err
+	}
+	out.hpEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(normHP), security.FormatAAD("pendaftaran", "hp", idStr))
+	out.dobEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.TanggalLahir)), security.FormatAAD("pendaftaran", "tanggal_lahir", idStr))
+	out.addrEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.Alamat)), security.FormatAAD("pendaftaran", "alamat", idStr))
+	if em := strings.ToLower(strings.TrimSpace(in.Email)); em != "" {
+		out.emailHash = pgtype.Text{String: security.HashBlindIndex(em, s.cfg.BlindIndexSecret), Valid: true}
+		out.emailEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(em), security.FormatAAD("pendaftaran", "email", idStr))
+	}
+	return out, nil
+}
+
 func (s *Service) persistRegistration(ctx context.Context, in RegisterInput, nik, nikHash, normHP, ip string) (map[string]interface{}, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -159,37 +181,26 @@ func (s *Service) persistRegistration(ctx context.Context, in RegisterInput, nik
 	if err != nil {
 		return nil, err
 	}
-
-	nikEnc, err := s.cfg.KeyProvider.EncryptWithAAD([]byte(nik), security.FormatAAD("pendaftaran", "nik", idStr))
+	pii, err := s.encryptRegistrationPII(idStr, in, nik, normHP)
 	if err != nil {
 		return nil, err
-	}
-	hpEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(normHP), security.FormatAAD("pendaftaran", "hp", idStr))
-	dobEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.TanggalLahir)), security.FormatAAD("pendaftaran", "tanggal_lahir", idStr))
-	addrEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.Alamat)), security.FormatAAD("pendaftaran", "alamat", idStr))
-
-	var emailEnc []byte
-	var emailHash pgtype.Text
-	if em := strings.ToLower(strings.TrimSpace(in.Email)); em != "" {
-		emailHash = pgtype.Text{String: security.HashBlindIndex(em, s.cfg.BlindIndexSecret), Valid: true}
-		emailEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(em), security.FormatAAD("pendaftaran", "email", idStr))
 	}
 
 	q := db.New(s.pool)
 	row, err := q.CreatePendaftaran(ctx, db.CreatePendaftaranParams{
 		ID:              response.ToPGUUID(id),
 		NamaLengkap:     strings.TrimSpace(in.NamaLengkap),
-		EmailEnc:        emailEnc,
-		EmailHash:       emailHash,
-		NikEnc:          nikEnc,
+		EmailEnc:        pii.emailEnc,
+		EmailHash:       pii.emailHash,
+		NikEnc:          pii.nikEnc,
 		NikHash:         nikHash,
 		NikKeyVersion:   security.BlindIndexKeyVersion(s.cfg.BlindIndexSecret),
 		NikMasked:       security.MaskNIK(nik),
-		HpEnc:           hpEnc,
+		HpEnc:           pii.hpEnc,
 		HpHash:          security.HashBlindIndex(normHP, s.cfg.BlindIndexSecret),
 		HpMasked:        security.MaskPhone(normHP),
-		TanggalLahirEnc: dobEnc,
-		AlamatEnc:       addrEnc,
+		TanggalLahirEnc: pii.dobEnc,
+		AlamatEnc:       pii.addrEnc,
 		Pekerjaan:       strings.TrimSpace(in.Pekerjaan),
 		UploadTokenHash: tokHash,
 		IpAddress:       ip,

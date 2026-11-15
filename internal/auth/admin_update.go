@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
@@ -47,6 +49,10 @@ func (s *Service) UpdateUser(ctx context.Context, claims *middleware.SessionClai
 	if err != nil {
 		return nil, err
 	}
+	return s.buildAdminUpdateResult(ctx, tx, qt, claims, idStr, pgUID, cur, updated, in, ip)
+}
+
+func (s *Service) buildAdminUpdateResult(ctx context.Context, tx pgx.Tx, qt *db.Queries, claims *middleware.SessionClaims, idStr string, pgUID pgtype.UUID, cur db.User, updated db.UpdateUserByAdminRow, in UpdateUserInput, ip string) (map[string]interface{}, error) {
 	if !updated.StatusAktif || in.ResetMFA {
 		_ = qt.RevokeAllUserSessions(ctx, pgUID)
 	}

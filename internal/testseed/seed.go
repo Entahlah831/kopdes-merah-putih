@@ -224,11 +224,12 @@ func ensureSeedUser(ctx context.Context, q *db.Queries, cfg config.AppConfig, kp
 		return uuid.Nil, err
 	} else {
 		userID = response.FromPGUUID(existing.ID)
+		_ = q.ResetFailedLogin(ctx, existing.ID)
 	}
 	if spec.MFAEnabled {
 		secret := DeterministicTOTPSecret(cfg, spec.Email)
 		mfaEnc, _ := kp.EncryptWithAAD([]byte(secret), security.FormatAAD("users", "mfa_secret", userID.String()))
-		recHash := security.HashBlindIndex(strings.ToUpper("RCV-"+spec.Key+"-0001"), blindKey)
+		recHash := security.HashRecoveryCode("RCV-" + spec.Key + "-0001")
 		if err := q.EnableUserMFA(ctx, db.EnableUserMFAParams{
 			MfaSecretEnc:      mfaEnc,
 			MfaRecoveryHashes: []string{recHash},

@@ -361,6 +361,10 @@ func (s *Service) persistOrderTx(
 	if err != nil {
 		return nil, fmt.Errorf("simpan pesanan: %w", err)
 	}
+	return saveOrderItemsAndAudit(ctx, qtx, claims, row, lines, totalBayar, orderID, ip)
+}
+
+func saveOrderItemsAndAudit(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, row db.CreatePesananRow, lines []db.CreatePesananItemParams, totalBayar int64, orderID uuid.UUID, ip string) (*PesananDTO, error) {
 	savedItems := make([]db.PesananItem, 0, len(lines))
 	for _, li := range lines {
 		li.PesananID = row.ID

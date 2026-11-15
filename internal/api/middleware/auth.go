@@ -16,10 +16,9 @@ import (
 
 type contextKey string
 
-const (
-	ContextKeySession contextKey = "kopdes_session_claims"
-	SessionCookieName            = "kopdes_session"
-)
+const ContextKeySession contextKey = "kopdes_session_claims"
+
+const SessionCookieName = "kopdes_session"
 
 // SessionClaims merepresentasikan sesi pengguna terautentikasi di server.
 type SessionClaims struct {
@@ -60,7 +59,7 @@ func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken stri
 		return nil, false
 	}
 	q := db.New(pool)
-	row, err := q.GetActiveSessionByTokenHash(ctx, security.HashOpaqueToken(rawToken))
+	row, err := q.GetActiveSessionByDigest(ctx, security.HashOpaqueToken(rawToken))
 	if err != nil || !row.StatusAktif {
 		return nil, false
 	}

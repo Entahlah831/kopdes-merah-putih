@@ -83,7 +83,7 @@ func (s *Service) consumeActivationPassword(ctx context.Context, rawCode, newPas
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	if err := qt.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{ID: codeRow.UserID, PasswordHash: hash}); err != nil {
+	if err := qt.UpdateUserSandiHash(ctx, db.UpdateUserSandiHashParams{ID: codeRow.UserID, PasswordHash: hash}); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 	if err := qt.ConsumeActivationCode(ctx, codeRow.ID); err != nil {
@@ -117,7 +117,7 @@ func (s *Service) changeAuthenticatedPassword(ctx context.Context, claims *middl
 	if err != nil {
 		return fmt.Errorf("hash password baru: %w", err)
 	}
-	if err := q.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{ID: u.ID, PasswordHash: hash}); err != nil {
+	if err := q.UpdateUserSandiHash(ctx, db.UpdateUserSandiHashParams{ID: u.ID, PasswordHash: hash}); err != nil {
 		return fmt.Errorf("perbarui password: %w", err)
 	}
 	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{

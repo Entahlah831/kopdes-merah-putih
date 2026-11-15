@@ -208,7 +208,7 @@ func (q *Queries) EnableUserMFA(ctx context.Context, arg EnableUserMFAParams) er
 	return err
 }
 
-const getActiveSessionByTokenHash = `-- name: GetActiveSessionByTokenHash :one
+const getActiveSessionByDigest = `-- name: GetActiveSessionByDigest :one
 SELECT s.id AS session_id,
        s.user_id,
        s.mfa_verified,
@@ -230,7 +230,7 @@ WHERE s.token_hash = $1
   AND s.abs_expires_at > NOW()
 `
 
-type GetActiveSessionByTokenHashRow struct {
+type GetActiveSessionByDigestRow struct {
 	SessionID     pgtype.UUID        `json:"session_id"`
 	UserID        pgtype.UUID        `json:"user_id"`
 	MfaVerified   bool               `json:"mfa_verified"`
@@ -245,9 +245,9 @@ type GetActiveSessionByTokenHashRow struct {
 	AnggotaStatus string             `json:"anggota_status"`
 }
 
-func (q *Queries) GetActiveSessionByTokenHash(ctx context.Context, tokenHash string) (GetActiveSessionByTokenHashRow, error) {
-	row := q.db.QueryRow(ctx, getActiveSessionByTokenHash, tokenHash)
-	var i GetActiveSessionByTokenHashRow
+func (q *Queries) GetActiveSessionByDigest(ctx context.Context, tokenHash string) (GetActiveSessionByDigestRow, error) {
+	row := q.db.QueryRow(ctx, getActiveSessionByDigest, tokenHash)
+	var i GetActiveSessionByDigestRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.UserID,
@@ -850,24 +850,6 @@ func (q *Queries) UpdateUserMFALastStep(ctx context.Context, arg UpdateUserMFALa
 	return mfa_last_step, err
 }
 
-const updateUserPassword = `-- name: UpdateUserPassword :exec
-UPDATE users
-SET password_hash = $1,
-    failed_login_count = 0,
-    locked_until = NULL
-WHERE id = $2
-`
-
-type UpdateUserPasswordParams struct {
-	PasswordHash string      `json:"password_hash"`
-	ID           pgtype.UUID `json:"id"`
-}
-
-func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
-	_, err := q.db.Exec(ctx, updateUserPassword, arg.PasswordHash, arg.ID)
-	return err
-}
-
 const updateUserRecoveryHashes = `-- name: UpdateUserRecoveryHashes :exec
 UPDATE users
 SET mfa_recovery_hashes = $1
@@ -881,6 +863,24 @@ type UpdateUserRecoveryHashesParams struct {
 
 func (q *Queries) UpdateUserRecoveryHashes(ctx context.Context, arg UpdateUserRecoveryHashesParams) error {
 	_, err := q.db.Exec(ctx, updateUserRecoveryHashes, arg.MfaRecoveryHashes, arg.ID)
+	return err
+}
+
+const updateUserSandiHash = `-- name: UpdateUserSandiHash :exec
+UPDATE users
+SET password_hash = $1,
+    failed_login_count = 0,
+    locked_until = NULL
+WHERE id = $2
+`
+
+type UpdateUserSandiHashParams struct {
+	PasswordHash string      `json:"password_hash"`
+	ID           pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateUserSandiHash(ctx context.Context, arg UpdateUserSandiHashParams) error {
+	_, err := q.db.Exec(ctx, updateUserSandiHash, arg.PasswordHash, arg.ID)
 	return err
 }
 

@@ -36,6 +36,7 @@ func (h *Handler) HandlePublicRegister(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleUploadDokumen(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.svc.store.maxBytes+(64<<10))
+	// #nosec G120 -- ukuran body sudah dibatasi ketat dengan http.MaxBytesReader pada baris sebelumnya
 	if err := r.ParseMultipartForm(h.svc.store.maxBytes); err != nil {
 		response.BadRequest(w, "Form multipart tidak valid atau ukuran file melebihi batas")
 		return
@@ -102,5 +103,6 @@ func (h *Handler) HandleGetDokumen(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+	// #nosec G705 -- byte dokumen terdekripsi disajikan dengan Content-Type tervalidasi magic bytes dan X-Content-Type-Options: nosniff
 	_, _ = w.Write(plain)
 }

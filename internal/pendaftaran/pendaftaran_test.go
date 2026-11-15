@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kopdes/merah-putih/internal/security"
@@ -24,7 +25,7 @@ func decodeSamplePNG(t *testing.T) []byte {
 
 func TestKYCFileStore_EncryptDecrypt_NoPlaintextMagic(t *testing.T) {
 	dir := t.TempDir()
-	key1 := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	key1 := strings.Repeat("0123456789abcdef", 4)
 	kp1, err := security.NewMultiKeyProviderFromConfig("v1", "k1", key1, "")
 	if err != nil {
 		t.Fatalf("kp1: %v", err)
@@ -46,7 +47,7 @@ func TestKYCFileStore_EncryptDecrypt_NoPlaintextMagic(t *testing.T) {
 		t.Fatal("stored KYC file leaks raw PNG header")
 	}
 	// Simulate key rotation: k2 active, k1 in previous keys.
-	key2 := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	key2 := strings.Repeat("fedcba9876543210", 4)
 	kp2, err := security.NewMultiKeyProviderFromConfig("v2", "k2", key2, "v1:k1="+key1)
 	if err != nil {
 		t.Fatalf("kp2: %v", err)

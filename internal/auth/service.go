@@ -151,13 +151,13 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 
 func (s *Service) recordFailedAttempt(ctx context.Context, userID pgtype.UUID, ip, accHash string) {
 	s.limiter.RecordFailure(ip, accHash)
-	maxAtt := int32(s.cfg.LoginMaxAttempts)
-	if maxAtt <= 0 {
-		maxAtt = 5
+	maxAtt := int32(5)
+	if s.cfg.LoginMaxAttempts > 0 && s.cfg.LoginMaxAttempts <= 1000 {
+		maxAtt = int32(s.cfg.LoginMaxAttempts)
 	}
-	lockSecs := int32(s.cfg.LoginLockoutDuration.Seconds())
-	if lockSecs <= 0 {
-		lockSecs = 900
+	lockSecs := int32(900)
+	if secs := s.cfg.LoginLockoutDuration.Seconds(); secs > 0 && secs <= 86400 {
+		lockSecs = int32(secs)
 	}
 	_, _ = db.New(s.pool).IncrementFailedLogin(ctx, db.IncrementFailedLoginParams{
 		ID:          userID,

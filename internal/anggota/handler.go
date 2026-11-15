@@ -27,6 +27,8 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="anggota.csv"`)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// #nosec G705 -- output CSV non-HTML disajikan sebagai attachment dengan X-Content-Type-Options: nosniff
 		_, _ = w.Write(csvBytes)
 		return
 	}
@@ -75,6 +77,8 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 	var csvText string
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, (2<<20)+(64<<10))
+		// #nosec G120 -- ukuran body sudah dibatasi ketat dengan http.MaxBytesReader pada baris sebelumnya
 		if err := r.ParseMultipartForm(2 << 20); err != nil {
 			response.BadRequest(w, "Form multipart CSV tidak valid")
 			return

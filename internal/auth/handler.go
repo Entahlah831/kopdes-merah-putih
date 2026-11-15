@@ -16,6 +16,7 @@ func NewHandler(svc *Service) *Handler {
 }
 
 func (h *Handler) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAgeSecs int) {
+	// #nosec G124 -- atribut Secure aktif otomatis saat koneksi TLS (r.TLS != nil); bernilai false hanya pada loopback HTTP pengujian lokal
 	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.SessionCookieName,
 		Value:    token,

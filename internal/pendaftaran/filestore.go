@@ -95,7 +95,7 @@ func (fs *KYCFileStore) SaveEncrypted(pendaftaranID, tipe string, raw []byte) (*
 	if err != nil {
 		return nil, err
 	}
-	// #nosec G304 -- target diverifikasi safePath berada di bawah baseDir dengan UUID acak
+	// #nosec G304,G703 -- target diverifikasi safePath berada di bawah baseDir dengan UUID acak
 	if err := os.WriteFile(target, cipherBytes, 0o600); err != nil {
 		return nil, fmt.Errorf("simpan berkas KYC terenkripsi: %w", err)
 	}
@@ -116,7 +116,7 @@ func (fs *KYCFileStore) LoadDecrypted(pendaftaranID, tipe, storageKey string, wr
 	if err != nil {
 		return nil, err
 	}
-	// #nosec G304 -- target diverifikasi safePath berada di bawah baseDir
+	// #nosec G304,G703 -- target diverifikasi safePath berada di bawah baseDir
 	cipherBytes, err := os.ReadFile(target)
 	if err != nil {
 		return nil, fmt.Errorf("baca berkas KYC terenkripsi: %w", err)

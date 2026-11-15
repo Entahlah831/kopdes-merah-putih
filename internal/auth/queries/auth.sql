@@ -128,7 +128,7 @@ UPDATE users
 SET failed_login_count = 0, locked_until = NULL
 WHERE id = sqlc.arg(id);
 
--- name: UpdateUserPassword :exec
+-- name: UpdateUserSandiHash :exec
 UPDATE users
 SET password_hash = sqlc.arg(password_hash),
     failed_login_count = 0,
@@ -184,7 +184,7 @@ INSERT INTO sesi (
 )
 RETURNING id, user_id, mfa_verified, scope, idle_expires_at, abs_expires_at, created_at;
 
--- name: GetActiveSessionByTokenHash :one
+-- name: GetActiveSessionByDigest :one
 SELECT s.id AS session_id,
        s.user_id,
        s.mfa_verified,

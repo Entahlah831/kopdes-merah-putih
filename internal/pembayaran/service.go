@@ -466,29 +466,7 @@ func saveAllocationsTx(ctx context.Context, qtx *db.Queries, pembayaranID pgtype
 }
 
 func mapCreateRowFromIdem(r db.GetPembayaranByIdempotencyKeyRow) db.CreatePembayaranRow {
-	return db.CreatePembayaranRow{
-		ID:               r.ID,
-		NomorPembayaran:  r.NomorPembayaran,
-		NomorKwitansi:    r.NomorKwitansi,
-		PembayarUserID:   r.PembayarUserID,
-		AnggotaID:        r.AnggotaID,
-		RekeningQrisID:   r.RekeningQrisID,
-		JenisTransaksi:   r.JenisTransaksi,
-		Metode:           r.Metode,
-		NominalPokok:     r.NominalPokok,
-		KodeUnik:         r.KodeUnik,
-		NominalTotal:     r.NominalTotal,
-		NominalDibayar:   r.NominalDibayar,
-		SelisihKodeUnik:  r.SelisihKodeUnik,
-		CatatanAkuntansi: r.CatatanAkuntansi,
-		Status:           r.Status,
-		BuktiUrl:         r.BuktiUrl,
-		DibuatOleh:       r.DibuatOleh,
-		DiverifikasiOleh: r.DiverifikasiOleh,
-		VerifiedAt:       r.VerifiedAt,
-		ExpiresAt:        r.ExpiresAt,
-		CreatedAt:        r.CreatedAt,
-	}
+	return db.CreatePembayaranRow(r)
 }
 
 func generatePayNumber() string {

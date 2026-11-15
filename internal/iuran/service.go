@@ -328,8 +328,8 @@ func ParsePeriode(s string) (int32, int32, error) {
 	if len(parts) != 2 {
 		return 0, 0, response.NewDomainError(http.StatusBadRequest, "INVALID_PERIODE", "Format periode wajib YYYY-MM")
 	}
-	th, err1 := strconv.Atoi(parts[0])
-	bl, err2 := strconv.Atoi(parts[1])
+	th, err1 := strconv.ParseInt(parts[0], 10, 32)
+	bl, err2 := strconv.ParseInt(parts[1], 10, 32)
 	if err1 != nil || err2 != nil || th < 2020 || th > 2100 || bl < 1 || bl > 12 {
 		return 0, 0, response.NewDomainError(http.StatusBadRequest, "INVALID_PERIODE", "Format periode wajib YYYY-MM")
 	}

@@ -63,6 +63,7 @@ func (h *Handler) serveBuktiFile(w http.ResponseWriter, r *http.Request, claims 
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+	// #nosec G705 -- byte bukti bayar disajikan dengan Content-Type tervalidasi magic bytes dan X-Content-Type-Options: nosniff
 	_, _ = w.Write(raw)
 }
 
@@ -106,6 +107,7 @@ func (h *Handler) HandlePost(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUploadBuktiMultipart(w http.ResponseWriter, r *http.Request, claims *middleware.SessionClaims, ip string) {
 	maxBytes := h.svc.cfg.UploadMaxBytes
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
+	// #nosec G120 -- ukuran body sudah dibatasi ketat dengan http.MaxBytesReader pada baris sebelumnya
 	if err := r.ParseMultipartForm(maxBytes); err != nil {
 		response.BadRequest(w, "Form upload bukti tidak valid atau melebihi batas ukuran")
 		return

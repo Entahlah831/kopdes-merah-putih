@@ -40,6 +40,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="laporan_%s.csv"`, jenis))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// #nosec G705 -- output CSV non-HTML disajikan sebagai attachment dengan X-Content-Type-Options: nosniff
 		_, _ = w.Write(raw)
 		return
 	}

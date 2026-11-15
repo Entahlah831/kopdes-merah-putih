@@ -48,6 +48,16 @@ func ParseKeyIDSpec(spec string) (string, string) {
 	return "v1", spec
 }
 
+// ParseMasterKeySpec mengekstrak optional prefix "ver:id=material" dari AES_MASTER_KEY.
+func ParseMasterKeySpec(spec string) (string, string, string) {
+	s := strings.TrimSpace(spec)
+	if idx := strings.IndexByte(s, '='); idx > 0 && strings.Contains(s[:idx], ":") {
+		ver, kid := ParseKeyIDSpec(s[:idx])
+		return ver, kid, strings.TrimSpace(s[idx+1:])
+	}
+	return "v1", "k1", s
+}
+
 // MultiKeyProvider mendukung rotasi kunci AES-256-GCM tanpa waktu henti.
 type MultiKeyProvider struct {
 	activeVersion string

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,124 +19,71 @@ type EnvVarSpec struct {
 	DefaultSafe string
 	RequiredIn  string
 	Secret      bool
-	PortRole    string // "", "internal", "host", "bind"
+	PortRole    string // "", "internal", "host"
 	Component   string
 	Description string
 	Synthetic   string
 }
 
 // AppConfig merupakan satu-satunya sumber kebenaran (single source of truth)
-// untuk seluruh konfigurasi environment aplikasi Kopdes Merah Putih.
+// untuk 40 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
 type AppConfig struct {
-	// --- Runtime & Network ---
+	// --- Runtime & Network (7) ---
 	AppEnv         string   `env:"APP_ENV" type:"string" default:"development" required:"all" secret:"false" component:"api,db-init" desc:"Lingkungan runtime (development|test|staging|production)" example:"test"`
 	AppTimezone    string   `env:"APP_TIMEZONE" type:"string" default:"Asia/Jakarta" required:"all" secret:"false" component:"api,Dockerfile" desc:"Zona waktu operasional (perhitungan batas harian & log)" example:"Asia/Jakarta"`
-	APIPort        int      `env:"API_PORT" type:"int" default:"8080" required:"all" secret:"false" port:"internal" component:"api,Dockerfile,compose" desc:"Port internal HTTP API di dalam kontainer/proses" example:"8080"`
-	APIHostPort    int      `env:"API_HOST_PORT" type:"int" default:"8080" required:"compose" secret:"false" port:"host" component:"compose" desc:"Port host publik yang dipetakan ke API_PORT" example:"8080"`
-	MetricsPort    int      `env:"METRICS_PORT" type:"int" default:"9100" required:"prod,compose" secret:"false" port:"internal" component:"api,compose" desc:"Port internal endpoint Prometheus /metrics (bila berbeda dari API_PORT)" example:"9100"`
-	MetricsHostPort int     `env:"METRICS_HOST_PORT" type:"int" default:"9100" required:"compose" secret:"false" port:"host" component:"compose,prometheus" desc:"Port host untuk eksposur /metrics internal" example:"9100"`
-	PrometheusHostPort int  `env:"PROMETHEUS_HOST_PORT" type:"int" default:"9090" required:"monitoring" secret:"false" port:"host" component:"prometheus" desc:"Port host layanan Prometheus opsional" example:"9090"`
-	UIPort             int  `env:"UI_PORT" type:"int" default:"8081" required:"all" secret:"false" port:"host" component:"uitester,compose" desc:"Port HTTP Frontend Tester lokal/uji (dilarang aktif pada production)" example:"8081"`
-	UIBind             string `env:"UI_BIND" type:"string" default:"127.0.0.1" required:"all" secret:"false" port:"bind" component:"uitester,compose" desc:"Alamat bind HTTP Frontend Tester (default loopback 127.0.0.1)" example:"127.0.0.1"`
-	APIPublicURL       string `env:"API_PUBLIC_URL" type:"string" default:"http://127.0.0.1:8080" required:"all" secret:"false" component:"uitester,frontend-tester" desc:"URL publik/host API untuk Frontend Tester browser (tanpa trailing slash)" example:"http://127.0.0.1:8080"`
-	AllowedOrigins []string `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" example:"http://127.0.0.1:3000"`
+	APIPort        int      `env:"API_PORT" type:"int" default:"8080" required:"all" secret:"false" port:"internal" component:"api,Dockerfile,compose" desc:"Port internal HTTP API di dalam proses/kontainer" example:"8080"`
+	APIHostPort    int      `env:"API_HOST_PORT" type:"int" default:"8080" required:"compose" secret:"false" port:"host" component:"compose,uitester" desc:"Port host publik yang dipetakan ke API_PORT" example:"8080"`
+	UIPort         int      `env:"UI_PORT" type:"int" default:"8081" required:"all" secret:"false" port:"host" component:"uitester,compose" desc:"Port HTTP Frontend Tester lokal/uji (dilarang aktif di production)" example:"8081"`
+	AllowedOrigins []string `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" example:"http://127.0.0.1:8081"`
 	TrustedProxies []string `env:"TRUSTED_PROXIES" type:"[]string" default:"127.0.0.1/32" required:"prod" secret:"false" component:"api" desc:"Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For" example:"127.0.0.1/32"`
 
-	// --- Database PostgreSQL ---
-	DBHost             string        `env:"DB_HOST" type:"string" default:"127.0.0.1" required:"all" secret:"false" component:"api,scripts" desc:"Hostname server PostgreSQL 16" example:"127.0.0.1"`
-	DBPort             int           `env:"DB_PORT" type:"int" default:"5433" required:"all" secret:"false" port:"host" component:"api,scripts" desc:"Port koneksi DB yang dituju klien/API di host atau jaringan" example:"5433"`
-	DBContainerPort    int           `env:"DB_CONTAINER_PORT" type:"int" default:"5432" required:"compose" secret:"false" port:"internal" component:"compose" desc:"Port internal PostgreSQL di dalam kontainer" example:"5432"`
-	DBHostPort         int           `env:"DB_HOST_PORT" type:"int" default:"5433" required:"compose" secret:"false" port:"host" component:"compose" desc:"Port host PostgreSQL yang dipetakan ke DB_CONTAINER_PORT" example:"5433"`
-	DBBindHost         string        `env:"DB_BIND_HOST" type:"string" default:"127.0.0.1" required:"compose" secret:"false" port:"bind" component:"compose" desc:"Alamat bind host untuk port PostgreSQL (default loopback 127.0.0.1)" example:"127.0.0.1"`
-	DBName             string        `env:"DB_NAME" type:"string" default:"kopdes_db" required:"all" secret:"false" component:"api,compose,scripts" desc:"Nama database target PostgreSQL (akhiran _test untuk DB uji)" example:"kopdes_test"`
-	DBUser             string        `env:"DB_USER" type:"string" default:"kopdes_app" required:"all" secret:"false" component:"api,db-init,scripts" desc:"Role PostgreSQL non-superuser aplikasi" example:"kopdes_app"`
-	DBPassword         string        `env:"DB_PASSWORD" type:"string" default:"" required:"all" secret:"true" component:"api,db-init" desc:"Kata sandi role DB_USER (wajib diset, kosong di .env.example)" example:"kopdes_test_setA_pass_123!"`
-	DBSSLMode          string        `env:"DB_SSLMODE" type:"string" default:"disable" required:"all" secret:"false" component:"api,scripts" desc:"Mode SSL PostgreSQL (require/verify-full di production)" example:"disable"`
-	DatabaseURL        string        `env:"DATABASE_URL" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Opsional DSN lengkap; jika diset wajib konsisten dengan komponen DB_*" example:""`
-	DBAppRole          string        `env:"DB_APP_ROLE" type:"string" default:"kopdes_app" required:"all" secret:"false" component:"api,db-init" desc:"Nama role non-superuser untuk SET ROLE dan guard startup" example:"kopdes_app"`
-	PostgresInitUser   string        `env:"POSTGRES_USER" type:"string" default:"postgres" required:"compose" secret:"false" component:"compose" desc:"User bootstrap kontainer PostgreSQL (init only)" example:"postgres"`
-	PostgresInitPassword string      `env:"POSTGRES_PASSWORD" type:"string" default:"" required:"compose" secret:"true" component:"compose" desc:"Sandi bootstrap superuser PostgreSQL kontainer (init only)" example:"pg_test_bootstrap_123!"`
-	KopdesAppPassword  string        `env:"KOPDES_APP_PASSWORD" type:"string" default:"" required:"db-init" secret:"true" component:"db-init" desc:"Sandi role kopdes_app saat inisialisasi db/docker-init/01_roles.sql" example:"kopdes_test_setA_pass_123!"`
-	AllowSuperuserDB   bool          `env:"ALLOW_SUPERUSER_DB" type:"bool" default:"false" required:"optional" secret:"false" component:"api" desc:"Hanya untuk diagnosa lokal; wajib false di production" example:"false"`
-	DBPoolMaxConns     int           `env:"DB_POOL_MAX_CONNS" type:"int" default:"25" required:"optional" secret:"false" component:"api" desc:"Batas maksimum koneksi pool pgx" example:"25"`
-	DBPoolMinConns     int           `env:"DB_POOL_MIN_CONNS" type:"int" default:"2" required:"optional" secret:"false" component:"api" desc:"Batas minimum koneksi pool pgx" example:"2"`
-	DBStatementTimeout time.Duration `env:"DB_STATEMENT_TIMEOUT" type:"duration" default:"15s" required:"optional" secret:"false" component:"api" desc:"Timeout eksekusi query PostgreSQL per statement" example:"15s"`
-	DBLockTimeout      time.Duration `env:"DB_LOCK_TIMEOUT" type:"duration" default:"5s" required:"optional" secret:"false" component:"api" desc:"Timeout menunggu kunci PostgreSQL" example:"5s"`
-	DBIdleInTxTimeout  time.Duration `env:"DB_IDLE_IN_TX_TIMEOUT" type:"duration" default:"30s" required:"optional" secret:"false" component:"api" desc:"Timeout transaksi idle PostgreSQL" example:"30s"`
+	// --- Database PostgreSQL (8) ---
+	DBHost           string `env:"DB_HOST" type:"string" default:"127.0.0.1" required:"all" secret:"false" component:"api,scripts" desc:"Hostname server PostgreSQL" example:"127.0.0.1"`
+	DBPort           int    `env:"DB_PORT" type:"int" default:"5433" required:"all" secret:"false" port:"host" component:"api,scripts" desc:"Port koneksi PostgreSQL yang dituju API/skrip" example:"5433"`
+	DBHostPort       int    `env:"DB_HOST_PORT" type:"int" default:"5433" required:"compose" secret:"false" port:"host" component:"compose" desc:"Port host PostgreSQL yang dipetakan Compose ke kontainer" example:"5433"`
+	DBName           string `env:"DB_NAME" type:"string" default:"kopdes_db" required:"all" secret:"false" component:"api,compose,scripts" desc:"Nama database PostgreSQL (akhiran _test untuk DB uji)" example:"kopdes_test"`
+	DBUser           string `env:"DB_USER" type:"string" default:"kopdes_app" required:"all" secret:"false" component:"api,db-init,scripts" desc:"Role PostgreSQL non-superuser aplikasi" example:"kopdes_app"`
+	DBPassword       string `env:"DB_PASSWORD" type:"string" default:"" required:"all" secret:"true" component:"api,db-init" desc:"Kata sandi role DB_USER (kosong di .env.example)" example:"kopdes_test_setA_pass_123!"`
+	DBSSLMode        string `env:"DB_SSLMODE" type:"string" default:"disable" required:"all" secret:"false" component:"api,scripts" desc:"Mode SSL PostgreSQL (require/verify-full di production)" example:"disable"`
+	PostgresPassword string `env:"POSTGRES_PASSWORD" type:"string" default:"" required:"compose" secret:"true" component:"compose" desc:"Sandi bootstrap superuser postgres di kontainer (init only)" example:"pg_test_bootstrap_123!"`
 
-	// --- Kriptografi & Autentikasi ---
-	JWTSecret            string        `env:"JWT_SECRET" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci HMAC penandatangan JWT aktif (min 32 karakter)" example:"test_jwt_secret_setA_0123456789abcdef0123456789abcdef"`
-	JWTPreviousSecret    string        `env:"JWT_PREVIOUS_SECRET" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci JWT sebelumnya saat rotasi (hanya untuk verifikasi)" example:""`
-	JWTAlgorithm         string        `env:"JWT_ALGORITHM" type:"string" default:"HS256" required:"all" secret:"false" component:"api" desc:"Algoritma HMAC JWT yang diizinkan (HS256|HS384|HS512)" example:"HS256"`
-	JWTIssuer            string        `env:"JWT_ISSUER" type:"string" default:"kopdes-merah-putih" required:"all" secret:"false" component:"api" desc:"Nilai klaim iss pada JWT" example:"kopdes-merah-putih"`
-	JWTAccessTTL         time.Duration `env:"JWT_ACCESS_TTL" type:"duration" default:"15m" required:"all" secret:"false" component:"api" desc:"Masa berlaku access token JWT" example:"15m"`
-	JWTRefreshTTL        time.Duration `env:"JWT_REFRESH_TTL" type:"duration" default:"168h" required:"all" secret:"false" component:"api" desc:"Masa berlaku refresh token berotasi" example:"168h"`
-	AESMasterKey         string        `env:"AES_MASTER_KEY" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci utama AES-256-GCM enkripsi PII (min 32 byte/hex64)" example:"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"`
-	AESKeyVersion        string        `env:"AES_KEY_VERSION" type:"string" default:"v1" required:"all" secret:"false" component:"api" desc:"Prefix versi kunci aktif untuk ciphertext AES-GCM" example:"v1"`
-	AESKeyID             string        `env:"AES_KEY_ID" type:"string" default:"k1" required:"all" secret:"false" component:"api" desc:"ID kunci aktif untuk rotasi kunci AES-GCM" example:"k1"`
-	AESPreviousKeys      string        `env:"AES_PREVIOUS_KEYS" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci AES lama format 'v1:k1=hex;v1:k2=hex' untuk dekripsi data historis saat rotasi" example:""`
-	BlindIndexSecret     string        `env:"BLIND_INDEX_SECRET" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Rahasia root HKDF-SHA256 untuk blind index NIK/email" example:"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"`
-	QRISSecret           string        `env:"QRIS_SECRET" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci HMAC penandatanganan payload QRIS internal" example:"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"`
-	MetricsToken         string        `env:"METRICS_TOKEN" type:"string" default:"" required:"all" secret:"true" component:"api,prometheus" desc:"Bearer token wajib (>= 32 byte) untuk endpoint /metrics" example:"metrics_token_setA_0123456789abcdef0123456789abcdef"`
-	MetricsPreviousToken string        `env:"METRICS_PREVIOUS_TOKEN" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Token /metrics sebelumnya selama transisi rotasi" example:""`
-	BcryptCost           int           `env:"BCRYPT_COST" type:"int" default:"12" required:"all" secret:"false" component:"api" desc:"Biaya komputasi bcrypt hashing kata sandi (min 10 di prod)" example:"12"`
+	// --- Kriptografi & Sesi Autentikasi (8) ---
+	AESMasterKey         string        `env:"AES_MASTER_KEY" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci AES-256-GCM enkripsi PII/KYC (opsional prefix ver:id=hex)" example:"v1:k1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`
+	AESPreviousKeys      string        `env:"AES_PREVIOUS_KEYS" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci AES historis format 'v1:k1=hex;v1:k2=hex' saat rotasi" example:""`
+	BlindIndexSecret     string        `env:"BLIND_INDEX_SECRET" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Rahasia root HKDF-SHA256 untuk blind index NIK/email/token" example:"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"`
+	SessionIdleTTL       time.Duration `env:"SESSION_IDLE_TTL" type:"duration" default:"30m" required:"all" secret:"false" component:"api,frontend" desc:"Masa berlaku idle sesi opaque sebelum kedaluwarsa" example:"30m"`
+	SessionAbsTTL        time.Duration `env:"SESSION_ABS_TTL" type:"duration" default:"12h" required:"all" secret:"false" component:"api,frontend" desc:"Masa berlaku absolut maksimum satu sesi login" example:"12h"`
+	MFARequiredRoles     []string      `env:"MFA_REQUIRED_ROLES" type:"[]string" default:"admin,bendahara" required:"all" secret:"false" component:"api,frontend" desc:"Daftar peran yang wajib MFA TOTP" example:"admin,bendahara"`
+	LoginMaxAttempts     int           `env:"LOGIN_MAX_ATTEMPTS" type:"int" default:"5" required:"all" secret:"false" component:"api" desc:"Batas kegagalan login sebelum kunci sementara" example:"5"`
+	LoginLockoutDuration time.Duration `env:"LOGIN_LOCKOUT_DURATION" type:"duration" default:"15m" required:"all" secret:"false" component:"api" desc:"Durasi penguncian login setelah batas percobaan terlampaui" example:"15m"`
 
-	// --- MFA, Rate Limit, & HTTP Hardening ---
-	MFAIssuer             string        `env:"MFA_ISSUER" type:"string" default:"Kopdes Merah Putih" required:"all" secret:"false" component:"api" desc:"Nama issuer yang tampil pada aplikasi autentikator TOTP" example:"Kopdes Merah Putih"`
-	MFAMaxAttempts        int           `env:"MFA_MAX_ATTEMPTS" type:"int" default:"3" required:"all" secret:"false" component:"api" desc:"Batas percobaan salah per mfa_session_token" example:"3"`
-	MFASessionTTL         time.Duration `env:"MFA_SESSION_TTL" type:"duration" default:"5m" required:"all" secret:"false" component:"api" desc:"Masa berlaku sesi tantangan MFA setelah password valid" example:"5m"`
-	MFASetupTTL           time.Duration `env:"MFA_SETUP_TTL" type:"duration" default:"10m" required:"all" secret:"false" component:"api" desc:"Masa berlaku token pendaftaran MFA akun istimewa" example:"10m"`
-	LoginMaxAttempts      int           `env:"LOGIN_MAX_ATTEMPTS" type:"int" default:"5" required:"all" secret:"false" component:"api" desc:"Batas kegagalan login sebelum IP/akun dikunci sementara" example:"5"`
-	LoginLockoutDuration  time.Duration `env:"LOGIN_LOCKOUT_DURATION" type:"duration" default:"15m" required:"all" secret:"false" component:"api" desc:"Durasi penguncian login setelah batas terlampaui" example:"15m"`
-	RateLimitRPS          float64       `env:"RATE_LIMIT_RPS" type:"float64" default:"30" required:"optional" secret:"false" component:"api" desc:"Token bucket rate limit request per detik per IP" example:"30"`
-	RateLimitBurst        int           `env:"RATE_LIMIT_BURST" type:"int" default:"60" required:"optional" secret:"false" component:"api" desc:"Burst maksimum rate limiter HTTP per IP" example:"60"`
-	RateLimitMaxClients   int           `env:"RATE_LIMIT_MAX_CLIENTS" type:"int" default:"10000" required:"optional" secret:"false" component:"api" desc:"Batas entri memori pelacak rate limiter" example:"10000"`
-	MaxBodyBytes          int64         `env:"MAX_BODY_BYTES" type:"int64" default:"10485760" required:"optional" secret:"false" component:"api" desc:"Batas ukuran request body HTTP (default 10MB)" example:"10485760"`
-	HTTPReadHeaderTimeout time.Duration `env:"HTTP_READ_HEADER_TIMEOUT" type:"duration" default:"5s" required:"optional" secret:"false" component:"api" desc:"Timeout membaca header HTTP (anti-Slowloris)" example:"5s"`
-	HTTPReadTimeout       time.Duration `env:"HTTP_READ_TIMEOUT" type:"duration" default:"10s" required:"optional" secret:"false" component:"api" desc:"Timeout membaca seluruh request HTTP" example:"10s"`
-	HTTPWriteTimeout      time.Duration `env:"HTTP_WRITE_TIMEOUT" type:"duration" default:"15s" required:"optional" secret:"false" component:"api" desc:"Timeout menulis respons HTTP" example:"15s"`
-	HTTPIdleTimeout       time.Duration `env:"HTTP_IDLE_TIMEOUT" type:"duration" default:"60s" required:"optional" secret:"false" component:"api" desc:"Timeout koneksi HTTP keep-alive idle" example:"60s"`
+	// --- CAPTCHA & Pembayaran QRIS / Pilot (12) ---
+	CaptchaEnabled            bool          `env:"CAPTCHA_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Aktifkan verifikasi CAPTCHA Turnstile pada endpoint publik" example:"false"`
+	CaptchaSiteKey            string        `env:"CAPTCHA_SITE_KEY" type:"string" default:"" required:"optional" secret:"false" component:"api,frontend" desc:"Public site key Turnstile untuk frontend" example:""`
+	CaptchaSecretKey          string        `env:"CAPTCHA_SECRET_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Secret key verifikasi server-side CAPTCHA Turnstile" example:""`
+	PaymentsEnabled           bool          `env:"PAYMENTS_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pembuatan & verifikasi pembayaran" example:"true"`
+	RegistrationEnabled       bool          `env:"REGISTRATION_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pendaftaran anggota baru & unggah KYC" example:"true"`
+	AllowPersonalPaymentPilot bool          `env:"ALLOW_PERSONAL_PAYMENT_PILOT" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Izinkan rekening pilot perorangan terbatas batas nominal/harian" example:"false"`
+	PilotMaxPerTx             int64         `env:"PILOT_MAX_PER_TX" type:"int64" default:"500000" required:"optional" secret:"false" component:"api" desc:"Batas nominal per transaksi rekening pilot (Rupiah)" example:"500000"`
+	PilotMaxPerDay            int64         `env:"PILOT_MAX_PER_DAY" type:"int64" default:"2000000" required:"optional" secret:"false" component:"api" desc:"Batas nominal harian rekening pilot Asia/Jakarta (Rupiah)" example:"2000000"`
+	QRISUniqueDigits          int           `env:"QRIS_UNIQUE_DIGITS" type:"int" default:"3" required:"optional" secret:"false" component:"api,frontend" desc:"Jumlah digit kode unik integer QRIS statis (3 atau 4)" example:"3"`
+	PaymentExpiryDuration     time.Duration `env:"PAYMENT_EXPIRY_DURATION" type:"duration" default:"15m" required:"optional" secret:"false" component:"api,frontend" desc:"Durasi kedaluwarsa tagihan pembayaran QRIS menunggu bayar" example:"15m"`
+	PendingLimitPerMember     int           `env:"PENDING_LIMIT_PER_MEMBER" type:"int" default:"2" required:"optional" secret:"false" component:"api" desc:"Batas maksimal pembayaran QRIS berstatus menunggu per anggota" example:"2"`
+	PendingLimitGlobal        int           `env:"PENDING_LIMIT_GLOBAL" type:"int" default:"50" required:"optional" secret:"false" component:"api" desc:"Batas global pembayaran QRIS aktif bersamaan untuk ruang kode unik" example:"50"`
 
-	// --- Pekerja Latar, Partisi, Retensi PDP, & Fitur Pembayaran ---
-	PartitionMonthsAhead         int           `env:"PARTITION_MONTHS_AHEAD" type:"int" default:"3" required:"optional" secret:"false" component:"api" desc:"Jumlah bulan partisi ke depan yang dijaga selalu tersedia" example:"3"`
-	PartitionJobInterval         time.Duration `env:"PARTITION_JOB_INTERVAL" type:"duration" default:"24h" required:"optional" secret:"false" component:"api" desc:"Interval eksekusi job pemeliharaan partisi bulanan" example:"24h"`
-	PDPRejectedRetentionDays     int           `env:"PDP_REJECTED_RETENTION_DAYS" type:"int" default:"30" required:"optional" secret:"false" component:"api" desc:"Retensi hari berkas pendaftaran ditolak sebelum purge (PERLU VERIFIKASI HUKUM)" example:"30"`
-	PDPPurgeInterval             time.Duration `env:"PDP_PURGE_INTERVAL" type:"duration" default:"24h" required:"optional" secret:"false" component:"api" desc:"Interval job pembersihan pendaftaran ditolak" example:"24h"`
-	QRISDynamicEnabled           bool          `env:"QRIS_DYNAMIC_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api" desc:"Feature flag QRIS dinamis (false = QRIS statis + kode unik)" example:"false"`
-	AllowPersonalPaymentPilot    bool          `env:"ALLOW_PERSONAL_PAYMENT_PILOT" type:"bool" default:"false" required:"optional" secret:"false" component:"api" desc:"Mengizinkan rekening pilot perorangan terbatas dengan batas harian" example:"false"`
-	PilotDefaultMaxPerTx         int64         `env:"PILOT_DEFAULT_MAX_PER_TX" type:"int64" default:"500000" required:"optional" secret:"false" component:"api" desc:"Batas nominal default per transaksi rekening pilot (Rupiah)" example:"500000"`
-	PilotDefaultMaxPerDay        int64         `env:"PILOT_DEFAULT_MAX_PER_DAY" type:"int64" default:"2000000" required:"optional" secret:"false" component:"api" desc:"Batas nominal akumulasi harian rekening pilot Asia/Jakarta (Rupiah)" example:"2000000"`
-	DualApprovalDefaultThreshold int64         `env:"DUAL_APPROVAL_DEFAULT_THRESHOLD" type:"int64" default:"500000" required:"optional" secret:"false" component:"api" desc:"Ambang nominal default kewajiban persetujuan ganda (Rupiah)" example:"500000"`
+	// --- Retensi PDP, Penyimpanan KYC & Backup (5) ---
+	PDPRejectedRetentionDays int    `env:"PDP_REJECTED_RETENTION_DAYS" type:"int" default:"30" required:"optional" secret:"false" component:"api,cli" desc:"Retensi hari berkas pendaftaran ditolak sebelum purge (PERLU VERIFIKASI HUKUM)" example:"30"`
+	StorageKYCDir            string `env:"STORAGE_KYC_DIR" type:"string" default:"./storage/kyc" required:"all" secret:"false" component:"api,compose" desc:"Direktori penyimpanan berkas KYC terenkripsi AES-256-GCM" example:"./storage/kyc"`
+	BackupDir                string `env:"BACKUP_DIR" type:"string" default:"./backups" required:"scripts" secret:"false" component:"scripts" desc:"Direktori penyimpanan arsip backup PostgreSQL terenkripsi" example:"./backups"`
+	BackupEncryptionKey      string `env:"BACKUP_ENCRYPTION_KEY" type:"string" default:"" required:"prod" secret:"true" component:"scripts" desc:"Passphrase OpenSSL AES-256-CBC untuk enkripsi arsip backup" example:"setA_backup_enc_key_0123456789abcdef!"`
+	BackupRetentionDays      int    `env:"BACKUP_RETENTION_DAYS" type:"int" default:"30" required:"scripts" secret:"false" component:"scripts" desc:"Jumlah hari retensi arsip backup lokal" example:"30"`
 
-	// --- Penyimpanan, Backup, Notifikasi & Uji ---
-	StorageKYCDir        string `env:"STORAGE_KYC_DIR" type:"string" default:"./storage/kyc" required:"all" secret:"false" component:"api,compose" desc:"Direktori penyimpanan berkas KYC terenkripsi/lokal" example:"./storage/kyc"`
-	MaxKYCUploadBytes    int64  `env:"MAX_KYC_UPLOAD_BYTES" type:"int64" default:"5242880" required:"optional" secret:"false" component:"api" desc:"Batas ukuran maksimal satu berkas KYC (byte)" example:"5242880"`
-	BackupDir            string `env:"BACKUP_DIR" type:"string" default:"./backups" required:"scripts" secret:"false" component:"scripts" desc:"Direktori penyimpanan hasil backup pg_dump/basebackup" example:"./backups"`
-	BackupEncryptionKey  string `env:"BACKUP_ENCRYPTION_KEY" type:"string" default:"" required:"prod" secret:"true" component:"scripts" desc:"Passphrase OpenSSL AES-256-CBC untuk enkripsi arsip backup" example:"test_backup_key_setA_9876543210!"`
-	BackupRetentionDays  int    `env:"BACKUP_RETENTION_DAYS" type:"int" default:"30" required:"scripts" secret:"false" component:"scripts" desc:"Jumlah hari retensi file backup lokal" example:"30"`
-	NotifierProvider     string `env:"NOTIFIER_PROVIDER" type:"string" default:"noop" required:"optional" secret:"false" component:"api" desc:"Adapter pengirim notifikasi outbox (noop|webhook)" example:"noop"`
-	WhatsAppAPIKey       string `env:"WHATSAPP_API_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci API gateway WhatsApp opsional untuk worker outbox" example:""`
-	SMSAPIKey            string `env:"SMS_API_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci API gateway SMS opsional untuk worker outbox" example:""`
-	WebhookSigningSecret string `env:"WEBHOOK_SIGNING_SECRET" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Rahasia HMAC-SHA256 penandatangan request outbox webhook" example:""`
-	EnvFile              string `env:"ENV_FILE" type:"string" default:".env" required:"optional" secret:"false" component:"api,scripts" desc:"Path berkas .env fallback untuk binary server dan skrip operasional" example:".env"`
-	TestEnvFile          string `env:"TEST_ENV_FILE" type:"string" default:".env.test" required:"optional" secret:"false" component:"tests" desc:"Berkas konfigurasi sintetis yang dipilih suite pengujian (Set A .env.test / Set B .env.test.alt)" example:".env.test"`
-	TestDatabaseURL      string `env:"TEST_DATABASE_URL" type:"string" default:"" required:"test" secret:"true" component:"tests" desc:"DSN khusus suite tes Go (wajib berakhiran *_test)" example:"postgres://kopdes_app:kopdes_test_setA_pass_123!@127.0.0.1:5433/kopdes_test?sslmode=disable"`
-	TestSeedPassword     string `env:"TEST_SEED_PASSWORD" type:"string" default:"" required:"optional" secret:"true" component:"seed_test_accounts" desc:"Kata sandi akun uji sintetis untuk cmd/seed_test_accounts (kosong di template; dilarang di produksi)" example:"kopdes_test_setA_user_pass_123!"`
-
-	// --- Konfigurasi Publik & Feature Flags Frontend ---
-	APIVersion             string        `env:"API_VERSION" type:"string" default:"1.1.0" required:"optional" secret:"false" component:"api,frontend" desc:"Versi kontrak API yang dilaporkan oleh GET /api/v1/public/config" example:"1.1.0"`
-	PaymentsEnabled        bool          `env:"PAYMENTS_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status fitur pembuatan dan verifikasi pembayaran QRIS" example:"true"`
-	RegistrationEnabled    bool          `env:"REGISTRATION_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status fitur pendaftaran anggota baru dan unggah KYC" example:"true"`
-	LoginEnabled           bool          `env:"LOGIN_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Feature flag status endpoint login autentikasi pengguna" example:"true"`
-	ReadOnlyMode           bool          `env:"READ_ONLY_MODE" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Mode baca-saja darurat/pemeliharaan (menolak mutasi HTTP 503 READ_ONLY_MODE)" example:"false"`
-	CaptchaEnabled         bool          `env:"CAPTCHA_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Status aktivasi CAPTCHA pada antarmuka login/pendaftaran" example:"false"`
-	CaptchaProvider        string        `env:"CAPTCHA_PROVIDER" type:"string" default:"turnstile" required:"optional" secret:"false" component:"api,frontend" desc:"Penyedia CAPTCHA opsional yang diberitahukan ke frontend" example:"turnstile"`
-	CaptchaSiteKey         string        `env:"CAPTCHA_SITE_KEY" type:"string" default:"" required:"optional" secret:"false" component:"api,frontend" desc:"Public site key CAPTCHA (kosongkan/disembunyikan bila CAPTCHA_ENABLED=false)" example:""`
-	PaymentExpiryDuration  time.Duration `env:"PAYMENT_EXPIRY_DURATION" type:"duration" default:"15m" required:"optional" secret:"false" component:"api,frontend" desc:"Durasi indikatif batas bayar pembayaran QRIS untuk timer UI" example:"15m"`
-	PollingIntervalMS      int           `env:"POLLING_INTERVAL_MS" type:"int" default:"3000" required:"optional" secret:"false" component:"api,frontend" desc:"Interval polling status pembayaran yang disarankan untuk frontend (ms)" example:"3000"`
-	PaginationDefaultLimit int           `env:"PAGINATION_DEFAULT_LIMIT" type:"int" default:"20" required:"optional" secret:"false" component:"api,frontend" desc:"Batas item default per halaman pada daftar berpaginasi" example:"20"`
-	PaginationMaxLimit     int           `env:"PAGINATION_MAX_LIMIT" type:"int" default:"100" required:"optional" secret:"false" component:"api,frontend" desc:"Batas maksimum item per halaman pada daftar berpaginasi" example:"100"`
+	// DatabaseURL opsional dari OS env/PaaS (tidak masuk daftar 40 var .env) untuk deteksi konflik DSN.
+	DatabaseURL string
 }
+
+// DefaultDBAppRole adalah role PostgreSQL non-superuser wajib untuk koneksi runtime API.
+const DefaultDBAppRole = "kopdes_app"
 
 // Load membaca seluruh parameter AppConfig dari fungsi lookup (mis. os.LookupEnv).
 func Load(lookup func(string) (string, bool)) (AppConfig, error) {
@@ -159,77 +107,72 @@ func Load(lookup func(string) (string, bool)) (AppConfig, error) {
 		} else {
 			raw = strings.TrimSpace(raw)
 		}
-
-		fv := v.Field(i)
-		switch fv.Kind() {
-		case reflect.String:
-			fv.SetString(raw)
-		case reflect.Int:
-			if raw == "" {
-				continue
-			}
-			parsed, err := strconv.Atoi(raw)
-			if err != nil {
-				return cfg, fmt.Errorf("konfigurasi %s tidak valid (%q): harus bilangan bulat", envKey, raw)
-			}
-			fv.SetInt(int64(parsed))
-		case reflect.Int64:
-			if fv.Type() == reflect.TypeOf(time.Duration(0)) {
-				if raw == "" {
-					continue
-				}
-				d, err := time.ParseDuration(raw)
-				if err != nil {
-					return cfg, fmt.Errorf("konfigurasi %s tidak valid (%q): harus format durasi Go (mis. 15m)", envKey, raw)
-				}
-				fv.SetInt(int64(d))
-			} else {
-				if raw == "" {
-					continue
-				}
-				parsed, err := strconv.ParseInt(raw, 10, 64)
-				if err != nil {
-					return cfg, fmt.Errorf("konfigurasi %s tidak valid (%q): harus int64", envKey, raw)
-				}
-				fv.SetInt(parsed)
-			}
-		case reflect.Float64:
-			if raw == "" {
-				continue
-			}
-			parsed, err := strconv.ParseFloat(raw, 64)
-			if err != nil {
-				return cfg, fmt.Errorf("konfigurasi %s tidak valid (%q): harus angka desimal", envKey, raw)
-			}
-			fv.SetFloat(parsed)
-		case reflect.Bool:
-			if raw == "" {
-				continue
-			}
-			parsed, err := strconv.ParseBool(raw)
-			if err != nil {
-				return cfg, fmt.Errorf("konfigurasi %s tidak valid (%q): harus true/false", envKey, raw)
-			}
-			fv.SetBool(parsed)
-		case reflect.Slice:
-			if fv.Type().Elem().Kind() == reflect.String {
-				var items []string
-				for _, part := range strings.Split(raw, ",") {
-					trimmed := strings.TrimSpace(part)
-					if trimmed != "" {
-						items = append(items, trimmed)
-					}
-				}
-				fv.Set(reflect.ValueOf(items))
-			}
+		if err := assignField(v.Field(i), envKey, raw); err != nil {
+			return cfg, err
 		}
+	}
+
+	if rawURL, ok := lookup("DATABASE_URL"); ok && strings.TrimSpace(rawURL) != "" {
+		cfg.DatabaseURL = strings.TrimSpace(rawURL)
 	}
 
 	if err := cfg.validateBasic(); err != nil {
 		return cfg, err
 	}
-
 	return cfg, nil
+}
+
+func assignField(fv reflect.Value, envKey, raw string) error {
+	switch fv.Kind() {
+	case reflect.String:
+		fv.SetString(raw)
+	case reflect.Int:
+		if raw == "" {
+			return nil
+		}
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus bilangan bulat", envKey, raw)
+		}
+		fv.SetInt(int64(parsed))
+	case reflect.Int64:
+		if raw == "" {
+			return nil
+		}
+		if fv.Type() == reflect.TypeOf(time.Duration(0)) {
+			d, err := time.ParseDuration(raw)
+			if err != nil {
+				return fmt.Errorf("konfigurasi %s tidak valid (%q): harus format durasi Go (mis. 15m)", envKey, raw)
+			}
+			fv.SetInt(int64(d))
+			return nil
+		}
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus int64", envKey, raw)
+		}
+		fv.SetInt(parsed)
+	case reflect.Bool:
+		if raw == "" {
+			return nil
+		}
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus true/false", envKey, raw)
+		}
+		fv.SetBool(parsed)
+	case reflect.Slice:
+		if fv.Type().Elem().Kind() == reflect.String {
+			var items []string
+			for _, part := range strings.Split(raw, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					items = append(items, trimmed)
+				}
+			}
+			fv.Set(reflect.ValueOf(items))
+		}
+	}
+	return nil
 }
 
 // LoadFromEnv memuat konfigurasi menggunakan os.LookupEnv.
@@ -238,85 +181,80 @@ func LoadFromEnv() (AppConfig, error) {
 }
 
 func (c AppConfig) validateBasic() error {
-	switch strings.ToUpper(strings.TrimSpace(c.JWTAlgorithm)) {
-	case "HS256", "HS384", "HS512":
-	default:
-		return fmt.Errorf("JWT_ALGORITHM tidak didukung: %q (izinkan HS256, HS384, atau HS512)", c.JWTAlgorithm)
+	for _, pair := range []struct {
+		name string
+		val  int
+	}{
+		{"API_PORT", c.APIPort},
+		{"API_HOST_PORT", c.APIHostPort},
+		{"UI_PORT", c.UIPort},
+		{"DB_PORT", c.DBPort},
+		{"DB_HOST_PORT", c.DBHostPort},
+	} {
+		if pair.val <= 0 || pair.val > 65535 {
+			return fmt.Errorf("%s di luar jangkauan: %d", pair.name, pair.val)
+		}
 	}
-
-	if c.APIPort <= 0 || c.APIPort > 65535 {
-		return fmt.Errorf("API_PORT di luar jangkauan: %d", c.APIPort)
-	}
-	if c.MetricsPort < 0 || c.MetricsPort > 65535 {
-		return fmt.Errorf("METRICS_PORT di luar jangkauan: %d", c.MetricsPort)
-	}
-	if c.PrometheusHostPort < 0 || c.PrometheusHostPort > 65535 {
-		return fmt.Errorf("PROMETHEUS_HOST_PORT di luar jangkauan: %d", c.PrometheusHostPort)
-	}
-	if c.UIPort <= 0 || c.UIPort > 65535 {
-		return fmt.Errorf("UI_PORT di luar jangkauan: %d", c.UIPort)
-	}
-	if c.DBPort <= 0 || c.DBPort > 65535 {
-		return fmt.Errorf("DB_PORT di luar jangkauan: %d", c.DBPort)
-	}
-	if c.BcryptCost < 4 || c.BcryptCost > 31 {
-		return fmt.Errorf("BCRYPT_COST harus antara 4 dan 31, dapat %d", c.BcryptCost)
-	}
-	if c.MFAMaxAttempts <= 0 {
-		return fmt.Errorf("MFA_MAX_ATTEMPTS harus > 0, dapat %d", c.MFAMaxAttempts)
-	}
-	if c.LoginMaxAttempts <= 0 {
-		return fmt.Errorf("LOGIN_MAX_ATTEMPTS harus > 0, dapat %d", c.LoginMaxAttempts)
-	}
-	if c.PartitionMonthsAhead <= 0 {
-		return fmt.Errorf("PARTITION_MONTHS_AHEAD harus > 0, dapat %d", c.PartitionMonthsAhead)
-	}
-	if c.PDPRejectedRetentionDays <= 0 {
-		return fmt.Errorf("PDP_REJECTED_RETENTION_DAYS harus > 0, dapat %d", c.PDPRejectedRetentionDays)
-	}
-	if c.PollingIntervalMS <= 0 {
-		return fmt.Errorf("POLLING_INTERVAL_MS harus > 0, dapat %d", c.PollingIntervalMS)
-	}
-	if c.PaginationDefaultLimit <= 0 {
-		return fmt.Errorf("PAGINATION_DEFAULT_LIMIT harus > 0, dapat %d", c.PaginationDefaultLimit)
-	}
-	if c.PaginationMaxLimit <= 0 {
-		return fmt.Errorf("PAGINATION_MAX_LIMIT harus > 0, dapat %d", c.PaginationMaxLimit)
-	}
-	if c.PaginationDefaultLimit > c.PaginationMaxLimit {
-		return fmt.Errorf("PAGINATION_DEFAULT_LIMIT (%d) tidak boleh melebihi PAGINATION_MAX_LIMIT (%d)", c.PaginationDefaultLimit, c.PaginationMaxLimit)
+	if err := c.validateSessionAndLimits(); err != nil {
+		return err
 	}
 	if c.AppTimezone != "" {
 		if _, err := time.LoadLocation(c.AppTimezone); err != nil {
 			return fmt.Errorf("APP_TIMEZONE tidak dikenal %q: %w", c.AppTimezone, err)
 		}
 	}
-
-	// Validasi konflik DATABASE_URL tanpa pernah membocorkan sandi
 	if strings.TrimSpace(c.DatabaseURL) != "" {
-		if err := c.validateDatabaseURLConsistency(); err != nil {
-			return err
+		return c.validateDatabaseURLConsistency()
+	}
+	return nil
+}
+
+func (c AppConfig) validateSessionAndLimits() error {
+	if c.SessionIdleTTL <= 0 || c.SessionAbsTTL < c.SessionIdleTTL {
+		return fmt.Errorf("SESSION_IDLE_TTL (%s) harus > 0 dan <= SESSION_ABS_TTL (%s)", c.SessionIdleTTL, c.SessionAbsTTL)
+	}
+	if len(c.MFARequiredRoles) == 0 {
+		return fmt.Errorf("MFA_REQUIRED_ROLES minimal berisi satu peran")
+	}
+	for _, r := range c.MFARequiredRoles {
+		if !slices.Contains([]string{"admin", "bendahara", "petugas_toko", "anggota"}, strings.ToLower(strings.TrimSpace(r))) {
+			return fmt.Errorf("MFA_REQUIRED_ROLES memuat peran tidak valid %q", r)
 		}
+	}
+	if c.LoginMaxAttempts <= 0 || c.LoginLockoutDuration <= 0 {
+		return fmt.Errorf("LOGIN_MAX_ATTEMPTS dan LOGIN_LOCKOUT_DURATION wajib > 0")
+	}
+	if c.PilotMaxPerTx <= 0 || c.PilotMaxPerDay < c.PilotMaxPerTx {
+		return fmt.Errorf("PILOT_MAX_PER_TX dan PILOT_MAX_PER_DAY tidak valid")
+	}
+	if c.QRISUniqueDigits != 3 && c.QRISUniqueDigits != 4 {
+		return fmt.Errorf("QRIS_UNIQUE_DIGITS harus 3 atau 4, dapat %d", c.QRISUniqueDigits)
+	}
+	if c.PaymentExpiryDuration <= 0 || c.PendingLimitPerMember <= 0 || c.PendingLimitGlobal < c.PendingLimitPerMember {
+		return fmt.Errorf("batas pembayaran/pending QRIS tidak valid")
+	}
+	if c.PDPRejectedRetentionDays <= 0 || c.BackupRetentionDays <= 0 {
+		return fmt.Errorf("retensi PDP dan backup wajib > 0 hari")
 	}
 	return nil
 }
 
 // ValidateProduction memvalidasi kesiapan konfigurasi ketat untuk lingkungan produksi.
 func (c AppConfig) ValidateProduction() error {
-	if c.AllowSuperuserDB {
-		return fmt.Errorf("ALLOW_SUPERUSER_DB wajib false di produksi")
-	}
 	if strings.EqualFold(c.DBSSLMode, "disable") {
 		return fmt.Errorf("DB_SSLMODE tidak boleh disable di produksi")
 	}
-	if len(c.MetricsToken) < 32 {
-		return fmt.Errorf("METRICS_TOKEN wajib minimal 32 byte")
+	if strings.TrimSpace(c.DBPassword) == "" {
+		return fmt.Errorf("DB_PASSWORD wajib diisi di produksi")
 	}
-	if c.BcryptCost < 10 {
-		return fmt.Errorf("BCRYPT_COST wajib minimal 10 di produksi")
+	if c.CaptchaEnabled && (strings.TrimSpace(c.CaptchaSiteKey) == "" || strings.TrimSpace(c.CaptchaSecretKey) == "") {
+		return fmt.Errorf("CAPTCHA_SITE_KEY dan CAPTCHA_SECRET_KEY wajib diisi bila CAPTCHA_ENABLED=true di produksi")
+	}
+	if strings.TrimSpace(c.BackupEncryptionKey) == "" {
+		return fmt.Errorf("BACKUP_ENCRYPTION_KEY wajib diisi di produksi")
 	}
 	for _, o := range c.AllowedOrigins {
-		if o == "*" {
+		if strings.TrimSpace(o) == "*" {
 			return fmt.Errorf("ALLOWED_ORIGINS tidak boleh berisi wildcard '*'")
 		}
 	}
@@ -334,15 +272,12 @@ func (c AppConfig) ValidateProduction() error {
 			return fmt.Errorf("TRUSTED_PROXIES %q terlalu lebar untuk mode production (maksimal /16, ditemukan /%d)", cidr, ones)
 		}
 	}
-	if strings.TrimSpace(c.DBPassword) == "" {
-		return fmt.Errorf("DB_PASSWORD wajib diisi di produksi")
-	}
 	return nil
 }
 
 // BuildDatabaseDSN merakit DSN PostgreSQL secara deterministik dari DB_HOST, DB_PORT,
 // DB_NAME, DB_USER, DB_PASSWORD, dan DB_SSLMODE. Jika DATABASE_URL ikut diset,
-// sistem memverifikasi kesesuaian penuh dan gagal jika bertentangan tanpa mencetak password.
+// sistem memverifikasi kesesuaian penuh tanpa pernah mencetak password.
 func (c AppConfig) BuildDatabaseDSN() (string, error) {
 	if strings.TrimSpace(c.DBHost) == "" {
 		return "", fmt.Errorf("DB_HOST wajib diisi")
@@ -363,7 +298,6 @@ func (c AppConfig) BuildDatabaseDSN() (string, error) {
 	if sslMode == "" {
 		sslMode = "disable"
 	}
-
 	if strings.TrimSpace(c.DatabaseURL) != "" {
 		if err := c.validateDatabaseURLConsistency(); err != nil {
 			return "", err
@@ -390,7 +324,6 @@ func (c AppConfig) validateDatabaseURLConsistency() error {
 	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
 		return fmt.Errorf("DATABASE_URL harus berskema postgres/postgresql, dapat %q", parsed.Scheme)
 	}
-
 	urlHost := parsed.Hostname()
 	urlPortStr := parsed.Port()
 	urlDB := strings.TrimPrefix(parsed.Path, "/")
@@ -422,7 +355,7 @@ func (c AppConfig) validateDatabaseURLConsistency() error {
 	return nil
 }
 
-// Catalog mengembalikan daftar spesifikasi variabel environment secara otomatis dari tag struct AppConfig.
+// Catalog mengembalikan daftar spesifikasi 40 variabel environment secara otomatis dari tag struct AppConfig.
 func Catalog() []EnvVarSpec {
 	t := reflect.TypeOf(AppConfig{})
 	specs := make([]EnvVarSpec, 0, t.NumField())
@@ -452,15 +385,14 @@ func RenderEnvReferenceMarkdown() string {
 	specs := Catalog()
 	var b strings.Builder
 	b.WriteString("# Referensi Variabel Environment — Kopdes Merah Putih\n\n")
-	b.WriteString("> **Dokumen ini di-generate otomatis** dari tag struct `AppConfig` di `internal/config/config.go`.\n")
-	b.WriteString("> Jangan mengedit tabel secara manual; ubah tag struct `AppConfig` lalu jalankan generator.\n\n")
+	b.WriteString("> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.\n")
+	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (maksimal 40 variabel).\n\n")
 
-	b.WriteString("## 1. Pemisahan Konfigurasi: Environment vs Database (`konfigurasi_aturan`)\n\n")
+	b.WriteString("## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)\n\n")
 	b.WriteString("| Jenis Pengaturan | Lokasi Penyimpanan | Contoh Parameter |\n")
 	b.WriteString("|---|---|---|\n")
-	b.WriteString("| Infrastruktur, Port, DSN, Kunci Kriptografi, Token, Batas Global API | Variabel Environment (`.env`) | `API_PORT`, `DB_*`, `JWT_SECRET`, `AES_MASTER_KEY`, `METRICS_TOKEN`, `BCRYPT_COST` |\n")
-	b.WriteString("| Kebijakan Bisnis per Koperasi / Tenant | Tabel Database `konfigurasi_aturan` (RLS per `koperasi_id`) | Ambang persetujuan ganda khusus tenant, `mutasi_auto_approve_enabled`, batas pilot koperasi, jadwal iuran |\n\n")
-	b.WriteString("Nilai seperti `PILOT_DEFAULT_MAX_PER_TX` atau `DUAL_APPROVAL_DEFAULT_THRESHOLD` di `.env` hanya berfungsi sebagai **nilai default sistem** ketika tenant belum menimpanya di tabel `konfigurasi_aturan`.\n\n")
+	b.WriteString("| Infrastruktur, Port, DB, Kunci AES/HMAC, Batas Sesi & Keamanan | Variabel Environment (`.env`) | `API_PORT`, `DB_*`, `AES_MASTER_KEY`, `BLIND_INDEX_SECRET`, `SESSION_*`, `MFA_REQUIRED_ROLES` |\n")
+	b.WriteString("| Profil & Kebijakan Operasional Koperasi Tunggal | Tabel DB `pengaturan` (1 baris, `id = 1`) | `nama_koperasi`, `alamat_koperasi`, `ongkir_tetap`, `qris_unique_digits`, `active_rekening_qris_id` |\n\n")
 
 	b.WriteString("## 2. Pemisahan Port Internal vs Host\n\n")
 	b.WriteString("| Peran Port | Variabel | Fungsi |\n")

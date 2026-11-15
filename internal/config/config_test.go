@@ -13,20 +13,17 @@ func TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak(t *testing.T) {
 		"APP_ENV":            "test",
 		"API_PORT":           "18080",
 		"API_HOST_PORT":      "18080",
-		"METRICS_PORT":       "19100",
-		"METRICS_HOST_PORT":  "19100",
+		"UI_PORT":            "18081",
 		"DB_HOST":            "127.0.0.1",
 		"DB_PORT":            "15433",
+		"DB_HOST_PORT":       "15433",
 		"DB_NAME":            "kopdes_alt_test",
 		"DB_USER":            "kopdes_app",
 		"DB_PASSWORD":        "SuperSecretTestPass999!",
 		"DB_SSLMODE":         "disable",
-		"JWT_SECRET":         strings.Repeat("a1", 32),
 		"BLIND_INDEX_SECRET": strings.Repeat("b2", 32),
 		"AES_MASTER_KEY":     strings.Repeat("c3", 32),
-		"QRIS_SECRET":        strings.Repeat("d4", 32),
-		"METRICS_TOKEN":      strings.Repeat("e5", 32),
-		"ALLOWED_ORIGINS":    "http://localhost:3000",
+		"ALLOWED_ORIGINS":    "http://127.0.0.1:18081",
 	}
 
 	lookupFrom := func(m map[string]string) func(string) (string, bool) {
@@ -36,7 +33,6 @@ func TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak(t *testing.T) {
 		}
 	}
 
-	// 1. Sukses membentuk DSN dari komponen DB_*
 	cfg, err := config.Load(lookupFrom(baseEnv))
 	if err != nil {
 		t.Fatalf("Expected valid config load, got error: %v", err)
@@ -49,7 +45,6 @@ func TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak(t *testing.T) {
 		t.Fatalf("DSN mismatch, got: %s", dsn)
 	}
 
-	// 2. DATABASE_URL bertentangan port/host/db -> WAJIB gagal dan DILARANG mencetak password
 	conflicts := []string{
 		"postgres://kopdes_app:SuperSecretTestPass999!@127.0.0.1:5432/kopdes_alt_test?sslmode=disable",
 		"postgres://kopdes_app:SuperSecretTestPass999!@otherhost:15433/kopdes_alt_test?sslmode=disable",
@@ -76,7 +71,6 @@ func TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak(t *testing.T) {
 		}
 	}
 
-	// 3. DATABASE_URL identik dengan komponen -> HARUS sukses
 	mSame := make(map[string]string, len(baseEnv)+1)
 	for k, v := range baseEnv {
 		mSame[k] = v
@@ -91,42 +85,32 @@ func TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_ReadsSecurityAndOperationalParametersFromEnv(t *testing.T) {
+func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.T) {
 	m := map[string]string{
-		"APP_ENV":                       "test",
-		"API_PORT":                      "18080",
-		"METRICS_PORT":                  "19100",
-		"DB_HOST":                       "127.0.0.1",
-		"DB_PORT":                       "15433",
-		"DB_NAME":                       "kopdes_alt_test",
-		"DB_USER":                       "kopdes_app",
-		"DB_PASSWORD":                   "TestPass123!",
-		"JWT_SECRET":                    strings.Repeat("a1", 32),
-		"JWT_ALGORITHM":                 "HS512",
-		"JWT_ACCESS_TTL":                "3m",
-		"JWT_REFRESH_TTL":               "48h",
-		"BLIND_INDEX_SECRET":            strings.Repeat("b2", 32),
-		"AES_MASTER_KEY":                strings.Repeat("c3", 32),
-		"AES_KEY_VERSION":               "v2",
-		"AES_KEY_ID":                    "k9",
-		"QRIS_SECRET":                   strings.Repeat("d4", 32),
-		"METRICS_TOKEN":                 strings.Repeat("e5", 32),
-		"BCRYPT_COST":                   "10",
-		"MFA_ISSUER":                    "Kopdes Alt Test",
-		"MFA_MAX_ATTEMPTS":              "4",
-		"MFA_SESSION_TTL":               "2m",
-		"MFA_SETUP_TTL":                 "6m",
-		"LOGIN_MAX_ATTEMPTS":            "3",
-		"LOGIN_LOCKOUT_DURATION":        "5m",
-		"RATE_LIMIT_RPS":                "45",
-		"RATE_LIMIT_BURST":              "90",
-		"MAX_BODY_BYTES":                "5242880",
-		"HTTP_READ_HEADER_TIMEOUT":      "3s",
-		"PARTITION_MONTHS_AHEAD":        "4",
-		"PDP_REJECTED_RETENTION_DAYS":   "45",
-		"PILOT_DEFAULT_MAX_PER_TX":      "750000",
-		"PILOT_DEFAULT_MAX_PER_DAY":     "2500000",
-		"DUAL_APPROVAL_DEFAULT_THRESHOLD": "300000",
+		"APP_ENV":                      "test",
+		"API_PORT":                     "18080",
+		"API_HOST_PORT":                "18080",
+		"UI_PORT":                      "18081",
+		"DB_HOST":                      "127.0.0.1",
+		"DB_PORT":                      "15433",
+		"DB_HOST_PORT":                 "15433",
+		"DB_NAME":                      "kopdes_alt_test",
+		"DB_USER":                      "kopdes_app",
+		"DB_PASSWORD":                  "TestPass123!",
+		"BLIND_INDEX_SECRET":           strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":               "v2:k9=" + strings.Repeat("c3", 32),
+		"SESSION_IDLE_TTL":             "20m",
+		"SESSION_ABS_TTL":              "8h",
+		"MFA_REQUIRED_ROLES":           "admin,bendahara,petugas_toko",
+		"LOGIN_MAX_ATTEMPTS":           "3",
+		"LOGIN_LOCKOUT_DURATION":       "5m",
+		"QRIS_UNIQUE_DIGITS":           "4",
+		"PAYMENT_EXPIRY_DURATION":      "20m",
+		"PENDING_LIMIT_PER_MEMBER":     "3",
+		"PENDING_LIMIT_GLOBAL":         "30",
+		"PDP_REJECTED_RETENTION_DAYS":  "45",
+		"PILOT_MAX_PER_TX":             "750000",
+		"PILOT_MAX_PER_DAY":            "2500000",
 	}
 
 	cfg, err := config.Load(func(k string) (string, bool) {
@@ -137,52 +121,47 @@ func TestLoadConfig_ReadsSecurityAndOperationalParametersFromEnv(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if cfg.JWTAlgorithm != "HS512" || cfg.JWTAccessTTL != 3*time.Minute || cfg.JWTRefreshTTL != 48*time.Hour {
-		t.Errorf("JWT params mismatch: algo=%s access=%v refresh=%v", cfg.JWTAlgorithm, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
+	if cfg.SessionIdleTTL != 20*time.Minute || cfg.SessionAbsTTL != 8*time.Hour {
+		t.Errorf("Session TTL mismatch: idle=%v abs=%v", cfg.SessionIdleTTL, cfg.SessionAbsTTL)
 	}
-	if cfg.BcryptCost != 10 || cfg.MFAIssuer != "Kopdes Alt Test" || cfg.MFAMaxAttempts != 4 {
-		t.Errorf("Auth/MFA params mismatch: cost=%d issuer=%s attempts=%d", cfg.BcryptCost, cfg.MFAIssuer, cfg.MFAMaxAttempts)
+	if len(cfg.MFARequiredRoles) != 3 || cfg.LoginMaxAttempts != 3 || cfg.LoginLockoutDuration != 5*time.Minute {
+		t.Errorf("Auth/MFA params mismatch: roles=%v attempts=%d", cfg.MFARequiredRoles, cfg.LoginMaxAttempts)
 	}
-	if cfg.AESKeyVersion != "v2" || cfg.AESKeyID != "k9" {
-		t.Errorf("AES metadata mismatch: version=%s id=%s", cfg.AESKeyVersion, cfg.AESKeyID)
+	if cfg.QRISUniqueDigits != 4 || cfg.PendingLimitPerMember != 3 || cfg.PendingLimitGlobal != 30 {
+		t.Errorf("QRIS/pending params mismatch: digits=%d perMember=%d global=%d", cfg.QRISUniqueDigits, cfg.PendingLimitPerMember, cfg.PendingLimitGlobal)
 	}
-	if cfg.PartitionMonthsAhead != 4 || cfg.PDPRejectedRetentionDays != 45 || cfg.PilotDefaultMaxPerTx != 750000 {
+	if cfg.PDPRejectedRetentionDays != 45 || cfg.PilotMaxPerTx != 750000 || cfg.PilotMaxPerDay != 2500000 {
 		t.Errorf("Operational params mismatch")
 	}
 }
 
 func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 	specs := config.Catalog()
-	if len(specs) < 35 {
-		t.Fatalf("Expected comprehensive env catalog (>= 35 vars), got %d", len(specs))
+	if len(specs) != 40 {
+		t.Fatalf("Expected exact 40 lean env vars, got %d", len(specs))
 	}
 	md := config.RenderEnvReferenceMarkdown()
 	if !strings.Contains(md, "| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | CONTOH NILAI SINTETIS |") {
 		t.Errorf("Generated markdown missing expected header table")
 	}
-	if !strings.Contains(md, "konfigurasi_aturan") {
-		t.Errorf("Generated markdown must distinguish env vars vs konfigurasi_aturan DB table")
+	if !strings.Contains(md, "pengaturan") {
+		t.Errorf("Generated markdown must reference single-cooperative table pengaturan")
 	}
 }
 
-func TestValidateProduction_RejectsWideTrustedProxiesCIDR(t *testing.T) {
+func TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL(t *testing.T) {
 	baseProd := map[string]string{
-		"APP_ENV":            "production",
-		"API_PORT":           "8080",
-		"METRICS_PORT":       "9100",
-		"DB_HOST":            "10.20.1.5",
-		"DB_PORT":            "5432",
-		"DB_NAME":            "kopdes_prod",
-		"DB_USER":            "kopdes_app",
-		"DB_PASSWORD":        "ProdStrongPass123!@#",
-		"DB_SSLMODE":         "require",
-		"JWT_SECRET":         strings.Repeat("a1", 32),
-		"BLIND_INDEX_SECRET": strings.Repeat("b2", 32),
-		"AES_MASTER_KEY":     strings.Repeat("c3", 32),
-		"QRIS_SECRET":        strings.Repeat("d4", 32),
-		"METRICS_TOKEN":      strings.Repeat("e5", 32),
-		"BCRYPT_COST":        "12",
-		"ALLOWED_ORIGINS":    "https://koperasi.example.id",
+		"APP_ENV":               "production",
+		"DB_HOST":               "10.20.1.5",
+		"DB_PORT":               "5432",
+		"DB_NAME":               "kopdes_prod",
+		"DB_USER":               "kopdes_app",
+		"DB_PASSWORD":           "ProdStrongPass123!@#",
+		"DB_SSLMODE":            "require",
+		"BLIND_INDEX_SECRET":    strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":        strings.Repeat("c3", 32),
+		"BACKUP_ENCRYPTION_KEY": "ProdBackupKeyStrong!@#",
+		"ALLOWED_ORIGINS":       "https://koperasi.example.id",
 	}
 
 	rejectCases := []struct {
@@ -215,7 +194,6 @@ func TestValidateProduction_RejectsWideTrustedProxiesCIDR(t *testing.T) {
 		})
 	}
 
-	// Valid narrow CIDRs (/32 and /16) must pass
 	mOK := make(map[string]string, len(baseProd)+1)
 	for k, v := range baseProd {
 		mOK[k] = v
@@ -230,50 +208,5 @@ func TestValidateProduction_RejectsWideTrustedProxiesCIDR(t *testing.T) {
 	}
 	if err := cfgOK.ValidateProduction(); err != nil {
 		t.Fatalf("Expected ValidateProduction to accept /32 and /16 TRUSTED_PROXIES, got: %v", err)
-	}
-}
-
-func TestConfig_Load_UITesterAndSeedEnvVars(t *testing.T) {
-	base := map[string]string{
-		"APP_ENV":            "test",
-		"DB_PASSWORD":        "pass_uji_123!",
-		"JWT_SECRET":         strings.Repeat("a1", 32),
-		"BLIND_INDEX_SECRET": strings.Repeat("b2", 32),
-		"AES_MASTER_KEY":     strings.Repeat("c3", 32),
-		"QRIS_SECRET":        strings.Repeat("d4", 32),
-		"METRICS_TOKEN":      strings.Repeat("e5", 32),
-	}
-
-	// Default values when unset
-	cfgDefault, err := config.Load(func(k string) (string, bool) {
-		v, ok := base[k]
-		return v, ok
-	})
-	if err != nil {
-		t.Fatalf("Load default failed: %v", err)
-	}
-	if cfgDefault.UIPort != 8081 || cfgDefault.UIBind != "127.0.0.1" || cfgDefault.APIPublicURL != "http://127.0.0.1:8080" {
-		t.Fatalf("Unexpected UI defaults: UIPort=%d UIBind=%q APIPublicURL=%q", cfgDefault.UIPort, cfgDefault.UIBind, cfgDefault.APIPublicURL)
-	}
-
-	// Custom Set B overrides
-	custom := make(map[string]string, len(base)+4)
-	for k, v := range base {
-		custom[k] = v
-	}
-	custom["UI_PORT"] = "18081"
-	custom["UI_BIND"] = "0.0.0.0"
-	custom["API_PUBLIC_URL"] = "http://127.0.0.1:18080"
-	custom["TEST_SEED_PASSWORD"] = "CustomSeedPass123!"
-
-	cfgCustom, err := config.Load(func(k string) (string, bool) {
-		v, ok := custom[k]
-		return v, ok
-	})
-	if err != nil {
-		t.Fatalf("Load custom failed: %v", err)
-	}
-	if cfgCustom.UIPort != 18081 || cfgCustom.UIBind != "0.0.0.0" || cfgCustom.APIPublicURL != "http://127.0.0.1:18080" || cfgCustom.TestSeedPassword != "CustomSeedPass123!" {
-		t.Fatalf("Unexpected custom UI config: %+v", cfgCustom)
 	}
 }

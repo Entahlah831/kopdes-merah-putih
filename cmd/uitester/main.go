@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -44,7 +43,7 @@ func isAllowedProbeURL(targetRaw string, apiPublicURL string) bool {
 	return false
 }
 
-func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (http.Handler, error) {
+func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir, apiURL string) (http.Handler, error) {
 	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
 		return nil, fmt.Errorf("KEAMANAN UITESTER: ditolak berjalan ketika APP_ENV=production")
 	}
@@ -54,28 +53,47 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (ht
 		return nil, fmt.Errorf("direktori frontend-tester tidak valid: %w", err)
 	}
 
-	apiBase := strings.TrimRight(strings.TrimSpace(cfg.APIPublicURL), "/")
+	apiBase := strings.TrimRight(strings.TrimSpace(apiURL), "/")
 	if apiBase == "" {
-		apiBase = fmt.Sprintf("http://127.0.0.1:%d", cfg.APIHostPort)
+		hostPort := cfg.APIHostPort
+		if hostPort <= 0 {
+			hostPort = cfg.APIPort
+		}
+		apiBase = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 	}
 
 	mux := http.NewServeMux()
+	registerUITesterRoutes(mux, cfg, apiBase, absUIDir)
+	return mux, nil
+}
 
+func registerUITesterRoutes(mux *http.ServeMux, cfg config.AppConfig, apiBase, absUIDir string) {
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		payload := configResponse{
+		_ = json.NewEncoder(w).Encode(configResponse{
 			AppEnv:         cfg.AppEnv,
 			APIPublicURL:   apiBase,
-			UIBind:         cfg.UIBind,
+			UIBind:         "127.0.0.1",
 			UIPort:         cfg.UIPort,
 			Resources:      testseed.Resources(),
 			SeededAccounts: testseed.Accounts(),
-		}
-		_ = json.NewEncoder(w).Encode(payload)
+		})
 	})
 
-	mux.HandleFunc("POST /api/probe-cors", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/probe-cors", handleProbeCORS(apiBase))
+	mux.HandleFunc("POST /api/totp-helper", handleTOTPHelper(cfg.AppEnv))
+
+	fileServer := http.FileServer(http.Dir(absUIDir))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		fileServer.ServeHTTP(w, r)
+	}))
+}
+
+func handleProbeCORS(apiBase string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 
@@ -97,7 +115,6 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (ht
 			req.Method = http.MethodGet
 		}
 
-		client := &http.Client{Timeout: 5 * time.Second}
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodOptions, req.TargetURL, nil)
 		if err != nil {
 			http.Error(w, `{"error":"Gagal membuat request preflight"}`, http.StatusBadRequest)
@@ -111,6 +128,7 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (ht
 			upReq.Header.Set("Access-Control-Request-Headers", req.ReqHdr)
 		}
 
+		client := &http.Client{Timeout: 5 * time.Second}
 		// #nosec G704 -- URL sudah diverifikasi ketat oleh isAllowedProbeURL ke host loopback/service API uji
 		resp, err := client.Do(upReq)
 		if err != nil {
@@ -122,29 +140,20 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (ht
 		_ = resp.Body.Close()
 
 		headers := map[string]string{}
-		for _, k := range []string{
-			"Access-Control-Allow-Origin",
-			"Access-Control-Allow-Methods",
-			"Access-Control-Allow-Headers",
-			"Access-Control-Expose-Headers",
-			"Vary",
-			"X-Request-ID",
-		} {
+		for _, k := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Methods", "Access-Control-Allow-Headers", "Access-Control-Expose-Headers", "Vary", "X-Request-ID"} {
 			if v := resp.Header.Get(k); v != "" {
 				headers[k] = v
 			}
 		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status_code": resp.StatusCode, "headers": headers})
+	}
+}
 
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status_code": resp.StatusCode,
-			"headers":     headers,
-		})
-	})
-
-	mux.HandleFunc("POST /api/totp-helper", func(w http.ResponseWriter, r *http.Request) {
+func handleTOTPHelper(appEnv string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
+		if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
 			http.Error(w, `{"error":"TOTP helper dinonaktifkan di production"}`, http.StatusForbidden)
 			return
 		}
@@ -170,21 +179,14 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir string) (ht
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"code": code})
-	})
-
-	fileServer := http.FileServer(http.Dir(absUIDir))
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		fileServer.ServeHTTP(w, r)
-	}))
-
-	return mux, nil
+	}
 }
 
 func main() {
 	envFileFlag := flag.String("env-file", "", "Path berkas konfigurasi (.env.test atau .env.test.alt)")
 	uiDirFlag := flag.String("ui-dir", "frontend-tester", "Direktori berkas statis Frontend Tester")
+	bindFlag := flag.String("bind", "127.0.0.1", "Alamat bind HTTP Frontend Tester")
+	apiURLFlag := flag.String("api-url", "", "Override URL publik API untuk Frontend Tester")
 	flag.Parse()
 
 	envFile := strings.TrimSpace(*envFileFlag)
@@ -204,22 +206,12 @@ func main() {
 		log.Fatalf("KEAMANAN UITESTER: APP_ENV=production terdeteksi; server tester dilarang dijalankan di produksi.")
 	}
 
-	var pool *pgxpool.Pool
-	if dsn, dsnErr := cfg.BuildDatabaseDSN(); dsnErr == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if p, err := pgxpool.New(ctx, dsn); err == nil {
-			pool = p
-			defer pool.Close()
-		}
-		cancel()
-	}
-
-	handler, err := newUITesterHandler(cfg, pool, *uiDirFlag)
+	handler, err := newUITesterHandler(cfg, nil, *uiDirFlag, *apiURLFlag)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	bind := strings.TrimSpace(cfg.UIBind)
+	bind := strings.TrimSpace(*bindFlag)
 	if bind == "" {
 		bind = "127.0.0.1"
 	}
@@ -233,6 +225,6 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("Frontend Tester Kopdes Merah Putih berjalan pada http://%s (API target: %s, APP_ENV=%s)", addr, cfg.APIPublicURL, cfg.AppEnv)
+	log.Printf("Frontend Tester Kopdes Merah Putih berjalan pada http://%s (API target: http://127.0.0.1:%d, APP_ENV=%s)", addr, cfg.APIHostPort, cfg.AppEnv)
 	log.Fatal(srv.ListenAndServe())
 }

@@ -16,107 +16,111 @@ import (
 )
 
 type Config struct {
-	AppEnv                       string
-	AppTimezone                  string
-	Port                         int
-	MetricsPort                  int
-	JWTSecret                    string
-	JWTPreviousSecret            string
-	JWTAlgorithm                 string
-	JWTIssuer                    string
-	JWTAccessTTL                 time.Duration
-	JWTRefreshTTL                time.Duration
-	BlindIndexSecret             string
-	QRISSecret                   string
-	AESMasterKey                 string
-	AESKeyVersion                string
-	AESKeyID                     string
-	AESPreviousKeys              string
-	AllowedOrigins               []string
-	RateLimitRPS                 float64
-	RateLimitBurst               int
-	TrustedProxies               []string
-	MaxRateLimitClients          int
-	MaxBodyBytes                 int64
-	HTTPReadHeaderTimeout        time.Duration
-	HTTPReadTimeout              time.Duration
-	HTTPWriteTimeout             time.Duration
-	HTTPIdleTimeout              time.Duration
-	BcryptCost                   int
-	MFAIssuer                    string
-	MFAMaxAttempts               int
-	MFASessionTTL                time.Duration
-	MFASetupTTL                  time.Duration
-	LoginMaxAttempts             int
-	LoginLockoutDuration         time.Duration
-	QRISDynamicEnabled           bool
-	AllowPersonalPaymentPilot    bool
-	PilotDefaultMaxPerTx         int64
-	PilotDefaultMaxPerDay        int64
-	DualApprovalDefaultThreshold int64
-	StorageKYCDir                string
-	MaxKYCUploadBytes            int64
-	MetricsToken                 string
-	MetricsPreviousToken         string
-	APIVersion                   string
-	PaymentsDisabled             bool
-	RegistrationDisabled         bool
-	LoginDisabled                bool
-	ReadOnlyMode                 bool
-	CaptchaEnabled               bool
-	CaptchaProvider              string
-	CaptchaSiteKey               string
-	PaymentExpiryDuration        time.Duration
-	PollingIntervalMS            int
-	PaginationDefaultLimit       int
-	PaginationMaxLimit           int
+	AppEnv                    string
+	AppTimezone               string
+	Port                      int
+	BlindIndexSecret          string
+	AESMasterKey              string
+	AESPreviousKeys           string
+	AllowedOrigins            []string
+	TrustedProxies            []string
+	RateLimitRPS              float64
+	RateLimitBurst            int
+	MaxRateLimitClients       int
+	MaxBodyBytes              int64
+	HTTPReadHeaderTimeout     time.Duration
+	HTTPReadTimeout           time.Duration
+	HTTPWriteTimeout          time.Duration
+	HTTPIdleTimeout           time.Duration
+	BcryptCost                int
+	MFAIssuer                 string
+	MFAMaxAttempts            int
+	SessionIdleTTL            time.Duration
+	SessionAbsTTL             time.Duration
+	MFARequiredRoles          []string
+	LoginMaxAttempts          int
+	LoginLockoutDuration      time.Duration
+	AllowPersonalPaymentPilot bool
+	PilotMaxPerTx             int64
+	PilotMaxPerDay            int64
+	QRISUniqueDigits          int
+	PaymentExpiryDuration     time.Duration
+	PendingLimitPerMember     int
+	PendingLimitGlobal        int
+	PDPRejectedRetentionDays  int
+	StorageKYCDir             string
+	MaxKYCUploadBytes         int64
+	APIVersion                string
+	PaymentsDisabled          bool
+	RegistrationDisabled      bool
+	ReadOnlyMode              bool
+	CaptchaEnabled            bool
+	CaptchaProvider           string
+	CaptchaSiteKey            string
+	CaptchaSecretKey          string
+	PollingIntervalMS         int
+	PaginationDefaultLimit    int
+	PaginationMaxLimit        int
 }
 
 func decodeSecretBytes(secret string) []byte {
 	return security.DecodeSecretMaterial(secret)
 }
 
+func defaultBcryptCost(appEnv string) int {
+	if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+		return 12
+	}
+	return 10
+}
+
 func ConfigFromAppConfig(c config.AppConfig) Config {
+	def := DefaultConfig()
 	return Config{
 		AppEnv:                    c.AppEnv,
 		AppTimezone:               c.AppTimezone,
 		Port:                      c.APIPort,
 		BlindIndexSecret:          c.BlindIndexSecret,
 		AESMasterKey:              c.AESMasterKey,
-		AESKeyVersion:             c.AESKeyVersion,
-		AESKeyID:                  c.AESKeyID,
 		AESPreviousKeys:           c.AESPreviousKeys,
 		AllowedOrigins:            c.AllowedOrigins,
 		TrustedProxies:            c.TrustedProxies,
-		MaxBodyBytes:              c.MaxBodyBytes,
-		HTTPReadHeaderTimeout:     c.HTTPReadHeaderTimeout,
-		HTTPReadTimeout:           c.HTTPReadTimeout,
-		HTTPWriteTimeout:          c.HTTPWriteTimeout,
-		HTTPIdleTimeout:           c.HTTPIdleTimeout,
-		BcryptCost:                c.BcryptCost,
-		MFAIssuer:                 c.MFAIssuer,
-		MFAMaxAttempts:            c.MFAMaxAttempts,
-		MFASessionTTL:             c.MFASessionTTL,
-		MFASetupTTL:               c.MFASetupTTL,
+		RateLimitRPS:              def.RateLimitRPS,
+		RateLimitBurst:            def.RateLimitBurst,
+		MaxRateLimitClients:       def.MaxRateLimitClients,
+		MaxBodyBytes:              def.MaxBodyBytes,
+		HTTPReadHeaderTimeout:     def.HTTPReadHeaderTimeout,
+		HTTPReadTimeout:           def.HTTPReadTimeout,
+		HTTPWriteTimeout:          def.HTTPWriteTimeout,
+		HTTPIdleTimeout:           def.HTTPIdleTimeout,
+		BcryptCost:                defaultBcryptCost(c.AppEnv),
+		MFAIssuer:                 def.MFAIssuer,
+		MFAMaxAttempts:            def.MFAMaxAttempts,
+		SessionIdleTTL:            c.SessionIdleTTL,
+		SessionAbsTTL:             c.SessionAbsTTL,
+		MFARequiredRoles:          c.MFARequiredRoles,
 		LoginMaxAttempts:          c.LoginMaxAttempts,
 		LoginLockoutDuration:      c.LoginLockoutDuration,
 		AllowPersonalPaymentPilot: c.AllowPersonalPaymentPilot,
-		PilotDefaultMaxPerTx:      c.PilotDefaultMaxPerTx,
-		PilotDefaultMaxPerDay:     c.PilotDefaultMaxPerDay,
+		PilotMaxPerTx:             c.PilotMaxPerTx,
+		PilotMaxPerDay:            c.PilotMaxPerDay,
+		QRISUniqueDigits:          c.QRISUniqueDigits,
+		PaymentExpiryDuration:     c.PaymentExpiryDuration,
+		PendingLimitPerMember:     c.PendingLimitPerMember,
+		PendingLimitGlobal:        c.PendingLimitGlobal,
+		PDPRejectedRetentionDays:  c.PDPRejectedRetentionDays,
 		StorageKYCDir:             c.StorageKYCDir,
-		MaxKYCUploadBytes:         c.MaxKYCUploadBytes,
-		APIVersion:                c.APIVersion,
+		MaxKYCUploadBytes:         def.MaxKYCUploadBytes,
+		APIVersion:                def.APIVersion,
 		PaymentsDisabled:          !c.PaymentsEnabled,
 		RegistrationDisabled:      !c.RegistrationEnabled,
-		LoginDisabled:             !c.LoginEnabled,
-		ReadOnlyMode:              c.ReadOnlyMode,
 		CaptchaEnabled:            c.CaptchaEnabled,
-		CaptchaProvider:           c.CaptchaProvider,
+		CaptchaProvider:           def.CaptchaProvider,
 		CaptchaSiteKey:            c.CaptchaSiteKey,
-		PaymentExpiryDuration:     c.PaymentExpiryDuration,
-		PollingIntervalMS:         c.PollingIntervalMS,
-		PaginationDefaultLimit:    c.PaginationDefaultLimit,
-		PaginationMaxLimit:        c.PaginationMaxLimit,
+		CaptchaSecretKey:          c.CaptchaSecretKey,
+		PollingIntervalMS:         def.PollingIntervalMS,
+		PaginationDefaultLimit:    def.PaginationDefaultLimit,
+		PaginationMaxLimit:        def.PaginationMaxLimit,
 	}
 }
 
@@ -137,16 +141,13 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func ValidateProductionDatabasePassword(appEnv, dbPassword, kopdesAppPassword string) error {
-	if strings.TrimSpace(appEnv) != "production" {
+func ValidateProductionDatabasePassword(appEnv, dbPassword string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "production") {
 		return nil
 	}
-	pass := strings.TrimSpace(kopdesAppPassword)
+	pass := strings.TrimSpace(dbPassword)
 	if pass == "" {
-		pass = strings.TrimSpace(dbPassword)
-	}
-	if pass == "" {
-		return errors.New("pada profil produksi, variabel lingkungan KOPDES_APP_PASSWORD atau DB_PASSWORD wajib disetel")
+		return errors.New("pada profil produksi, DB_PASSWORD wajib disetel")
 	}
 	// #nosec G101 -- literal pembanding untuk menolak password dev bawaan di profil produksi
 	if pass == "kopdes_dev_password" {
@@ -157,34 +158,40 @@ func ValidateProductionDatabasePassword(appEnv, dbPassword, kopdesAppPassword st
 
 func DefaultConfig() Config {
 	return Config{
-		AppEnv:                 "development",
-		AppTimezone:            "Asia/Jakarta",
-		Port:                   8080,
-		AESKeyVersion:          "v1",
-		AESKeyID:               "k1",
-		AllowedOrigins:         []string{"*"},
-		MaxBodyBytes:           10 * 1024 * 1024,
-		HTTPReadHeaderTimeout:  5 * time.Second,
-		HTTPReadTimeout:        10 * time.Second,
-		HTTPWriteTimeout:       15 * time.Second,
-		HTTPIdleTimeout:        60 * time.Second,
-		BcryptCost:             12,
-		MFAIssuer:              "Kopdes Merah Putih",
-		MFAMaxAttempts:         3,
-		MFASessionTTL:          5 * time.Minute,
-		MFASetupTTL:            10 * time.Minute,
-		LoginMaxAttempts:       5,
-		LoginLockoutDuration:   15 * time.Minute,
-		PilotDefaultMaxPerTx:   500000,
-		PilotDefaultMaxPerDay:  2000000,
-		StorageKYCDir:          "./storage/kyc",
-		MaxKYCUploadBytes:      5 * 1024 * 1024,
-		APIVersion:             "1.1.0",
-		PaymentExpiryDuration:  15 * time.Minute,
-		PollingIntervalMS:      3000,
-		PaginationDefaultLimit: 20,
-		PaginationMaxLimit:     100,
-		CaptchaProvider:        "turnstile",
+		AppEnv:                   "development",
+		AppTimezone:              "Asia/Jakarta",
+		Port:                     8080,
+		AllowedOrigins:           []string{"*"},
+		RateLimitRPS:             30,
+		RateLimitBurst:           60,
+		MaxRateLimitClients:      10000,
+		MaxBodyBytes:             10 * 1024 * 1024,
+		HTTPReadHeaderTimeout:    5 * time.Second,
+		HTTPReadTimeout:          10 * time.Second,
+		HTTPWriteTimeout:         15 * time.Second,
+		HTTPIdleTimeout:          60 * time.Second,
+		BcryptCost:               10,
+		MFAIssuer:                "Kopdes Merah Putih",
+		MFAMaxAttempts:           3,
+		SessionIdleTTL:           30 * time.Minute,
+		SessionAbsTTL:            12 * time.Hour,
+		MFARequiredRoles:         []string{"admin", "bendahara"},
+		LoginMaxAttempts:         5,
+		LoginLockoutDuration:     15 * time.Minute,
+		PilotMaxPerTx:            500000,
+		PilotMaxPerDay:           2000000,
+		QRISUniqueDigits:         3,
+		PaymentExpiryDuration:    15 * time.Minute,
+		PendingLimitPerMember:    2,
+		PendingLimitGlobal:       50,
+		PDPRejectedRetentionDays: 30,
+		StorageKYCDir:            "./storage/kyc",
+		MaxKYCUploadBytes:        5 * 1024 * 1024,
+		APIVersion:               "2.0.0-lean",
+		PollingIntervalMS:        3000,
+		PaginationDefaultLimit:   20,
+		PaginationMaxLimit:       100,
+		CaptchaProvider:          "turnstile",
 	}
 }
 
@@ -196,7 +203,7 @@ type Server struct {
 	router      *http.ServeMux
 }
 
-func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
+func applyServerDefaults(cfg *Config) {
 	def := DefaultConfig()
 	if cfg.Port <= 0 {
 		cfg.Port = def.Port
@@ -216,10 +223,21 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	if cfg.HTTPIdleTimeout <= 0 {
 		cfg.HTTPIdleTimeout = def.HTTPIdleTimeout
 	}
+	if cfg.SessionIdleTTL <= 0 {
+		cfg.SessionIdleTTL = def.SessionIdleTTL
+	}
+	if len(cfg.MFARequiredRoles) == 0 {
+		cfg.MFARequiredRoles = def.MFARequiredRoles
+	}
+}
+
+func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
+	applyServerDefaults(&cfg)
 
 	var keyProvider security.KeyProvider
 	if strings.TrimSpace(cfg.AESMasterKey) != "" {
-		if mkp, err := security.NewMultiKeyProviderFromConfig(cfg.AESKeyVersion, cfg.AESKeyID, cfg.AESMasterKey, cfg.AESPreviousKeys); err == nil {
+		ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
+		if mkp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys); err == nil {
 			keyProvider = mkp
 		}
 	}
@@ -232,14 +250,16 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		MaxKYCUploadBytes:           cfg.MaxKYCUploadBytes,
 		PaymentExpirySeconds:        int64(cfg.PaymentExpiryDuration.Seconds()),
 		PollingIntervalMS:           cfg.PollingIntervalMS,
+		AccessTokenTTLSeconds:       int64(cfg.SessionIdleTTL.Seconds()),
 		PaymentsEnabled:             !cfg.PaymentsDisabled,
 		RegistrationEnabled:         !cfg.RegistrationDisabled,
-		LoginEnabled:                !cfg.LoginDisabled,
+		LoginEnabled:                true,
 		ReadOnlyMode:                cfg.ReadOnlyMode,
 		PersonalPaymentPilotEnabled: cfg.AllowPersonalPaymentPilot,
 		CaptchaEnabled:              cfg.CaptchaEnabled,
 		CaptchaProvider:             cfg.CaptchaProvider,
 		CaptchaSiteKey:              cfg.CaptchaSiteKey,
+		MFAMandatoryRoles:           cfg.MFARequiredRoles,
 		PaginationDefaultLimit:      cfg.PaginationDefaultLimit,
 		PaginationMaxLimit:          cfg.PaginationMaxLimit,
 	})

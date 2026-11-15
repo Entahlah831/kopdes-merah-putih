@@ -106,9 +106,12 @@ func runStrictAudit(cfg config.AppConfig, raw map[string]string, stdout, stderr 
 		if err := cfg.ValidateProduction(); err != nil {
 			issues = append(issues, fmt.Sprintf("GUARD PRODUKSI GAGAL: %v", err))
 		}
-		if err := api.ValidateProductionDatabasePassword(cfg.AppEnv, cfg.DBPassword, cfg.KopdesAppPassword); err != nil {
+		if err := api.ValidateProductionDatabasePassword(cfg.AppEnv, cfg.DBPassword); err != nil {
 			issues = append(issues, fmt.Sprintf("PASSWORD DB PRODUKSI: %v", err))
 		}
+	}
+	if specs := config.Catalog(); len(specs) > 40 {
+		issues = append(issues, fmt.Sprintf("JUMLAH VARIABEL ENV MELEBIHI BATAS (<= 40): %d", len(specs)))
 	}
 
 	if len(issues) > 0 {
@@ -118,8 +121,8 @@ func runStrictAudit(cfg config.AppConfig, raw map[string]string, stdout, stderr 
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "envcheck STRICT PASS: %d variabel terverifikasi, APP_ENV=%s, DB_NAME=%s, API_PORT=%d, METRICS_PORT=%d\n",
-		len(config.Catalog()), cfg.AppEnv, cfg.DBName, cfg.APIPort, cfg.MetricsPort)
+	fmt.Fprintf(stdout, "envcheck STRICT PASS: %d variabel terverifikasi, APP_ENV=%s, DB_NAME=%s, API_PORT=%d\n",
+		len(config.Catalog()), cfg.AppEnv, cfg.DBName, cfg.APIPort)
 	return 0
 }
 
@@ -136,8 +139,6 @@ func runPortAudit(cfg config.AppConfig, checkBind bool, stdout, stderr io.Writer
 	}
 	addHostPort(cfg.APIHostPort, "API_HOST_PORT")
 	addHostPort(cfg.DBHostPort, "DB_HOST_PORT")
-	addHostPort(cfg.MetricsHostPort, "METRICS_HOST_PORT")
-	addHostPort(cfg.PrometheusHostPort, "PROMETHEUS_HOST_PORT")
 	addHostPort(cfg.UIPort, "UI_PORT")
 
 	for port, owners := range hostPorts {
@@ -153,10 +154,7 @@ func runPortAudit(cfg config.AppConfig, checkBind bool, stdout, stderr io.Writer
 			sortedPorts = append(sortedPorts, p)
 		}
 		sort.Ints(sortedPorts)
-		bindHost := cfg.DBBindHost
-		if bindHost == "" {
-			bindHost = "127.0.0.1"
-		}
+		bindHost := "127.0.0.1"
 		for _, p := range sortedPorts {
 			addr := fmt.Sprintf("%s:%d", bindHost, p)
 			ln, err := net.Listen("tcp", addr)

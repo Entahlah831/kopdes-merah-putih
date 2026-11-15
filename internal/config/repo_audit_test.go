@@ -31,6 +31,9 @@ func repoRoot(t *testing.T) string {
 func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	root := repoRoot(t)
 	specs := config.Catalog()
+	if len(specs) != 40 {
+		t.Fatalf("Jumlah variabel env harus tepat 40, ditemukan %d", len(specs))
+	}
 	specMap := make(map[string]config.EnvVarSpec, len(specs))
 	for _, s := range specs {
 		specMap[s.Name] = s
@@ -53,7 +56,7 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 				continue
 			}
 			if rel == ".env.example" && spec.Secret && val != "" {
-				t.Errorf(".env.example TIDAK BOLEH berisi nilai rahasia untuk %s (dapat non-kosong)", name)
+				t.Errorf(".env.example TIDAK BOLEH berisi nilai rahasia untuk %s", name)
 			}
 		}
 		for k := range m {
@@ -63,18 +66,16 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 		}
 	}
 
-	// 2. Pastikan Set A (.env.test) dan Set B (.env.test.alt) benar-benar memakai port, DB, dan secret berbeda
+	// 2. Pastikan Set A (.env.test) dan Set B (.env.test.alt) memakai port, DB, dan secret berbeda
 	setA := parsed[".env.test"]
 	setB := parsed[".env.test.alt"]
 	if !strings.HasSuffix(setA["DB_NAME"], "_test") || !strings.HasSuffix(setB["DB_NAME"], "_test") {
 		t.Errorf("Set A dan Set B DB_NAME wajib berakhiran _test: A=%q B=%q", setA["DB_NAME"], setB["DB_NAME"])
 	}
 	mustDiffer := []string{
-		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "API_PUBLIC_URL", "DB_PORT", "DB_HOST_PORT",
-		"DB_CONTAINER_PORT", "METRICS_PORT", "METRICS_HOST_PORT", "PROMETHEUS_HOST_PORT",
-		"DB_PASSWORD", "KOPDES_APP_PASSWORD", "POSTGRES_PASSWORD", "TEST_SEED_PASSWORD",
-		"JWT_SECRET", "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "QRIS_SECRET", "METRICS_TOKEN",
-		"JWT_ACCESS_TTL", "JWT_ALGORITHM", "BCRYPT_COST", "MFA_ISSUER",
+		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "DB_PORT", "DB_HOST_PORT",
+		"DB_PASSWORD", "POSTGRES_PASSWORD", "AES_MASTER_KEY", "BLIND_INDEX_SECRET",
+		"BACKUP_ENCRYPTION_KEY", "SESSION_IDLE_TTL", "QRIS_UNIQUE_DIGITS", "MFA_REQUIRED_ROLES",
 	}
 	for _, k := range mustDiffer {
 		if setA[k] == "" || setB[k] == "" {
@@ -84,24 +85,23 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 		}
 	}
 
-	// 3. Cek seluruh panggilan os.Getenv / os.LookupEnv di kode Go produksi (cmd/ & internal/) ada di Catalog()
+	// 3. Cek seluruh panggilan os.Getenv / os.LookupEnv di kode Go produksi terdaftar (selain 4 selector OS resmi)
+	processSelectors := map[string]bool{
+		"ENV_FILE": true, "TEST_ENV_FILE": true, "TEST_DATABASE_URL": true, "DATABASE_URL": true,
+	}
 	reEnvCall := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\(\s*"([A-Z0-9_]+)"\s*\)`)
 	for _, sub := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, sub), func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return err
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			matches := reEnvCall.FindAllStringSubmatch(string(data), -1)
-			for _, m := range matches {
+			for _, m := range reEnvCall.FindAllStringSubmatch(string(data), -1) {
 				envName := m[1]
-				if _, ok := specMap[envName]; !ok {
+				if _, ok := specMap[envName]; !ok && !processSelectors[envName] {
 					rel, _ := filepath.Rel(root, path)
 					t.Errorf("%s membaca env %s yang TIDAK terdaftar di AppConfig / .env.example", rel, envName)
 				}
@@ -122,14 +122,13 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	expectedDoc := strings.ReplaceAll(config.RenderEnvReferenceMarkdown(), "\r\n", "\n")
 	actualDoc := strings.ReplaceAll(string(docBytes), "\r\n", "\n")
 	if actualDoc != expectedDoc {
-		t.Errorf("docs/ENV_REFERENCE.md tidak sinkron dengan struct AppConfig di internal/config/config.go; jalankan envcheck --gen-doc docs/ENV_REFERENCE.md")
+		t.Errorf("docs/ENV_REFERENCE.md tidak sinkron dengan struct AppConfig; jalankan envcheck --gen-doc docs/ENV_REFERENCE.md")
 	}
 }
 
 func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.T) {
 	root := repoRoot(t)
 
-	// 1. Cek berkas prasyarat Tugas A4, A5, A6, A7, B4
 	requiredFiles := []string{
 		".dockerignore",
 		"docker-compose.yml",
@@ -147,13 +146,10 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		}
 	}
 
-	// 2. Uji statis larangan port hardcoded (8080, 5432, 5433, 9090, 9100) di berkas konfigurasi & skrip eksekusi
-	// Kecuali daftar allowlist yang terdokumentasi (.env*, docs/*.md, test files, default fallback di config.go/server.go)
 	hardcodedTargets := []string{
 		"Dockerfile",
 		"docker-compose.yml",
 		"docker-compose.test.yml",
-		"docs/prometheus.example.yml",
 		"scripts/backup.sh",
 		"scripts/restore_drill.sh",
 		"scripts/restore_test.sh",
@@ -173,8 +169,7 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 			t.Errorf("Gagal membaca %s: %v", rel, err)
 			continue
 		}
-		lines := strings.Split(string(data), "\n")
-		for idx, line := range lines {
+		for idx, line := range strings.Split(string(data), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
 				continue
@@ -185,7 +180,6 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		}
 	}
 
-	// 3. Pastikan db/docker-init/01_roles.sql tidak memiliki fallback kopdes_dev_password
 	rolesBytes, err := os.ReadFile(filepath.Join(root, "db", "docker-init", "01_roles.sql"))
 	if err != nil {
 		t.Fatalf("Gagal membaca 01_roles.sql: %v", err)

@@ -26,6 +26,7 @@ type PublicConfigOptions struct {
 	CaptchaEnabled              bool
 	CaptchaProvider             string
 	CaptchaSiteKey              string
+	MFAMandatoryRoles           []string
 	PaginationDefaultLimit      int
 	PaginationMaxLimit          int
 	NowFunc                     func() time.Time
@@ -69,6 +70,9 @@ func NewPublicConfigHandler(opts PublicConfigOptions) *PublicConfigHandler {
 	}
 	if opts.PaginationMaxLimit < opts.PaginationDefaultLimit {
 		opts.PaginationMaxLimit = 100
+	}
+	if len(opts.MFAMandatoryRoles) == 0 {
+		opts.MFAMandatoryRoles = []string{"admin", "bendahara"}
 	}
 	if opts.NowFunc == nil {
 		opts.NowFunc = time.Now
@@ -117,8 +121,9 @@ func (h *PublicConfigHandler) HandleGetPublicConfig(w http.ResponseWriter, r *ht
 			"provider": h.opts.CaptchaProvider,
 			"site_key": siteKey,
 		},
-		"mfa_mandatory_roles":      []string{"admin", "bendahara", "ketua"},
+		"mfa_mandatory_roles":      h.opts.MFAMandatoryRoles,
 		"access_token_ttl_seconds": h.opts.AccessTokenTTLSeconds,
+		"session_idle_ttl_seconds": h.opts.AccessTokenTTLSeconds,
 		"pagination": map[string]interface{}{
 			"default_limit": h.opts.PaginationDefaultLimit,
 			"max_limit":     h.opts.PaginationMaxLimit,

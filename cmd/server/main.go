@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,30 +29,65 @@ func sanitizeLogValue(v string) string {
 	return logSanitizer.Replace(v)
 }
 
-func main() {
-	envFile := strings.TrimSpace(os.Getenv("ENV_FILE"))
-	if envFile == "" {
-		envFile = ".env"
+func buildDBPool(ctx context.Context, appCfg config.AppConfig) (*pgxpool.Pool, string) {
+	if !validSQLIdentifier.MatchString(config.DefaultDBAppRole) {
+		log.Fatalf("KONFIGURASI ILEGAL: role %q tidak valid", config.DefaultDBAppRole)
 	}
-	appCfg, err := config.LoadFromEnvAndFile(envFile)
-	if err != nil {
-		log.Fatalf("Gagal memuat konfigurasi aplikasi: %v", err)
-	}
-
-	if !validSQLIdentifier.MatchString(appCfg.DBAppRole) {
-		log.Fatalf("KONFIGURASI ILEGAL: DB_APP_ROLE mengandung karakter tidak valid: %q", appCfg.DBAppRole)
-	}
-
 	dsn, err := appCfg.BuildDatabaseDSN()
 	if err != nil {
 		log.Fatalf("Konfigurasi koneksi PostgreSQL tidak valid: %v", err)
 	}
+	pgxCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
+	}
+	pgxCfg.MaxConns = 25
+	pgxCfg.MinConns = 2
+	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		sessionSQL := fmt.Sprintf(`
+			SET statement_timeout = '15000ms';
+			SET lock_timeout = '5000ms';
+			SET idle_in_transaction_session_timeout = '30000ms';
+			SET ROLE %s;
+		`, config.DefaultDBAppRole)
+		_, err := conn.Exec(ctx, sessionSQL)
+		return err
+	}
 
+	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
+	if err != nil {
+		log.Fatalf("Gagal inisialisasi koneksi pool PostgreSQL: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
+	}
+	if err := db.CheckDatabaseRole(ctx, pool, false); err != nil {
+		log.Fatalf("Gagal validasi keamanan role database: %v", err)
+	}
+	return pool, dsn
+}
+
+func main() {
+	envFileFlag := flag.String("env-file", "", "Path berkas konfigurasi (.env / .env.test / .env.test.alt)")
+	flag.Parse()
+
+	envFile := strings.TrimSpace(*envFileFlag)
+	if envFile == "" {
+		envFile = strings.TrimSpace(os.Getenv("ENV_FILE"))
+	}
+	if envFile == "" {
+		envFile = ".env"
+	}
+
+	appCfg, err := config.LoadFromEnvAndFile(envFile)
+	if err != nil {
+		log.Fatalf("Gagal memuat konfigurasi aplikasi: %v", err)
+	}
 	if strings.EqualFold(strings.TrimSpace(appCfg.AppEnv), "production") {
 		if err := appCfg.ValidateProduction(); err != nil {
 			log.Fatalf("KONFIGURASI PRODUKSI TIDAK VALID: %v", err)
 		}
-		if err := api.ValidateProductionDatabasePassword(appCfg.AppEnv, appCfg.DBPassword, appCfg.KopdesAppPassword); err != nil {
+		if err := api.ValidateProductionDatabasePassword(appCfg.AppEnv, appCfg.DBPassword); err != nil {
 			log.Fatalf("KONFIGURASI ILEGAL: %v", err)
 		}
 	}
@@ -65,78 +100,25 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pgxCfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		log.Fatalf("Gagal mem-parsing DSN PostgreSQL (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
-	}
-
-	if appCfg.DBPoolMaxConns > 0 && appCfg.DBPoolMaxConns <= math.MaxInt32 {
-		pgxCfg.MaxConns = int32(appCfg.DBPoolMaxConns)
-	}
-	if appCfg.DBPoolMinConns > 0 && appCfg.DBPoolMinConns <= math.MaxInt32 {
-		pgxCfg.MinConns = int32(appCfg.DBPoolMinConns)
-	}
-
-	stmtMs := appCfg.DBStatementTimeout.Milliseconds()
-	if stmtMs <= 0 {
-		stmtMs = 15000
-	}
-	lockMs := appCfg.DBLockTimeout.Milliseconds()
-	if lockMs <= 0 {
-		lockMs = 5000
-	}
-	idleMs := appCfg.DBIdleInTxTimeout.Milliseconds()
-	if idleMs <= 0 {
-		idleMs = 30000
-	}
-	appRole := appCfg.DBAppRole
-
-	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		sessionSQL := fmt.Sprintf(`
-			SET statement_timeout = '%dms';
-			SET lock_timeout = '%dms';
-			SET idle_in_transaction_session_timeout = '%dms';
-			SET ROLE %s;
-		`, stmtMs, lockMs, idleMs, appRole)
-		_, err := conn.Exec(ctx, sessionSQL)
-		return err
-	}
-
-	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
-	if err != nil {
-		log.Fatalf("Gagal inisialisasi koneksi pool PostgreSQL: %v", err)
-	}
+	pool, dsn := buildDBPool(ctx, appCfg)
 	defer pool.Close()
-
-	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("PostgreSQL tidak dapat dihubungi (%s): %v", sanitizeLogValue(security.RedactDSN(dsn)), err) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
-	}
 	log.Printf("Koneksi ke PostgreSQL (%s) berhasil terhubung.", sanitizeLogValue(security.RedactDSN(dsn))) // #nosec G706 -- DSN sudah diredaksi & disanitasi CR/LF
 
-	if err := db.CheckDatabaseRole(ctx, pool, appCfg.AllowSuperuserDB); err != nil {
-		log.Fatalf("Gagal validasi keamanan role database: %v", err)
-	}
-
 	server := api.NewServer(pool, srvCfg)
-
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Server API Kopdes Merah Putih berjalan pada http://0.0.0.0:%d", appCfg.APIPort) // #nosec G706 -- port sudah tervalidasi numerik dari AppConfig
+		log.Printf("Server API Kopdes Merah Putih berjalan pada http://0.0.0.0:%d", appCfg.APIPort) // #nosec G706 -- port tervalidasi numerik dari AppConfig
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server berhenti karena error: %v", err)
 		}
 	}()
 
 	<-stop
-	log.Println("Menerima sinyal shutdown, mematikan server...")
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Error saat shutdown server: %v", err)
 	}
-	fmt.Println("Server berhasil dimatikan secara bersih.")
 }

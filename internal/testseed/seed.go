@@ -39,11 +39,8 @@ func Resources() ResourceIDs {
 	return ResourceIDs{}
 }
 
-func ResolveSeedPassword(cfg config.AppConfig, override string) (string, error) {
+func ResolveSeedPassword(_ config.AppConfig, override string) (string, error) {
 	if p := strings.TrimSpace(override); p != "" {
-		return p, nil
-	}
-	if p := strings.TrimSpace(cfg.TestSeedPassword); p != "" {
 		return p, nil
 	}
 	return "kopdes_test_setA_user_pass_123!", nil

@@ -17,12 +17,10 @@ import (
 
 func TestUITester_RefusesProductionMode(t *testing.T) {
 	cfg := config.AppConfig{
-		AppEnv:       "production",
-		UIPort:       8081,
-		UIBind:       "127.0.0.1",
-		APIPublicURL: "https://api.kopdes.example.id",
+		AppEnv: "production",
+		UIPort: 8081,
 	}
-	_, err := newUITesterHandler(cfg, nil, t.TempDir())
+	_, err := newUITesterHandler(cfg, nil, t.TempDir(), "https://api.kopdes.example.id")
 	if err == nil {
 		t.Fatalf("Expected uitester to refuse APP_ENV=production, got nil error")
 	}
@@ -35,17 +33,15 @@ func TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper(t *testing.T) {
 	}
 
 	cfg := config.AppConfig{
-		AppEnv:           "test",
-		UIPort:           18081,
-		UIBind:           "127.0.0.1",
-		APIPublicURL:     "http://127.0.0.1:18080",
-		DBName:           "kopdes_alt_test",
-		DBPassword:       "super_secret_db_pwd",
-		JWTSecret:        strings.Repeat("x", 32),
-		TestSeedPassword: "super_secret_seed_pwd",
+		AppEnv:       "test",
+		UIPort:       18081,
+		APIHostPort:  18080,
+		DBName:       "kopdes_alt_test",
+		DBPassword:   "super_secret_db_pwd",
+		AESMasterKey: strings.Repeat("x", 64),
 	}
 
-	handler, err := newUITesterHandler(cfg, nil, uiDir)
+	handler, err := newUITesterHandler(cfg, nil, uiDir, "")
 	if err != nil {
 		t.Fatalf("newUITesterHandler unexpected error: %v", err)
 	}
@@ -58,7 +54,7 @@ func TestUITester_ConfigJSON_ProbeCORS_And_TOTPHelper(t *testing.T) {
 		t.Fatalf("Expected /config.json 200, got %d: %s", recCfg.Code, recCfg.Body.String())
 	}
 	rawBody := recCfg.Body.String()
-	for _, forbidden := range []string{"super_secret_db_pwd", "super_secret_seed_pwd", cfg.JWTSecret, "password_hash", "totp_secret"} {
+	for _, forbidden := range []string{"super_secret_db_pwd", cfg.AESMasterKey, "password_hash", "totp_secret"} {
 		if strings.Contains(rawBody, forbidden) {
 			t.Fatalf("/config.json leaked sensitive string %q", forbidden)
 		}

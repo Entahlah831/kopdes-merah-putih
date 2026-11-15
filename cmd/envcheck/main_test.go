@@ -15,10 +15,10 @@ func TestEnvCheck_Compare_AndNeverLeaksSecrets(t *testing.T) {
 	fileA := filepath.Join(tmp, "a.env")
 	fileB := filepath.Join(tmp, "b.env")
 
-	if err := os.WriteFile(fileA, []byte("APP_ENV=test\nAPI_PORT=8080\nJWT_SECRET=SecretValueShouldNeverAppearA\nONLY_IN_A=1\n"), 0o600); err != nil {
+	if err := os.WriteFile(fileA, []byte("APP_ENV=test\nAPI_PORT=8080\nAES_MASTER_KEY=SecretValueShouldNeverAppearA\nONLY_IN_A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fileB, []byte("APP_ENV=test\nAPI_PORT=18080\nJWT_SECRET=SecretValueShouldNeverAppearB\nONLY_IN_B=2\n"), 0o600); err != nil {
+	if err := os.WriteFile(fileB, []byte("APP_ENV=test\nAPI_PORT=18080\nAES_MASTER_KEY=SecretValueShouldNeverAppearB\nONLY_IN_B=2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,13 +86,13 @@ func TestEnvCheck_StrictAndPortConflictDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 	envDupPort := filepath.Join(tmp, "dup_port.env")
-	dupContent := strings.Replace(string(altBytes), "METRICS_HOST_PORT=19100", "METRICS_HOST_PORT=18080", 1)
+	dupContent := strings.Replace(string(altBytes), "UI_PORT=18081", "UI_PORT=18080", 1)
 	if err := os.WriteFile(envDupPort, []byte(dupContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var dupOut bytes.Buffer
 	if dupCode := runCLI([]string{"--ports", "--no-listen", "--env-file", envDupPort}, &dupOut, &dupOut); dupCode == 0 {
-		t.Fatalf("Expected --ports to fail when API_HOST_PORT and METRICS_HOST_PORT collide on 18080")
+		t.Fatalf("Expected --ports to fail when API_HOST_PORT and UI_PORT collide on 18080")
 	} else if !strings.Contains(dupOut.String(), "18080") {
 		t.Fatalf("Expected conflict message to mention 18080, got:\n%s", dupOut.String())
 	}

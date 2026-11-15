@@ -103,8 +103,9 @@ WHERE id = sqlc.arg(id);
 
 -- name: CreateUser :one
 INSERT INTO users (
-    email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, password_hash, peran, status_aktif
+    id, email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, password_hash, peran, status_aktif
 ) VALUES (
+    COALESCE(sqlc.narg(id), uuid_generate_v7()),
     sqlc.narg(email_enc), sqlc.narg(email_hash), sqlc.narg(hp_enc), sqlc.narg(hp_hash),
     sqlc.arg(nama_lengkap), sqlc.arg(password_hash), sqlc.arg(peran), sqlc.arg(status_aktif)
 )

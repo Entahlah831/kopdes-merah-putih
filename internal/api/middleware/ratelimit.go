@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"container/list"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api/response"
+	"github.com/kopdes/merah-putih/internal/db"
 )
 
 // TrustedProxyMatcher memvalidasi apakah alamat IP asal (RemoteAddr) termasuk dalam proxy terpercaya
@@ -268,13 +271,14 @@ func (l *LoginRateLimiter) getEntry(key string) *loginAttemptEntry {
 	return entry
 }
 
-// CheckAllowed memeriksa apakah IP atau akun sedang terkunci karena gagal login berulang kali
+// CheckAllowed memeriksa apakah akun atau pasangan ip+akun sedang terkunci (ramah CGNAT).
 func (l *LoginRateLimiter) CheckAllowed(ip, accountKey string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := time.Now()
-	for _, k := range []string{"ip:" + ip, "acc:" + accountKey} {
+	keys := []string{"pair:" + ip + ":" + accountKey, "acc:" + accountKey}
+	for _, k := range keys {
 		if elem, ok := l.attempts[k]; ok {
 			entry := elem.Value.(*loginAttemptEntry)
 			if now.Before(entry.lockedUntil) {
@@ -285,29 +289,85 @@ func (l *LoginRateLimiter) CheckAllowed(ip, accountKey string) (bool, time.Durat
 	return true, 0
 }
 
-// RecordFailure mencatat percobaan login gagal dan mengunci akun/IP jika melampaui batas
+// RequiresCaptchaOnIP menandai lonjakan kegagalan pada satu IP (>= 3x maxFailures) untuk meminta CAPTCHA tanpa memblokir pengguna CGNAT lain.
+func (l *LoginRateLimiter) RequiresCaptchaOnIP(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if elem, ok := l.attempts["ip:"+ip]; ok {
+		return elem.Value.(*loginAttemptEntry).failures >= l.maxFailures*3
+	}
+	return false
+}
+
+// RecordFailure mencatat percobaan login gagal pada pasangan ip+akun dan akun (CGNAT-safe) plus penghitung IP lunak.
 func (l *LoginRateLimiter) RecordFailure(ip, accountKey string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := time.Now()
-	for _, k := range []string{"ip:" + ip, "acc:" + accountKey} {
+	for _, k := range []string{"pair:" + ip + ":" + accountKey, "acc:" + accountKey} {
 		entry := l.getEntry(k)
 		entry.failures++
 		if entry.failures >= l.maxFailures {
 			entry.lockedUntil = now.Add(l.lockoutDuration)
 		}
 	}
+	ipEntry := l.getEntry("ip:" + ip)
+	ipEntry.failures++
 }
 
-// RecordSuccess mereset penghitung kegagalan akun setelah berhasil login
+// RecordSuccess mereset penghitung kegagalan akun & pasangan IP+akun setelah berhasil login.
 func (l *LoginRateLimiter) RecordSuccess(accountKey string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	k := "acc:" + accountKey
-	if elem, ok := l.attempts[k]; ok {
-		delete(l.attempts, k)
-		l.lruList.Remove(elem)
+	for k, elem := range l.attempts {
+		if k == "acc:"+accountKey || strings.HasSuffix(k, ":"+accountKey) {
+			delete(l.attempts, k)
+			l.lruList.Remove(elem)
+		}
 	}
+}
+
+// DBRateLimiter menyediakan pembatasan laju persisten menggunakan tabel rate_limits.
+type DBRateLimiter struct {
+	pool    *pgxpool.Pool
+	trusted *TrustedProxyMatcher
+}
+
+func NewDBRateLimiter(pool *pgxpool.Pool, trustedProxies []string) *DBRateLimiter {
+	return &DBRateLimiter{
+		pool:    pool,
+		trusted: NewTrustedProxyMatcher(trustedProxies),
+	}
+}
+
+func (d *DBRateLimiter) ClientIP(r *http.Request) string {
+	return GetClientIP(r, d.trusted)
+}
+
+func (d *DBRateLimiter) Allow(ctx context.Context, key, kategori string, maxHits, windowSecs int32) (bool, int32, error) {
+	if d == nil || d.pool == nil {
+		return true, maxHits, nil
+	}
+	row, err := db.New(d.pool).UpsertRateLimitHit(ctx, db.UpsertRateLimitHitParams{
+		Key:        key,
+		Kategori:   kategori,
+		WindowSecs: windowSecs,
+	})
+	if err != nil {
+		return false, 0, err
+	}
+	if row.BlockedUntil.Valid && time.Now().Before(row.BlockedUntil.Time) {
+		return false, 0, nil
+	}
+	if row.HitCount > maxHits {
+		_ = db.New(d.pool).SetRateLimitBlocked(ctx, db.SetRateLimitBlockedParams{
+			Key:       key,
+			Kategori:  kategori,
+			BlockSecs: windowSecs,
+		})
+		return false, 0, nil
+	}
+	return true, maxHits - row.HitCount, nil
 }

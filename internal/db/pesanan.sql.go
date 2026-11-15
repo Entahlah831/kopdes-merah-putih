@@ -37,17 +37,18 @@ func (q *Queries) CountPromoUsageByAnggota(ctx context.Context, arg CountPromoUs
 
 const createPesanan = `-- name: CreatePesanan :one
 INSERT INTO pesanan (
-    nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
+    id, nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
     metode_pengiriman, metode_pembayaran, status,
     subtotal, diskon, ongkir, total_bayar,
     nama_penerima, hp_penerima_enc, hp_penerima_masked, alamat_pengantaran_enc,
     catatan, tanggal_antar, expires_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8,
-    $9, $10, $11, $12,
-    $13, $14, $15, $16,
-    $17, $18, $19
+    COALESCE($1, uuid_generate_v7()),
+    $2, $3, $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12, $13,
+    $14, $15, $16, $17,
+    $18, $19, $20
 )
 RETURNING id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
           status, subtotal, diskon, ongkir, total_bayar, nama_penerima, hp_penerima_masked,
@@ -55,6 +56,7 @@ RETURNING id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, m
 `
 
 type CreatePesananParams struct {
+	ID                   interface{}        `json:"id"`
 	NomorPesanan         string             `json:"nomor_pesanan"`
 	UserID               pgtype.UUID        `json:"user_id"`
 	AnggotaID            pgtype.UUID        `json:"anggota_id"`
@@ -99,6 +101,7 @@ type CreatePesananRow struct {
 
 func (q *Queries) CreatePesanan(ctx context.Context, arg CreatePesananParams) (CreatePesananRow, error) {
 	row := q.db.QueryRow(ctx, createPesanan,
+		arg.ID,
 		arg.NomorPesanan,
 		arg.UserID,
 		arg.AnggotaID,
@@ -324,22 +327,23 @@ func (q *Queries) GetPesananByIdempotencyKey(ctx context.Context, idempotencyKey
 }
 
 const getPesananForUpdate = `-- name: GetPesananForUpdate :one
-SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran, status, total_bayar
+SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran, status, total_bayar, expires_at
 FROM pesanan
 WHERE id = $1
 FOR UPDATE
 `
 
 type GetPesananForUpdateRow struct {
-	ID               pgtype.UUID `json:"id"`
-	NomorPesanan     string      `json:"nomor_pesanan"`
-	UserID           pgtype.UUID `json:"user_id"`
-	AnggotaID        pgtype.UUID `json:"anggota_id"`
-	PromoID          pgtype.UUID `json:"promo_id"`
-	MetodePengiriman string      `json:"metode_pengiriman"`
-	MetodePembayaran string      `json:"metode_pembayaran"`
-	Status           string      `json:"status"`
-	TotalBayar       int64       `json:"total_bayar"`
+	ID               pgtype.UUID        `json:"id"`
+	NomorPesanan     string             `json:"nomor_pesanan"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	AnggotaID        pgtype.UUID        `json:"anggota_id"`
+	PromoID          pgtype.UUID        `json:"promo_id"`
+	MetodePengiriman string             `json:"metode_pengiriman"`
+	MetodePembayaran string             `json:"metode_pembayaran"`
+	Status           string             `json:"status"`
+	TotalBayar       int64              `json:"total_bayar"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) GetPesananForUpdate(ctx context.Context, id pgtype.UUID) (GetPesananForUpdateRow, error) {
@@ -355,6 +359,7 @@ func (q *Queries) GetPesananForUpdate(ctx context.Context, id pgtype.UUID) (GetP
 		&i.MetodePembayaran,
 		&i.Status,
 		&i.TotalBayar,
+		&i.ExpiresAt,
 	)
 	return i, err
 }

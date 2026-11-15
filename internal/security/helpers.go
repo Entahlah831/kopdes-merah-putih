@@ -98,6 +98,21 @@ func MaskNIK(nik string) string {
 	return n[:4] + strings.Repeat("*", len(n)-8) + n[len(n)-4:]
 }
 
+// NormalizePhone menormalkan nomor HP Indonesia ke format 08... hanya digit.
+func NormalizePhone(raw string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	digits := b.String()
+	if strings.HasPrefix(digits, "62") && len(digits) > 4 {
+		return "0" + digits[2:]
+	}
+	return digits
+}
+
 // MaskPhone menyamarkan nomor HP menjadi "0812****8901".
 func MaskPhone(hp string) string {
 	p := strings.TrimSpace(hp)

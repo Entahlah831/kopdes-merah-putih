@@ -6,10 +6,11 @@ WHERE nik_hash = sqlc.arg(nik_hash)
 
 -- name: CreatePendaftaran :one
 INSERT INTO pendaftaran (
-    nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
+    id, nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
     hp_enc, hp_hash, hp_masked, tanggal_lahir_enc, alamat_enc, pekerjaan,
     status, upload_token_hash, ip_address
 ) VALUES (
+    COALESCE(sqlc.narg(id), uuid_generate_v7()),
     sqlc.arg(nama_lengkap), sqlc.narg(email_enc), sqlc.narg(email_hash),
     sqlc.arg(nik_enc), sqlc.arg(nik_hash), sqlc.arg(nik_key_version), sqlc.arg(nik_masked),
     sqlc.arg(hp_enc), sqlc.arg(hp_hash), sqlc.arg(hp_masked),

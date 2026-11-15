@@ -5,11 +5,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api/response"
+	"github.com/kopdes/merah-putih/internal/db"
 )
 
 // PublicConfigOptions berisi metadata non-rahasia untuk konfigurasi runtime klien frontend.
 type PublicConfigOptions struct {
+	Pool                        *pgxpool.Pool
 	APIVersion                  string
 	Timezone                    string
 	MaxBodyBytes                int64
@@ -82,18 +85,21 @@ func NewPublicConfigHandler(opts PublicConfigOptions) *PublicConfigHandler {
 
 // HandleGetPublicConfig mengembalikan konfigurasi publik non-rahasia tanpa autentikasi.
 func (h *PublicConfigHandler) HandleGetPublicConfig(w http.ResponseWriter, r *http.Request) {
+	payload := h.buildPublicPayload(r)
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	response.JSON(w, http.StatusOK, payload)
+}
+
+func (h *PublicConfigHandler) buildPublicPayload(r *http.Request) map[string]interface{} {
 	now := h.opts.NowFunc().UTC()
 	if loc, err := time.LoadLocation(h.opts.Timezone); err == nil {
 		now = now.In(loc)
 	}
-
 	siteKey := ""
 	if h.opts.CaptchaEnabled {
 		siteKey = strings.TrimSpace(h.opts.CaptchaSiteKey)
 	}
-
-	w.Header().Set("Cache-Control", "public, max-age=60")
-	response.JSON(w, http.StatusOK, map[string]interface{}{
+	payload := map[string]interface{}{
 		"api_version":    h.opts.APIVersion,
 		"server_time":    now.Format(time.RFC3339),
 		"server_unix_ms": now.UnixMilli(),
@@ -101,11 +107,11 @@ func (h *PublicConfigHandler) HandleGetPublicConfig(w http.ResponseWriter, r *ht
 		"upload_limits": map[string]interface{}{
 			"max_body_bytes":         h.opts.MaxBodyBytes,
 			"max_kyc_upload_bytes":   h.opts.MaxKYCUploadBytes,
-			"allowed_mime_types":     []string{"image/jpeg", "image/png", "application/pdf"},
+			"allowed_mime_types":     []string{"image/jpeg", "image/png"},
 			"allowed_csv_mime_types": []string{"text/csv", "application/csv", "text/plain"},
 		},
 		"kyc_required_document_types":  []string{"ktp"},
-		"kyc_supported_document_types": []string{"ktp", "kk", "foto_diri", "surat_domisili"},
+		"kyc_supported_document_types": []string{"ktp", "kk", "selfie_ktp"},
 		"payment_expiry_seconds":       h.opts.PaymentExpirySeconds,
 		"polling_interval_ms":          h.opts.PollingIntervalMS,
 		"features": map[string]interface{}{
@@ -128,5 +134,33 @@ func (h *PublicConfigHandler) HandleGetPublicConfig(w http.ResponseWriter, r *ht
 			"default_limit": h.opts.PaginationDefaultLimit,
 			"max_limit":     h.opts.PaginationMaxLimit,
 		},
-	})
+	}
+	h.attachKoperasiInfo(r, payload)
+	return payload
+}
+
+func (h *PublicConfigHandler) attachKoperasiInfo(r *http.Request, payload map[string]interface{}) {
+	if h.opts.Pool == nil {
+		return
+	}
+	pub, err := db.New(h.opts.Pool).GetPublicSettingsWithQRIS(r.Context())
+	if err != nil {
+		return
+	}
+	payload["koperasi"] = map[string]interface{}{
+		"nama_koperasi":      pub.NamaKoperasi,
+		"alamat_koperasi":    pub.AlamatKoperasi,
+		"telepon_koperasi":   pub.TeleponKoperasi,
+		"qris_unique_digits": pub.QrisUniqueDigits,
+		"ongkir_tetap":       pub.OngkirTetap,
+		"kebijakan_teks":     pub.KebijakanTeks,
+		"active_qris": map[string]interface{}{
+			"rekening_id":    pub.QrisRekeningID,
+			"nama_merchant":  pub.QrisMerchant,
+			"nmid":           pub.QrisNmid,
+			"nama_bank":      pub.QrisBank,
+			"jenis_pemilik":  pub.QrisJenisPemilik,
+			"qris_image_url": pub.QrisImageUrl,
+		},
+	}
 }

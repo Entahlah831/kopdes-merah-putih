@@ -24,18 +24,20 @@ func (q *Queries) CountTotalAnggota(ctx context.Context) (int32, error) {
 
 const createAnggota = `-- name: CreateAnggota :one
 INSERT INTO anggota (
-    user_id, nomor_anggota, nama_lengkap, nik_enc, nik_hash, nik_key_version, nik_masked,
+    id, user_id, nomor_anggota, nama_lengkap, nik_enc, nik_hash, nik_key_version, nik_masked,
     hp_enc, hp_masked, tanggal_lahir_enc, alamat_enc, status
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10, $11,
-    $12
+    COALESCE($1, uuid_generate_v7()),
+    $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13
 )
 RETURNING id, user_id, nomor_anggota, nama_lengkap, nik_masked, hp_masked, status, tanggal_bergabung, created_at
 `
 
 type CreateAnggotaParams struct {
+	ID              interface{} `json:"id"`
 	UserID          pgtype.UUID `json:"user_id"`
 	NomorAnggota    string      `json:"nomor_anggota"`
 	NamaLengkap     string      `json:"nama_lengkap"`
@@ -64,6 +66,7 @@ type CreateAnggotaRow struct {
 
 func (q *Queries) CreateAnggota(ctx context.Context, arg CreateAnggotaParams) (CreateAnggotaRow, error) {
 	row := q.db.QueryRow(ctx, createAnggota,
+		arg.ID,
 		arg.UserID,
 		arg.NomorAnggota,
 		arg.NamaLengkap,

@@ -162,3 +162,21 @@ FOR UPDATE;
 UPDATE pembayaran
 SET status = 'kedaluwarsa'
 WHERE id = sqlc.arg(id);
+
+-- name: HasActivePembayaranForPesanan :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pembayaran_alokasi pa
+    JOIN pembayaran p ON p.id = pa.pembayaran_id
+    WHERE pa.pesanan_id = sqlc.arg(pesanan_id)
+      AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+)::bool;
+
+-- name: HasActivePembayaranForTagihan :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pembayaran_alokasi pa
+    JOIN pembayaran p ON p.id = pa.pembayaran_id
+    WHERE pa.tagihan_iuran_id = sqlc.arg(tagihan_iuran_id)
+      AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+)::bool;

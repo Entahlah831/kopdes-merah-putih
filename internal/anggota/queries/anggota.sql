@@ -3,9 +3,10 @@ SELECT COUNT(*)::int FROM anggota;
 
 -- name: CreateAnggota :one
 INSERT INTO anggota (
-    user_id, nomor_anggota, nama_lengkap, nik_enc, nik_hash, nik_key_version, nik_masked,
+    id, user_id, nomor_anggota, nama_lengkap, nik_enc, nik_hash, nik_key_version, nik_masked,
     hp_enc, hp_masked, tanggal_lahir_enc, alamat_enc, status
 ) VALUES (
+    COALESCE(sqlc.narg(id), uuid_generate_v7()),
     sqlc.narg(user_id), sqlc.arg(nomor_anggota), sqlc.arg(nama_lengkap),
     sqlc.arg(nik_enc), sqlc.arg(nik_hash), sqlc.arg(nik_key_version), sqlc.arg(nik_masked),
     sqlc.arg(hp_enc), sqlc.arg(hp_masked), sqlc.arg(tanggal_lahir_enc), sqlc.arg(alamat_enc),

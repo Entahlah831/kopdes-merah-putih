@@ -120,15 +120,17 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (C
 
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (
-    email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, password_hash, peran, status_aktif
+    id, email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, password_hash, peran, status_aktif
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8
+    COALESCE($1, uuid_generate_v7()),
+    $2, $3, $4, $5,
+    $6, $7, $8, $9
 )
 RETURNING id, email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, peran, status_aktif, mfa_enabled, created_at
 `
 
 type CreateUserParams struct {
+	ID           interface{} `json:"id"`
 	EmailEnc     []byte      `json:"email_enc"`
 	EmailHash    pgtype.Text `json:"email_hash"`
 	HpEnc        []byte      `json:"hp_enc"`
@@ -154,6 +156,7 @@ type CreateUserRow struct {
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
 	row := q.db.QueryRow(ctx, createUser,
+		arg.ID,
 		arg.EmailEnc,
 		arg.EmailHash,
 		arg.HpEnc,

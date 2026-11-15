@@ -575,6 +575,40 @@ func (q *Queries) GetRekeningQRISByID(ctx context.Context, id pgtype.UUID) (GetR
 	return i, err
 }
 
+const hasActivePembayaranForPesanan = `-- name: HasActivePembayaranForPesanan :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pembayaran_alokasi pa
+    JOIN pembayaran p ON p.id = pa.pembayaran_id
+    WHERE pa.pesanan_id = $1
+      AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+)::bool
+`
+
+func (q *Queries) HasActivePembayaranForPesanan(ctx context.Context, pesananID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActivePembayaranForPesanan, pesananID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const hasActivePembayaranForTagihan = `-- name: HasActivePembayaranForTagihan :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pembayaran_alokasi pa
+    JOIN pembayaran p ON p.id = pa.pembayaran_id
+    WHERE pa.tagihan_iuran_id = $1
+      AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
+)::bool
+`
+
+func (q *Queries) HasActivePembayaranForTagihan(ctx context.Context, tagihanIuranID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActivePembayaranForTagihan, tagihanIuranID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const listAlokasiByPembayaran = `-- name: ListAlokasiByPembayaran :many
 SELECT id, pembayaran_id, tagihan_iuran_id, pesanan_id, nominal_alokasi
 FROM pembayaran_alokasi

@@ -27,20 +27,22 @@ func (q *Queries) CountActivePendaftaranByNIKHash(ctx context.Context, nikHash s
 
 const createPendaftaran = `-- name: CreatePendaftaran :one
 INSERT INTO pendaftaran (
-    nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
+    id, nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
     hp_enc, hp_hash, hp_masked, tanggal_lahir_enc, alamat_enc, pekerjaan,
     status, upload_token_hash, ip_address
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10,
-    $11, $12, $13,
-    'diajukan', $14, $15
+    COALESCE($1, uuid_generate_v7()),
+    $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11,
+    $12, $13, $14,
+    'diajukan', $15, $16
 )
 RETURNING id, nama_lengkap, nik_masked, hp_masked, pekerjaan, status, created_at
 `
 
 type CreatePendaftaranParams struct {
+	ID              interface{} `json:"id"`
 	NamaLengkap     string      `json:"nama_lengkap"`
 	EmailEnc        []byte      `json:"email_enc"`
 	EmailHash       pgtype.Text `json:"email_hash"`
@@ -70,6 +72,7 @@ type CreatePendaftaranRow struct {
 
 func (q *Queries) CreatePendaftaran(ctx context.Context, arg CreatePendaftaranParams) (CreatePendaftaranRow, error) {
 	row := q.db.QueryRow(ctx, createPendaftaran,
+		arg.ID,
 		arg.NamaLengkap,
 		arg.EmailEnc,
 		arg.EmailHash,

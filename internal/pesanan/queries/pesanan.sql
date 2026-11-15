@@ -28,12 +28,13 @@ WHERE id = sqlc.arg(id);
 
 -- name: CreatePesanan :one
 INSERT INTO pesanan (
-    nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
+    id, nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
     metode_pengiriman, metode_pembayaran, status,
     subtotal, diskon, ongkir, total_bayar,
     nama_penerima, hp_penerima_enc, hp_penerima_masked, alamat_pengantaran_enc,
     catatan, tanggal_antar, expires_at
 ) VALUES (
+    COALESCE(sqlc.narg(id), uuid_generate_v7()),
     sqlc.arg(nomor_pesanan), sqlc.arg(user_id), sqlc.narg(anggota_id), sqlc.narg(promo_id), sqlc.narg(idempotency_key),
     sqlc.arg(metode_pengiriman), sqlc.arg(metode_pembayaran), sqlc.arg(status),
     sqlc.arg(subtotal), sqlc.arg(diskon), sqlc.arg(ongkir), sqlc.arg(total_bayar),
@@ -60,7 +61,7 @@ FROM pesanan
 WHERE id = sqlc.arg(id);
 
 -- name: GetPesananForUpdate :one
-SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran, status, total_bayar
+SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran, status, total_bayar, expires_at
 FROM pesanan
 WHERE id = sqlc.arg(id)
 FOR UPDATE;

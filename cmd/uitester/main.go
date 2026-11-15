@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -43,7 +44,7 @@ func isAllowedProbeURL(targetRaw string, apiPublicURL string) bool {
 	return false
 }
 
-func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir, apiURL string) (http.Handler, error) {
+func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir, apiURL string) (http.Handler, error) {
 	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
 		return nil, fmt.Errorf("KEAMANAN UITESTER: ditolak berjalan ketika APP_ENV=production")
 	}
@@ -63,11 +64,11 @@ func newUITesterHandler(cfg config.AppConfig, _ *pgxpool.Pool, uiDir, apiURL str
 	}
 
 	mux := http.NewServeMux()
-	registerUITesterRoutes(mux, cfg, apiBase, absUIDir)
+	registerUITesterRoutes(mux, cfg, pool, apiBase, absUIDir)
 	return mux, nil
 }
 
-func registerUITesterRoutes(mux *http.ServeMux, cfg config.AppConfig, apiBase, absUIDir string) {
+func registerUITesterRoutes(mux *http.ServeMux, cfg config.AppConfig, pool *pgxpool.Pool, apiBase, absUIDir string) {
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -76,13 +77,13 @@ func registerUITesterRoutes(mux *http.ServeMux, cfg config.AppConfig, apiBase, a
 			APIPublicURL:   apiBase,
 			UIBind:         "127.0.0.1",
 			UIPort:         cfg.UIPort,
-			Resources:      testseed.Resources(),
+			Resources:      testseed.LookupResources(r.Context(), pool),
 			SeededAccounts: testseed.Accounts(),
 		})
 	})
 
 	mux.HandleFunc("POST /api/probe-cors", handleProbeCORS(apiBase))
-	mux.HandleFunc("POST /api/totp-helper", handleTOTPHelper(cfg.AppEnv))
+	mux.HandleFunc("POST /api/totp-helper", handleTOTPHelper(cfg))
 
 	fileServer := http.FileServer(http.Dir(absUIDir))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,17 +150,18 @@ func handleProbeCORS(apiBase string) http.HandlerFunc {
 	}
 }
 
-func handleTOTPHelper(appEnv string) http.HandlerFunc {
+func handleTOTPHelper(cfg config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+		if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
 			http.Error(w, `{"error":"TOTP helper dinonaktifkan di production"}`, http.StatusForbidden)
 			return
 		}
 
 		var req struct {
 			SecretBase32  string `json:"secret_base32"`
+			AccountEmail  string `json:"account_email,omitempty"`
 			OffsetSeconds int    `json:"offset_seconds,omitempty"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
@@ -168,8 +170,11 @@ func handleTOTPHelper(appEnv string) http.HandlerFunc {
 		}
 
 		secret := strings.TrimSpace(req.SecretBase32)
+		if secret == "" && strings.TrimSpace(req.AccountEmail) != "" {
+			secret = testseed.DeterministicTOTPSecret(cfg, req.AccountEmail)
+		}
 		if secret == "" {
-			http.Error(w, `{"error":"Sertakan secret_base32"}`, http.StatusBadRequest)
+			http.Error(w, `{"error":"Sertakan secret_base32 atau account_email"}`, http.StatusBadRequest)
 			return
 		}
 		targetTime := time.Now().UTC().Add(time.Duration(req.OffsetSeconds) * time.Second)
@@ -206,7 +211,21 @@ func main() {
 		log.Fatalf("KEAMANAN UITESTER: APP_ENV=production terdeteksi; server tester dilarang dijalankan di produksi.")
 	}
 
-	handler, err := newUITesterHandler(cfg, nil, *uiDirFlag, *apiURLFlag)
+	var pool *pgxpool.Pool
+	if dsn, dErr := cfg.BuildDatabaseDSN(); dErr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if p, pErr := pgxpool.New(ctx, dsn); pErr == nil {
+			if p.Ping(ctx) == nil {
+				pool = p
+				defer pool.Close()
+			} else {
+				p.Close()
+			}
+		}
+		cancel()
+	}
+
+	handler, err := newUITesterHandler(cfg, pool, *uiDirFlag, *apiURLFlag)
 	if err != nil {
 		log.Fatal(err)
 	}

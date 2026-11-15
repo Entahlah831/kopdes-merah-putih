@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kopdes/merah-putih/internal/api/handlers"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/config"
 	"github.com/kopdes/merah-putih/internal/security"
@@ -242,38 +241,18 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 		}
 	}
 
-	healthH := handlers.NewHealthHandler(pool)
-	publicConfigH := handlers.NewPublicConfigHandler(handlers.PublicConfigOptions{
-		APIVersion:                  cfg.APIVersion,
-		Timezone:                    cfg.AppTimezone,
-		MaxBodyBytes:                cfg.MaxBodyBytes,
-		MaxKYCUploadBytes:           cfg.MaxKYCUploadBytes,
-		PaymentExpirySeconds:        int64(cfg.PaymentExpiryDuration.Seconds()),
-		PollingIntervalMS:           cfg.PollingIntervalMS,
-		AccessTokenTTLSeconds:       int64(cfg.SessionIdleTTL.Seconds()),
-		PaymentsEnabled:             !cfg.PaymentsDisabled,
-		RegistrationEnabled:         !cfg.RegistrationDisabled,
-		LoginEnabled:                true,
-		ReadOnlyMode:                cfg.ReadOnlyMode,
-		PersonalPaymentPilotEnabled: cfg.AllowPersonalPaymentPilot,
-		CaptchaEnabled:              cfg.CaptchaEnabled,
-		CaptchaProvider:             cfg.CaptchaProvider,
-		CaptchaSiteKey:              cfg.CaptchaSiteKey,
-		MFAMandatoryRoles:           cfg.MFARequiredRoles,
-		PaginationDefaultLimit:      cfg.PaginationDefaultLimit,
-		PaginationMaxLimit:          cfg.PaginationMaxLimit,
-	})
-
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthH.HandleHealthz)
-	mux.HandleFunc("GET /readyz", healthH.HandleReadyz)
-	mux.HandleFunc("GET /api/v1/public/config", publicConfigH.HandleGetPublicConfig)
+	dh := buildDomainHandlers(pool, cfg, keyProvider)
+	registerAllRoutes(mux, pool, cfg, dh)
 
 	corsCfg := middleware.DefaultCORSConfig()
 	if len(cfg.AllowedOrigins) > 0 {
 		corsCfg.AllowedOrigins = cfg.AllowedOrigins
 	}
+	ipLim := middleware.NewIPRateLimiterWithConfig(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies, cfg.MaxRateLimitClients)
 	var handler http.Handler = mux
+	handler = readOnlyGuard(cfg.ReadOnlyMode)(handler)
+	handler = middleware.RateLimit(ipLim)(handler)
 	handler = middleware.BodyLimit(cfg.MaxBodyBytes)(handler)
 	handler = middleware.CORS(corsCfg)(handler)
 	handler = middleware.SecurityHeaders(handler)

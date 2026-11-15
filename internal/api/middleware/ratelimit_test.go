@@ -127,10 +127,10 @@ func TestT2_LoginRateLimiter_AccountAndIPLockout(t *testing.T) {
 		t.Fatalf("Expected lockout duration > 0, got %v", duration)
 	}
 
-	// Another account from same IP is also locked out
+	// Another account from the same CGNAT IP MUST remain allowed
 	allowedOtherAcc, _ := loginLimiter.CheckAllowed(ip, "another-account")
-	if allowedOtherAcc {
-		t.Fatalf("Different account on the same abusive IP should be locked out")
+	if !allowedOtherAcc {
+		t.Fatalf("CGNAT SAFETY VIOLATION: different account on the same shared IP was blocked")
 	}
 
 	// Wait for lockout duration to expire

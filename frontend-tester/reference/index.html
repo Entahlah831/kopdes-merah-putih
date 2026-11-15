@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Minimal Frontend — Kopdes Merah Putih</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; margin: 16px; color: #111; background: #fff; }
+    fieldset { margin: 12px 0; padding: 10px 14px; border: 1px solid #999; }
+    pre { border: 1px solid #ccc; padding: 8px; overflow-x: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Halaman Referensi Minimal Kopdes Merah Putih</h1>
+  <p>Implementasi polos berpanduan SDK <code>docs/frontend/</code> (tanpa framework, tanpa build step, tanpa CDN, tanpa <code>localStorage</code>/<code>sessionStorage</code>/cookie).</p>
+  <nav>
+    <ul>
+      <li><a href="login.html">Referensi Login &amp; MFA (3 Cabang + Single-Flight)</a></li>
+      <li><a href="pendaftaran.html">Referensi Pendaftaran &amp; Unggah KYC</a></li>
+      <li><a href="pembayaran-qris.html">Referensi Pembayaran QRIS, Kode Unik &amp; Polling</a></li>
+      <li><a href="../index.html">Kembali ke Frontend Tester Utama (Lab Belajar)</a></li>
+    </ul>
+  </nav>
+  <fieldset>
+    <legend>Status Bootstrap <code>GET /api/v1/public/config</code></legend>
+    <button type="button" id="btnRefReloadConfig">Muat Konfigurasi Publik</button>
+    <div id="refConfigStatus">Memuat...</div>
+    <pre id="refConfigPre">{}</pre>
+  </fieldset>
+  <script>
+    (function () {
+      "use strict";
+      async function load() {
+        const stEl = document.getElementById("refConfigStatus");
+        const preEl = document.getElementById("refConfigPre");
+        try {
+          const cfgResp = await fetch("/config.json", { cache: "no-store" });
+          const testerCfg = await cfgResp.json();
+          const apiBase = String(testerCfg.api_public_url || "").replace(/\/+$/, "");
+          const t0 = Date.now();
+          const pubResp = await fetch(apiBase + "/api/v1/public/config", { cache: "no-store" });
+          const pubJson = await pubResp.json();
+          const skewMs = pubJson?.data?.server_unix_ms ? Math.trunc(pubJson.data.server_unix_ms - Date.now()) : 0;
+          stEl.textContent = "OK HTTP " + pubResp.status + " | API v" + (pubJson?.data?.api_version || "-") + " | Selisih jam: " + skewMs + " ms (" + (Date.now() - t0) + " ms RTT)";
+          preEl.textContent = JSON.stringify(pubJson, null, 2);
+        } catch (err) {
+          stEl.textContent = "Gagal: " + (err && err.message ? err.message : String(err));
+        }
+      }
+      document.getElementById("btnRefReloadConfig").addEventListener("click", load);
+      load();
+    })();
+  </script>
+</body>
+</html>

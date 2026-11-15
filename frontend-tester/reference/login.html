@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Login &amp; MFA — Kopdes Merah Putih</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; margin: 16px; color: #111; background: #fff; }
+    fieldset { margin: 12px 0; padding: 10px 14px; border: 1px solid #999; }
+    pre { border: 1px solid #ccc; padding: 8px; overflow-x: auto; font-size: 12px; }
+    label { display: block; margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Alur Login, MFA Wajib &amp; Single-Flight Refresh</h1>
+  <p><a href="index.html">Daftar Referensi</a> | <a href="../index.html">Tester Utama</a></p>
+  <div id="loginFeatureBanner" role="status">Memuat status fitur...</div>
+
+  <fieldset>
+    <legend>1. Formulir Masuk</legend>
+    <form id="refLoginForm">
+      <label>Email: <input type="email" id="refEmail" required size="34"></label>
+      <label>Kata Sandi: <input type="password" id="refPass" required size="28" autocomplete="off"></label>
+      <button type="submit" id="btnRefLogin">Masuk (POST /api/v1/auth/login)</button>
+    </form>
+  </fieldset>
+
+  <fieldset id="refMfaChallengeBox" hidden>
+    <legend>2a. Verifikasi MFA TOTP (<code>mfa_required = true</code>)</legend>
+    <label>Kode TOTP / Recovery Code: <input type="text" id="refTotpInput" size="16"></label>
+    <button type="button" id="btnRefVerifyMfa">Verifikasi MFA</button>
+  </fieldset>
+
+  <fieldset id="refMfaSetupBox" hidden>
+    <legend>2b. Wizard Aktivasi MFA Wajib (<code>403 setup_token</code>)</legend>
+    <p>Akun admin/bendahara/ketua wajib mengaktifkan MFA menggunakan <code>setup_token</code>.</p>
+    <button type="button" id="btnRefSetupMfa">Ambil Secret &amp; QR URI (/auth/mfa/setup)</button>
+    <pre id="refSetupSecretPre">-</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Sesi Memori JS &amp; Single-Flight Refresh</legend>
+    <p id="refSessionStatus" role="status">Belum login (token hanya di memori JS tab).</p>
+    <button type="button" id="btnRefTestMe" disabled>Cek Profil (/auth/me)</button>
+    <button type="button" id="btnRefSingleFlight" disabled>Uji 3 Request Paralel Single-Flight Refresh</button>
+    <button type="button" id="btnRefLogout" disabled>Keluar / Revoke</button>
+    <pre id="refLoginOutput">{}</pre>
+  </fieldset>
+
+  <script>
+    (function () {
+      "use strict";
+      const mem = { apiBase: "", accessToken: "", refreshToken: "", mfaSessionToken: "", setupToken: "", refreshInFlight: null };
+      const ch = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("kopdes_auth_channel") : null;
+      if (ch) {
+        ch.onmessage = function (ev) {
+          if (ev?.data?.type === "logout") {
+            mem.accessToken = ""; mem.refreshToken = ""; mem.setupToken = ""; mem.mfaSessionToken = "";
+            renderSession("Dikeluarkan oleh tab lain melalui BroadcastChannel.");
+          }
+        };
+      }
+      function renderSession(msg) {
+        document.getElementById("refSessionStatus").textContent = msg;
+        const authed = Boolean(mem.accessToken);
+        document.getElementById("btnRefTestMe").disabled = !authed;
+        document.getElementById("btnRefSingleFlight").disabled = !mem.refreshToken;
+        document.getElementById("btnRefLogout").disabled = !authed && !mem.refreshToken;
+      }
+      async function refreshSingleFlight() {
+        if (!mem.refreshToken) return null;
+        if (mem.refreshInFlight) return mem.refreshInFlight;
+        mem.refreshInFlight = (async function () {
+          const r = await fetch(mem.apiBase + "/api/v1/auth/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: mem.refreshToken })
+          });
+          const j = await r.json();
+          if (!r.ok || !j.success) {
+            mem.accessToken = ""; mem.refreshToken = "";
+            renderSession("Refresh gagal/reuse terdeteksi -> sesi dicabut.");
+            return null;
+          }
+          mem.accessToken = j.data.access_token;
+          mem.refreshToken = j.data.refresh_token;
+          renderSession("Token diperbarui via single-flight refresh.");
+          return mem.accessToken;
+        })().finally(function () { mem.refreshInFlight = null; });
+        return mem.refreshInFlight;
+      }
+      async function boot() {
+        const cfg = await (await fetch("/config.json", { cache: "no-store" })).json();
+        mem.apiBase = String(cfg.api_public_url || "").replace(/\/+$/, "");
+        const pub = await (await fetch(mem.apiBase + "/api/v1/public/config")).json();
+        const feat = pub?.data?.features || {};
+        document.getElementById("loginFeatureBanner").textContent =
+          !feat.login_enabled ? "LOGIN_ENABLED=false: form masuk ditutup sementara." : "LOGIN_ENABLED=true (TTL akses ~" + (pub?.data?.access_token_ttl_seconds || 900) + "s)";
+      }
+      document.getElementById("refLoginForm").addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        const res = await fetch(mem.apiBase + "/api/v1/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: document.getElementById("refEmail").value.trim(), password: document.getElementById("refPass").value })
+        });
+        const j = await res.json();
+        document.getElementById("refLoginOutput").textContent = JSON.stringify({ status: res.status, body: j }, null, 2);
+        if (res.status === 403 && j?.error?.code === "MFA_MANDATORY_SETUP_REQUIRED") {
+          mem.setupToken = j.data?.setup_token || "";
+          document.getElementById("refMfaSetupBox").hidden = false;
+          renderSession("Wajib MFA Setup (setup_token tersimpan di memori JS).");
+          return;
+        }
+        if (res.ok && j?.data?.mfa_required) {
+          mem.mfaSessionToken = j.data.mfa_session_token;
+          document.getElementById("refMfaChallengeBox").hidden = false;
+          renderSession("Menunggu kode MFA TOTP...");
+          return;
+        }
+        if (res.ok && j?.data?.access_token) {
+          mem.accessToken = j.data.access_token;
+          mem.refreshToken = j.data.refresh_token;
+          renderSession("Masuk sebagai " + j.data.nama_lengkap + " (" + j.data.role + ").");
+        }
+      });
+      document.getElementById("btnRefVerifyMfa").addEventListener("click", async function () {
+        const res = await fetch(mem.apiBase + "/api/v1/auth/mfa/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mfa_session_token: mem.mfaSessionToken, totp_code: document.getElementById("refTotpInput").value.trim() })
+        });
+        const j = await res.json();
+        document.getElementById("refLoginOutput").textContent = JSON.stringify({ status: res.status, body: j }, null, 2);
+        if (res.ok && j?.data?.access_token) {
+          mem.accessToken = j.data.access_token; mem.refreshToken = j.data.refresh_token;
+          renderSession("Masuk MFA sukses sebagai " + j.data.nama_lengkap + " (" + j.data.role + ").");
+        }
+      });
+      document.getElementById("btnRefSetupMfa").addEventListener("click", async function () {
+        const res = await fetch(mem.apiBase + "/api/v1/auth/mfa/setup", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + mem.setupToken }
+        });
+        document.getElementById("refSetupSecretPre").textContent = JSON.stringify(await res.json(), null, 2);
+      });
+      document.getElementById("btnRefTestMe").addEventListener("click", async function () {
+        const res = await fetch(mem.apiBase + "/api/v1/auth/me", { headers: { Authorization: "Bearer " + mem.accessToken } });
+        document.getElementById("refLoginOutput").textContent = JSON.stringify(await res.json(), null, 2);
+      });
+      document.getElementById("btnRefSingleFlight").addEventListener("click", async function () {
+        const [a, b, c] = await Promise.all([refreshSingleFlight(), refreshSingleFlight(), refreshSingleFlight()]);
+        document.getElementById("refLoginOutput").textContent = JSON.stringify({ all_same_token: Boolean(a && a === b && b === c) }, null, 2);
+      });
+      document.getElementById("btnRefLogout").addEventListener("click", async function () {
+        if (mem.refreshToken) {
+          await fetch(mem.apiBase + "/api/v1/auth/revoke", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: mem.refreshToken })
+          });
+        }
+        mem.accessToken = ""; mem.refreshToken = "";
+        if (ch) ch.postMessage({ type: "logout", reason: "user_logout" });
+        renderSession("Logout & revoke berhasil.");
+      });
+      boot();
+    })();
+  </script>
+</body>
+</html>

@@ -246,7 +246,7 @@ Seluruh endpoint JSON API mengembalikan struktur envelope seragam:
 *\*Terikat aturan Maker-Checker & anti-duplikasi: penyetuju wajib berbeda dari pembuat pembayaran, pengimpor mutasi CSV, dan penyetuju pertama (pada persetujuan ganda).*
 *\*\*Anti-eskalasi: dilarang mengubah peran sendiri atau memberi peran di atas peringkatnya.*
 
-### Matriks Otorisasi Lengkap 54 Operasi API (`roles_matrix.json`)
+### Matriks Otorisasi Lengkap 55 Operasi API (`roles_matrix.json`)
 
 <!-- BEGIN_ROLES_MATRIX -->
 
@@ -719,6 +719,6 @@ Untuk membuktikan secara langsung di browser bahwa seluruh klaim pada panduan in
 - **Penyimpanan Memori Tab**: Token autentikasi pada tester **tidak pernah** disimpan ke `localStorage`, `sessionStorage`, ataupun cookie; seluruh state hanya hidup di memori JS selama tab terbuka.
 - **Live Demo 10 Modul & Mode Uji Standar**: Bagian `A` di tester menjalankan demo end-to-end seluruh 10 modul API memakai pola `refreshAccessTokenSingleFlight()`, penanganan `429 TOO_MANY_REQUESTS` berbasis header `Retry-After` (backoff IP limiter, nonaktif saat uji lockout), pelacakan `X-Request-ID`, `Idempotency-Key`, pemformatan `Intl.NumberFormat("id-ID")`, serta tanggal `Asia/Jakarta` dalam mode standar **tanpa brute-force lockout 429** (skenario `CLAIM-AUTH-BRUTEFORCE-429` bersifat opt-in melalui kotak centang agar IP `127.0.0.1` tidak terkunci 15 menit).
 - **Matriks & Skenario Otomatis**:
-  - [roles_matrix.json](roles_matrix.json): menguji seluruh `54` operasi (`48` path) terhadap `7` peran, kondisi `unauthenticated`, serta `7` probe isolasi lintas tenant (`439` pemeriksaan).
-  - [scenarios.json](../frontend-tester/scenarios.json): memetakan seluruh `26` penanda klaim terdokumentasi pada `FRONTEND_GUIDE.md` dan `BACKEND_GUIDE.md` menjadi `102` langkah eksekusi terotomasi (beserta ekspor laporan bukti JSON/Markdown dan pemindaian zero-PII). Pada mode standar, `25/26` skenario dieksekusi aktif dan `CLAIM-AUTH-BRUTEFORCE-429` dilewati (`SKIP`).
+  - [roles_matrix.json](roles_matrix.json): menguji seluruh `55` operasi (`49` path) terhadap `7` peran, kondisi `unauthenticated`, serta `7` probe isolasi lintas tenant (`447` pemeriksaan).
+  - [scenarios.json](../frontend-tester/scenarios.json): memetakan seluruh `27` penanda klaim terdokumentasi menjadi eksekusi terotomasi (beserta ekspor laporan bukti JSON/Markdown dan pemindaian zero-PII). Pada mode standar, `26/27` skenario dieksekusi aktif dan `CLAIM-AUTH-BRUTEFORCE-429` dilewati (`SKIP`). Also tersedia panduan terpecah per bab di [frontend/README.md](frontend/README.md).
 - **Catatan Ketidaksesuaian**: Setiap perbedaan yang ditemukan saat pengujian live dicatat beserta status perbaikannya di [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md).

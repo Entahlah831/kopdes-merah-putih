@@ -72,7 +72,7 @@ Service `uitester` berjalan pada profil `tester` (`entrypoint: ["/app/uitester",
 - **0. Status Lingkungan, Konfigurasi & Guard Keamanan**: Menampilkan hasil `/config.json`, konfirmasi pengaman jika target non-lokal (`SAYA PAHAM INI BUKAN PRODUKSI`), indikator `Last X-Request-ID`, tombol `Refresh Token`, `Uji Single-Flight Refresh` (`Promise` tunggal saat 401 konkuren), `Logout / Revoke`, hapus sesi memori, dan catatan variabel ID terkumpul.
 - **A. Live Demo End-to-End Semua Fitur (10 Modul Standar Tanpa Brute-Force)**: Tombol 1-klik (`#btnRunLiveDemo`) yang mendemonstrasikan dan membuktikan seluruh 10 modul API (`1. Infrastruktur HTTP`, `2. Auth & MFA`, `3. Pendaftaran & KYC`, `4. Rekening QRIS`, `5. Iuran Anggota`, `6. Pembayaran QRIS`, `7. Mutasi CSV & Rekonsiliasi`, `8. Katalog & Toko`, `9. Manajemen & Laporan`, `10. RLS, Anti-IDOR & Zero-PII`) memakai pola penanganan `docs/FRONTEND_GUIDE.md`, lengkap dengan ekspor JSON.
 - **1. Pengalih Akun Cepat (Seeded Role Accounts)**: Tabel akun uji sintetis (Koperasi A & B) untuk login cepat atau berganti peran.
-- **2. Konsol OpenAPI Generik (`54` operasi / `48` path)**: Memuat `/openapi.json`, mengisi contoh parameter/body, memilih mode `Idempotency-Key`, menyalin request sebagai `cURL`, dan mengirim request langsung dengan token aktif.
+- **2. Konsol OpenAPI Generik (`55` operasi / `49` path)**: Memuat `/openapi.json`, mengisi contoh parameter/body, memilih mode `Idempotency-Key`, menyalin request sebagai `cURL`, dan mengirim request langsung dengan token aktif.
 - **3. Panel Alur Terpandu (`3.1` s.d. `3.9`)**:
   - `3.1` Autentikasi, MFA Wajib Enrollment, Token Reuse & Lockout (termasuk `GET /metrics` serta konfirmasi opt-in sebelum uji brute-force)
   - `3.2` Pendaftaran Anggota + Upload KYC PNG + Maker-Checker Verifikasi
@@ -83,9 +83,10 @@ Service `uitester` berjalan pada profil `tester` (`entrypoint: ["/app/uitester",
   - `3.7` CRUD Jenis Iuran & Generate Tagihan Bulanan (Penanda `KEPUTUSAN AKUNTAN`)
   - `3.8` Laporan Keuangan, Rekonsiliasi, Manajemen Anggota, Users & Anti-Escalation Role
   - `3.9` Isolasi Lintas-Tenant (Kop A vs Kop B) & Anti-IDOR Anggota
-- **4. Eksekutor Pembuktian Dokumentasi (`scenarios.json`)**: Default berjalan dalam **Mode Standar (Tanpa Brute-Force)** — mengeksekusi `25/26` skenario uji dan melewati `CLAIM-AUTH-BRUTEFORCE-429` (`SKIP`) agar IP `127.0.0.1` tidak terkunci 15 menit (centang `#chkIncludeBruteforce` bila ingin menguji lockout 429). Mendukung ekspor laporan bukti JSON atau Markdown.
-- **5. Pengujian Matriks Peran (`roles_matrix.json`)**: Menguji `54` operasi terhadap `7` peran + kondisi `unauthenticated` + `7` probe `cross_tenant` (`439` pemeriksaan) serta membandingkannya terhadap ekspektasi matriks.
+- **4. Eksekutor Pembuktian Dokumentasi (`scenarios.json`)**: Default berjalan dalam **Mode Standar (Tanpa Brute-Force)** — mengeksekusi `26/27` skenario uji dan melewati `CLAIM-AUTH-BRUTEFORCE-429` (`SKIP`) agar IP `127.0.0.1` tidak terkunci 15 menit (centang `#chkIncludeBruteforce` bila ingin menguji lockout 429). Mendukung ekspor laporan bukti JSON atau Markdown beserta status Diagnostik dan daftar klaim `UNVERIFIED`.
+- **5. Pengujian Matriks Peran (`roles_matrix.json`)**: Menguji `55` operasi terhadap `7` peran + kondisi `unauthenticated` + `7` probe `cross_tenant` (`447` pemeriksaan) serta membandingkannya terhadap ekspektasi matriks.
 - **6. Panel Perilaku Browser Nyata (`6.1` s.d. `6.4`)**: Menguji CORS origin sah vs origin asing, `AbortController`/retry idempotency, penolakan body `> 10MB` (`413`) & malformed JSON (`400`), serta pemindaian PII/rahasia di seluruh respons yang tersimpan di sesi.
+- **7. Lab Belajar, Diagnostik Lingkungan, Config Playground, Simulator Kondisi & Panduan Terpandu (`lab.js`)**: Panel pembelajaran interaktif per bab dokumentasi (`00`..`19`) dan halaman referensi polos di `frontend-tester/reference/`.
 
 ---
 

@@ -26,6 +26,22 @@
       ]
     },
     {
+      "claim_id": "CLAIM-PUBLIC-CONFIG-01",
+      "title": "Konfigurasi Publik Runtime Frontend (/api/v1/public/config)",
+      "operation": "GET /api/v1/public/config",
+      "steps": [
+        {
+          "name": "GET /api/v1/public/config tanpa autentikasi mengembalikan metadata non-rahasia & Cache-Control",
+          "as_account": "unauthenticated",
+          "method": "GET",
+          "path": "/api/v1/public/config",
+          "expect_status": [200],
+          "expect_header_present": ["Cache-Control"],
+          "expect_json_contains": ["api_version", "Asia/Jakarta", "upload_limits", "features", "captcha", "pagination"]
+        }
+      ]
+    },
+    {
       "claim_id": "CLAIM-METRICS-01",
       "title": "Proteksi Bearer Token /metrics (401 tanpa/JWT, 200 dengan METRICS_TOKEN)",
       "operation": "GET /metrics",

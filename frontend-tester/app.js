@@ -17,7 +17,9 @@
     recordedResponses: [],
     proofResults: [],
     liveDemoResults: [],
-    roleTokens: {}
+    roleTokens: {},
+    diagnostics: null,
+    playgroundStatus: null
   };
 
   function el(id) {
@@ -1891,14 +1893,58 @@
     el("btnRunAllScenarios").addEventListener("click", runScenarioList);
     el("btnRunRolesMatrix").addEventListener("click", runRolesMatrix);
 
+    const unverifiedClaims = [
+      {
+        id: "CLAIM-CLIENT-TOKEN-MEMORY",
+        status: "UNVERIFIED_VIA_API",
+        reason: "Penyimpanan memori murni hanya diverifikasi pada DOM/JS Frontend Tester dan analisis statis kode SDK; aplikasi produksi pihak ketiga wajib diaudit terpisah."
+      },
+      {
+        id: "LEGAL-RETENSI-KYC-30D",
+        status: "UNVERIFIED_LEGAL",
+        reason: "PERLU VERIFIKASI HUKUM: Jangka waktu retensi penghapusan fisik berkas KTP tertolak (30 hari) sesuai UU No. 27 Tahun 2022 PDP."
+      },
+      {
+        id: "ACCOUNTING-IURAN-CLASSIFICATION",
+        status: "KEPUTUSAN_AKUNTAN",
+        reason: "KEPUTUSAN AKUNTAN: Pemetaan pos akuntansi jenis iuran di koperasi ditetapkan oleh akuntan/pengurus berwenang setempat."
+      }
+    ];
+
     el("btnDownloadProofJSON").addEventListener("click", function () {
-      downloadFile("bukti-dokumentasi-kopdes.json", "application/json", JSON.stringify({ generated_at: new Date().toISOString(), results: state.proofResults }, null, 2));
+      downloadFile(
+        "bukti-dokumentasi-kopdes.json",
+        "application/json",
+        JSON.stringify(
+          {
+            generated_at: new Date().toISOString(),
+            diagnostics: state.diagnostics,
+            playground: state.playgroundStatus,
+            scenarios_total: state.proofResults.length,
+            results: state.proofResults,
+            unverified_claims: unverifiedClaims
+          },
+          null,
+          2
+        )
+      );
     });
 
     el("btnDownloadProofMD").addEventListener("click", function () {
-      let md = "# Bukti Eksekusi Skenario Frontend Tester\n\n| Claim ID | Status | HTTP | Operasi | Ringkasan | Waktu |\n|---|---|---|---|---|---|\n";
+      let md = "# Bukti Eksekusi Skenario Frontend Tester\n\n";
+      md += "Generated: `" + new Date().toISOString() + "`\n\n";
+      if (state.diagnostics) {
+        md += "## Ringkasan Diagnostik Lingkungan\n\n";
+        md += "- Status: `" + safeString(state.diagnostics.summary || "OK") + "`\n";
+        md += "- Selisih Jam (`server_unix_ms`): `" + safeString(state.diagnostics.clock_skew_ms) + " ms`\n\n";
+      }
+      md += "## Hasil Skenario Klaim (" + state.proofResults.length + " Skenario)\n\n| Claim ID | Status | HTTP | Operasi | Ringkasan | Waktu |\n|---|---|---|---|---|---|\n";
       for (const r of state.proofResults) {
         md += "| " + r.claim_id + " | " + r.status + " | " + r.http_status + " | `" + r.operation + "` | " + r.excerpt.replace(/\|/g, "/") + " | " + r.timestamp + " |\n";
+      }
+      md += "\n## Item UNVERIFIED & Keputusan Pemilik\n\n";
+      for (const u of unverifiedClaims) {
+        md += "- **`" + u.id + "`** (`" + u.status + "`): " + u.reason + "\n";
       }
       downloadFile("bukti-dokumentasi-kopdes.md", "text/markdown", md);
     });
@@ -2022,6 +2068,19 @@
         clean: secretHits.length === 0
       }, null, 2);
     });
+
+    window.kopdesTester = {
+      state: state,
+      getApiBase: getApiBase,
+      getTestPassword: getTestPassword,
+      getTodayJakartaDate: getTodayJakartaDate,
+      formatRupiah: formatRupiah,
+      generateUUIDv4: generateUUIDv4,
+      apiRequest: apiRequest,
+      loginAccount: loginAccount,
+      setDiagnostics: function (d) { state.diagnostics = d; },
+      setPlaygroundStatus: function (p) { state.playgroundStatus = p; }
+    };
 
     init().catch(function (err) {
       el("configBanner").textContent = "Gagal inisialisasi Frontend Tester: " + err.message;

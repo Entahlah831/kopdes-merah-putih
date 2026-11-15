@@ -20,8 +20,8 @@
   </style>
 </head>
 <body>
-  <h1>Kopdes Merah Putih — Frontend Tester Polos &amp; Live Demo</h1>
-  <p>Alat uji langsung di browser (tanpa framework, tanpa build step, tanpa CDN, token hanya di memori halaman, mengikuti kontrak <code>docs/FRONTEND_GUIDE.md</code>).</p>
+  <h1>Kopdes Merah Putih — Frontend Tester Polos, Lab Belajar &amp; Live Demo</h1>
+  <p>Alat uji langsung di browser (tanpa framework, tanpa build step, tanpa CDN, token hanya di memori halaman). Buka juga <a href="reference/index.html">Halaman Referensi Minimal SDK</a>.</p>
 
   <fieldset>
     <legend>0. Status Lingkungan, Konfigurasi &amp; Guard Keamanan</legend>
@@ -103,7 +103,7 @@
   </fieldset>
 
   <fieldset>
-    <legend>2. Konsol OpenAPI Generik (Semua 54 Operasi / 48 Path)</legend>
+    <legend>2. Konsol OpenAPI Generik (Semua 55 Operasi / 49 Path)</legend>
     <p>
       <label>Pilih Operasi OpenAPI:
         <select id="openapiOpSelect"></select>
@@ -278,6 +278,71 @@
     <pre id="behaviorOutputPre">Belum dijalankan.</pre>
   </fieldset>
 
+  <fieldset>
+    <legend>B. Lab Belajar Frontend, Diagnostik Lingkungan, Config Playground &amp; Simulator Kondisi</legend>
+    <p class="note">Panel belajar mandiri bagi pengembang frontend &amp; QA mengikuti <code>docs/frontend/</code> (teks dan kontrol polos tanpa CDN maupun <code>localStorage</code>).</p>
+
+    <details open>
+      <summary>B.1 Diagnostik Lingkungan (Health, Readiness, <code>GET /api/v1/public/config</code>, CORS &amp; Selisih Jam)</summary>
+      <p>
+        <button type="button" id="btnRunDiagnostics">Jalankan Diagnostik Lingkungan</button>
+      </p>
+      <pre id="diagnosticsOutputPre">Belum dijalankan.</pre>
+    </details>
+
+    <details>
+      <summary>B.2 Config Playground (Edit Konfigurasi, Validasi Terhadap Skema JSON &amp; Pratinjau Dampak UI)</summary>
+      <p>
+        <button type="button" id="btnLoadPublicConfigPlayground">Muat dari GET /api/v1/public/config</button>
+        <button type="button" id="btnPreviewReadOnlyPlayground">Contoh Read-Only Mode = true</button>
+        <button type="button" id="btnValidateConfigPlayground">Validasi Skema &amp; Pratinjau UI</button>
+      </p>
+      <textarea id="configPlaygroundTextarea" rows="10" cols="76">{}</textarea>
+      <pre id="configPlaygroundPreview">Klik "Muat dari GET /api/v1/public/config" lalu validasi.</pre>
+    </details>
+
+    <details>
+      <summary>B.3 Simulator Kondisi (Offline, Timeout Abort, 401 Single-Flight, 429 Retry-After, 503 Read-Only)</summary>
+      <p>
+        <button type="button" id="btnSimOffline">Simulasi Offline</button>
+        <button type="button" id="btnSimTimeout">Simulasi Timeout AbortController</button>
+        <button type="button" id="btnSim401SingleFlight">Simulasi 401 Paralel (Single-Flight Refresh)</button>
+        <button type="button" id="btnSim429RetryAfter">Simulasi 429 Retry-After</button>
+        <button type="button" id="btnSim503ReadOnly">Simulasi 503 READ_ONLY_MODE</button>
+      </p>
+      <pre id="simulatorOutputPre">Pilih simulasi di atas.</pre>
+    </details>
+
+    <details open>
+      <summary>B.4 Panduan Terpandu Bertahap (&quot;Berikutnya&quot; — 7 Langkah End-to-End)</summary>
+      <p>
+        <strong id="guidedStepTitle">Langkah 1 / 7: Muat Konfigurasi Publik (/api/v1/public/config)</strong>
+      </p>
+      <p id="guidedStepDesc">Memastikan frontend mengambil batas unggahan, interval polling, dan status fitur langsung dari server.</p>
+      <p>
+        <button type="button" id="btnGuidedPrev">Sebelumnya</button>
+        <button type="button" id="btnGuidedRunStep" data-mutates="dynamic">Jalankan Langkah Ini</button>
+        <button type="button" id="btnGuidedNext">Berikutnya &rarr;</button>
+      </p>
+      <pre id="guidedStepStatus">Status: Belum dijalankan.</pre>
+    </details>
+
+    <details open>
+      <summary>B.5 Lab Belajar per Bab Dokumentasi (A–F + Salin Kode Tanpa Hardcode Port)</summary>
+      <p>
+        <label>Pilih Bab Panduan:
+          <select id="labChapterSelect"></select>
+        </label>
+        <button type="button" id="btnLabRunLive" data-mutates="dynamic">C. Jalankan Eksekusi Live Bab Ini</button>
+        <button type="button" id="btnLabCopyTS">E. Salin Kode TypeScript SDK</button>
+        <button type="button" id="btnLabCopyFetch">Salin Kode fetch()</button>
+        <button type="button" id="btnLabCopyCurl">Salin cURL</button>
+      </p>
+      <pre id="labChapterContentPre">Memuat katalog bab...</pre>
+    </details>
+  </fieldset>
+
   <script src="app.js"></script>
+  <script src="lab.js"></script>
 </body>
 </html>

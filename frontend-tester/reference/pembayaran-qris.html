@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Pembayaran QRIS &amp; Polling — Kopdes Merah Putih</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; margin: 16px; color: #111; background: #fff; }
+    fieldset { margin: 12px 0; padding: 10px 14px; border: 1px solid #999; }
+    pre { border: 1px solid #ccc; padding: 8px; overflow-x: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Pembayaran QRIS Statis, Kode Unik &amp; Polling Hemat Kuota</h1>
+  <p><a href="index.html">Daftar Referensi</a> | <a href="../index.html">Tester Utama</a></p>
+  <div id="payCfgStatus" role="status">Memuat konfigurasi pembayaran...</div>
+
+  <fieldset>
+    <legend>Simulasi Tampilan Nominal Kode Unik &amp; Timer Zona Waktu <code>Asia/Jakarta</code></legend>
+    <p>Nominal Dasar: <strong id="refBaseAmt">-</strong> | Kode Unik: <strong id="refUniqueCode">-</strong></p>
+    <p><strong>Total Transfer Tepat:</strong> <span id="refTotalAmt" style="font-size: 1.4em; font-weight: 700;">-</span>
+      <button type="button" id="btnRefCopyNominal">Salin Nominal</button>
+    </p>
+    <p>Waktu Jakarta Hari Ini (query rekonsiliasi): <code id="refJakartaDate">-</code></p>
+    <p>Status Polling Visibility-Aware: <span id="refVisibilityState">Tab Terlihat</span> | <span id="refCountdownText">-</span></p>
+    <pre id="refPaymentCfgPre">{}</pre>
+  </fieldset>
+
+  <script>
+    (function () {
+      "use strict";
+      const rupiahFmt = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
+      function formatRupiah(v) { return rupiahFmt.format(Number(v || 0)); }
+      function jakartaToday() {
+        return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      }
+      const sampleNominal = 600000;
+      const sampleUnique = 356;
+      const sampleTotal = sampleNominal + sampleUnique;
+      document.getElementById("refBaseAmt").textContent = formatRupiah(sampleNominal);
+      document.getElementById("refUniqueCode").textContent = "+" + sampleUnique;
+      document.getElementById("refTotalAmt").textContent = formatRupiah(sampleTotal);
+      document.getElementById("refJakartaDate").textContent = jakartaToday();
+      document.getElementById("btnRefCopyNominal").addEventListener("click", async function () {
+        if (navigator.clipboard) await navigator.clipboard.writeText(String(sampleTotal));
+        document.getElementById("refVisibilityState").textContent = "Nominal " + sampleTotal + " disalin.";
+      });
+      document.addEventListener("visibilitychange", function () {
+        document.getElementById("refVisibilityState").textContent =
+          document.visibilityState === "hidden" ? "Dijeda otomatis (tab tersembunyi)" : "Aktif kembali (tab terlihat)";
+      });
+      async function boot() {
+        const cfg = await (await fetch("/config.json", { cache: "no-store" })).json();
+        const apiBase = String(cfg.api_public_url || "").replace(/\/+$/, "");
+        const pub = await (await fetch(apiBase + "/api/v1/public/config")).json();
+        const d = pub.data;
+        const skewMs = Math.trunc(d.server_unix_ms - Date.now());
+        document.getElementById("payCfgStatus").textContent =
+          "Pembayaran aktif: " + d.features.payments_enabled +
+          " | QRIS Dinamis: " + d.features.qris_dynamic_enabled +
+          " | Interval polling: " + d.polling_interval_ms + " ms | Batas bayar: " + d.payment_expiry_seconds + " dtk";
+        document.getElementById("refCountdownText").textContent = "Koreksi jam server: " + skewMs + " ms | Idempotency-Key siap: " + crypto.randomUUID();
+        document.getElementById("refPaymentCfgPre").textContent = JSON.stringify({
+          polling_interval_ms: d.polling_interval_ms,
+          payment_expiry_seconds: d.payment_expiry_seconds,
+          features: d.features
+        }, null, 2);
+      }
+      boot();
+    })();
+  </script>
+</body>
+</html>

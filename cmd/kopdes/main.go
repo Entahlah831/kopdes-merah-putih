@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -192,7 +193,7 @@ func runPDPPurge(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, 
 	if err != nil {
 		return err
 	}
-	store, err := pendaftaran.NewKYCFileStore(cfg.StorageKYCDir, kp, 5<<20)
+	store, err := pendaftaran.NewKYCFileStore(filepath.Join(cfg.StorageKYCDir, "kyc"), kp, 5<<20)
 	if err != nil {
 		return err
 	}

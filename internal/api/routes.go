@@ -50,7 +50,7 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, kp security.KeyProvider
 	if strings.TrimSpace(kycDir) == "" {
 		kycDir = "./storage/kyc"
 	}
-	kycStore, _ := pendaftaran.NewKYCFileStore(kycDir, kp, cfg.MaxKYCUploadBytes)
+	kycStore, _ := pendaftaran.NewKYCFileStore(filepath.Join(kycDir, "kyc"), kp, cfg.MaxKYCUploadBytes)
 	pendSvc := pendaftaran.NewService(pool, kycStore, pendaftaran.Config{
 		RegistrationEnabled: !cfg.RegistrationDisabled, CaptchaEnabled: cfg.CaptchaEnabled,
 		CaptchaSecretKey: cfg.CaptchaSecretKey, KeyProvider: kp, BlindIndexSecret: blindKey,
@@ -71,8 +71,8 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, kp security.KeyProvider
 		PilotMaxPerTx: cfg.PilotMaxPerTx, PilotMaxPerDay: cfg.PilotMaxPerDay,
 		PaymentExpiry: cfg.PaymentExpiryDuration, MaxPendingPerUser: cfg.PendingLimitPerMember,
 		MaxPendingGlobal: cfg.PendingLimitGlobal, Timezone: cfg.AppTimezone,
-		UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: filepath.Join(filepath.Dir(kycDir), "bukti"),
-		TrustedProxies: cfg.TrustedProxies,
+		UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: filepath.Join(kycDir, "bukti"),
+		KeyProvider: kp, TrustedProxies: cfg.TrustedProxies,
 	})
 	lapSvc := laporan.NewService(pool, cfg.AppTimezone)
 

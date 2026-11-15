@@ -59,3 +59,25 @@ func TestExportDaftarAntarCSV_FormulaNeutralization(t *testing.T) {
 		}
 	}
 }
+
+func TestOrderHadDeductedStock(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		{"baru", false},
+		{"menunggu_pembayaran", false},
+		{"menunggu_verifikasi", false},
+		{"batal", false},
+		{"dibayar", true},
+		{"diproses", true},
+		{"diantar", true},
+		{"siap_diambil", true},
+		{"selesai", true},
+	}
+	for _, tc := range cases {
+		if got := orderHadDeductedStock(tc.status); got != tc.want {
+			t.Errorf("orderHadDeductedStock(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}

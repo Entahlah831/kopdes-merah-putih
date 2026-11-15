@@ -243,11 +243,8 @@ func lockAndComputeItems(ctx context.Context, qtx *db.Queries, vc *validatedChec
 		if !unitPrice.Valid {
 			return nil, 0, response.NewDomainError(http.StatusConflict, "MISSING_ACTIVE_PRICE", "Produk "+prod.Nama+" belum memiliki harga aktif untuk tier Anda")
 		}
-		if _, err := qtx.DecrementProdukStock(ctx, db.DecrementProdukStockParams{ID: pid, Qty: it.qty}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
-			}
-			return nil, 0, err
+		if prod.Stok < it.qty {
+			return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
 		}
 		lineSub := unitPrice.Int64 * int64(it.qty)
 		subtotal += lineSub

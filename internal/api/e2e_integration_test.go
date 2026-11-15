@@ -309,12 +309,13 @@ func TestE2E_SetA_Pendaftaran_KYC_Activation_And_SuspendRevocation(t *testing.T)
 		t.Fatalf("upload kyc status=%d body=%s", ust, string(uraw))
 	}
 
-	// Verify encrypted .enc on disk has no raw PNG magic bytes
-	entries, err := os.ReadDir(e.kycDir)
+	// Verify encrypted .enc on disk inside separate kyc subdir has no raw PNG magic bytes
+	kycSubDir := filepath.Join(e.kycDir, "kyc")
+	entries, err := os.ReadDir(kycSubDir)
 	if err != nil || len(entries) == 0 {
-		t.Fatalf("expected encrypted KYC file in %s, err=%v count=%d", e.kycDir, err, len(entries))
+		t.Fatalf("expected encrypted KYC file in %s, err=%v count=%d", kycSubDir, err, len(entries))
 	}
-	encBytes, _ := os.ReadFile(filepath.Join(e.kycDir, entries[0].Name()))
+	encBytes, _ := os.ReadFile(filepath.Join(kycSubDir, entries[0].Name()))
 	if bytes.HasPrefix(encBytes, []byte{0x89, 'P', 'N', 'G'}) || bytes.Contains(encBytes, []byte(nik)) {
 		t.Fatal("KYC .enc file leaked plaintext header or NIK")
 	}
@@ -412,12 +413,26 @@ func TestE2E_SetA_Iuran_Keringanan_QRIS_DuplicateProof_DualControl(t *testing.T)
 		t.Fatalf("unexpected unique code/total: kode=%d total=%d", kodeUnik, nomTotal)
 	}
 
-	// Upload unique proof PNG -> 200; uploading same PNG on another payment -> 409 DUPLICATE_BUKTI
+	// Upload unique proof PNG -> 200; verify encrypted .enc in separate bukti subdir + download decrypts PNG
 	proofPNG := makeUniquePNG(t)
 	ust, _, uraw := doMultipartReq(t, e.httpSrv.URL+"/api/v1/pembayaran", memTok, "file", "bukti.png", proofPNG,
 		map[string]string{"pembayaran_id": payID, "catatan_pembayar": "Transfer QRIS"}, nil)
 	if ust != http.StatusOK {
 		t.Fatalf("upload bukti failed: %d %s", ust, string(uraw))
+	}
+	proofEncPath := filepath.Join(e.kycDir, "bukti", "bukti_"+payID+".enc")
+	proofEncBytes, perr := os.ReadFile(proofEncPath)
+	if perr != nil || bytes.HasPrefix(proofEncBytes, []byte{0x89, 'P', 'N', 'G'}) {
+		t.Fatalf("expected encrypted proof file at %s without PNG header, err=%v", proofEncPath, perr)
+	}
+	presp, derr := http.DefaultClient.Do(mustNewReq(t, http.MethodGet, e.httpSrv.URL+"/api/v1/pembayaran?bukti_id="+payID, adminTok))
+	if derr != nil || presp.StatusCode != http.StatusOK {
+		t.Fatalf("admin fetch bukti status=%v err=%v", presp, derr)
+	}
+	decProof, _ := io.ReadAll(presp.Body)
+	_ = presp.Body.Close()
+	if !bytes.Equal(decProof, proofPNG) {
+		t.Fatal("decrypted proof bytes do not match uploaded PNG")
 	}
 
 	// Verify dual-control violation when Bendahara creates tunai payment then tries verifying own payment
@@ -507,7 +522,12 @@ func TestE2E_SetA_Katalog_Checkout_DaftarAntar_And_SetB_Isolation(t *testing.T) 
 		t.Fatalf("idempotent checkout replay failed: %d %v", o2St, o2Body)
 	}
 
-	// Transition order to diproses, then check daftar-antar CSV neutralization + laporan penjualan
+	// Verify stock is NOT deducted at checkout (still 10), then deducts to 8 when processed, and QRIS order deducts to 5 only after payment approval
+	if got := lookupProdukStock(t, eA, sku); got != 10 {
+		t.Fatalf("expected stock unchanged (10) right after checkout, got %d", got)
+	}
+
+	// Transition cash order to diproses -> deducts stock (10 -> 8), then check daftar-antar CSV neutralization + laporan penjualan
 	ordID := o1Body["data"].(map[string]interface{})["id"].(string)
 	pst, _, praw := doJSONReq(t, http.MethodPatch, eA.httpSrv.URL+"/api/v1/pesanan/"+ordID+"/status", petugasTok, map[string]string{
 		"status": "diproses", "catatan": "Siap diantar E2E",
@@ -515,6 +535,10 @@ func TestE2E_SetA_Katalog_Checkout_DaftarAntar_And_SetB_Isolation(t *testing.T) 
 	if pst != http.StatusOK {
 		t.Fatalf("update pesanan status failed: %d %s", pst, string(praw))
 	}
+	if got := lookupProdukStock(t, eA, sku); got != 8 {
+		t.Fatalf("expected stock 8 after cash order diproses, got %d", got)
+	}
+	verifyQRISOrderStockDeduction(t, eA, memTok, prodID, sku, 8)
 	_, _, csvRaw := doJSONReq(t, http.MethodGet, eA.httpSrv.URL+"/api/v1/pesanan/daftar-antar?format=csv", petugasTok, nil, nil)
 	if !bytes.Contains(csvRaw, []byte("'=CMD()")) {
 		t.Fatalf("expected formula neutralization in daftar-antar CSV:\n%s", string(csvRaw))
@@ -549,4 +573,60 @@ func mustNewReq(t *testing.T, method, url, bearer string) *http.Request {
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	return req
+}
+
+func lookupProdukStock(t *testing.T, e *e2eEnv, sku string) int {
+	t.Helper()
+	st, body, raw := doJSONReq(t, http.MethodGet, e.httpSrv.URL+"/api/v1/katalog/produk?q="+sku, "", nil, nil)
+	if st != http.StatusOK {
+		t.Fatalf("lookup produk %s failed: %d %s", sku, st, string(raw))
+	}
+	items := body["data"].([]interface{})
+	if len(items) == 0 {
+		t.Fatalf("produk %s not found", sku)
+	}
+	return int(items[0].(map[string]interface{})["stok"].(float64))
+}
+
+func verifyQRISOrderStockDeduction(t *testing.T, e *e2eEnv, memTok, prodID, sku string, curStock int) {
+	t.Helper()
+	adminTok := loginSession(t, e, "admin@kopdes-test.local", e.seedPwd, testseed.DeterministicTOTPSecret(e.appCfg, "admin@kopdes-test.local"))
+	oSt, oBody, oRaw := doJSONReq(t, http.MethodPost, e.httpSrv.URL+"/api/v1/toko/checkout", memTok, map[string]interface{}{
+		"items": []map[string]interface{}{{"produk_id": prodID, "kuantitas": 3}},
+		"metode_pengiriman": "ambil_sendiri", "metode_pembayaran": "qris",
+		"nama_penerima": "Anggota Satu", "hp_penerima": "08110000004",
+	}, map[string]string{"Idempotency-Key": "qris-ord-" + uuid.NewString()})
+	if oSt != http.StatusCreated {
+		t.Fatalf("qris checkout failed: %d %s", oSt, string(oRaw))
+	}
+	ordID := oBody["data"].(map[string]interface{})["id"].(string)
+	if got := lookupProdukStock(t, e, sku); got != curStock {
+		t.Fatalf("expected stock %d after qris checkout (not yet verified), got %d", curStock, got)
+	}
+	pSt, pBody, pRaw := doJSONReq(t, http.MethodPost, e.httpSrv.URL+"/api/v1/pembayaran", memTok, map[string]interface{}{
+		"jenis_transaksi": "pesanan", "metode": "qris", "pesanan_id": ordID,
+	}, map[string]string{"Idempotency-Key": "qris-pay-" + uuid.NewString()})
+	if pSt != http.StatusCreated {
+		t.Fatalf("create qris order payment failed: %d %s", pSt, string(pRaw))
+	}
+	payObj := pBody["data"].(map[string]interface{})["pembayaran"].(map[string]interface{})
+	payID := payObj["id"].(string)
+	nomTotal := int64(payObj["nominal_total"].(float64))
+	uSt, _, uRaw := doMultipartReq(t, e.httpSrv.URL+"/api/v1/pembayaran", memTok, "file", "bukti_ord.png", makeUniquePNG(t),
+		map[string]string{"pembayaran_id": payID}, nil)
+	if uSt != http.StatusOK {
+		t.Fatalf("upload qris order proof failed: %d %s", uSt, string(uRaw))
+	}
+	if got := lookupProdukStock(t, e, sku); got != curStock {
+		t.Fatalf("expected stock %d after proof upload (pending admin decision), got %d", curStock, got)
+	}
+	vSt, _, vRaw := doJSONReq(t, http.MethodPost, e.httpSrv.URL+"/api/v1/pembayaran/"+payID+"/verifikasi", adminTok, map[string]interface{}{
+		"keputusan": "setuju", "nominal_dibayar": nomTotal, "alasan": "Pembayaran pesanan valid",
+	}, nil)
+	if vSt != http.StatusOK {
+		t.Fatalf("verify qris order payment failed: %d %s", vSt, string(vRaw))
+	}
+	if got := lookupProdukStock(t, e, sku); got != curStock-3 {
+		t.Fatalf("expected stock %d after admin setuju, got %d", curStock-3, got)
+	}
 }

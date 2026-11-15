@@ -17,6 +17,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 type VerifyInput struct {
@@ -26,11 +27,11 @@ type VerifyInput struct {
 	SelesaikanTindakLanjut  bool   `json:"selesaikan_tindak_lanjut,omitempty"`
 }
 
-func (s *Service) proofTargetPath(bayarID uuid.UUID, ext string) (string, error) {
+func (s *Service) proofTargetPath(bayarID uuid.UUID) (string, error) {
 	if s.cfg.ProofStorageDir == "" {
 		return "", response.NewDomainError(http.StatusInternalServerError, "STORAGE_NOT_CONFIGURED", "Direktori penyimpanan bukti belum siap")
 	}
-	name := "bukti_" + bayarID.String() + ext
+	name := "bukti_" + bayarID.String() + ".enc"
 	full := filepath.Join(s.cfg.ProofStorageDir, name)
 	if !strings.HasPrefix(full, s.cfg.ProofStorageDir+string(filepath.Separator)) {
 		return "", fmt.Errorf("path bukti keluar dari direktori")
@@ -54,7 +55,7 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	cur, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, ext, buktiHash, rawBytes)
+	cur, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, buktiHash, rawBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +85,7 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	return &updated, nil
 }
 
-func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, ext, buktiHash string, rawBytes []byte) (db.GetPembayaranForUpdateRow, error) {
+func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, buktiHash string, rawBytes []byte) (db.GetPembayaranForUpdateRow, error) {
 	cur, err := qtx.GetPembayaranForUpdate(ctx, idPG)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cur, response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
@@ -98,15 +99,53 @@ func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, cl
 	if _, err := qtx.GetPembayaranByBuktiHash(ctx, response.ToPGText(buktiHash)); err == nil {
 		return cur, response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti transfer yang sama sudah pernah digunakan")
 	}
-	target, err := s.proofTargetPath(response.FromPGUUID(cur.ID), ext)
-	if err != nil {
+	bayarUUID := response.FromPGUUID(cur.ID)
+	if err := s.saveEncryptedProofFile(bayarUUID, rawBytes); err != nil {
 		return cur, err
 	}
-	// #nosec G304 -- target dibangun dari UUID tervalidasi dan prefix direktori terkontrol
-	if err := os.WriteFile(target, rawBytes, 0o600); err != nil {
-		return cur, fmt.Errorf("simpan berkas bukti: %w", err)
-	}
 	return cur, nil
+}
+
+func (s *Service) saveEncryptedProofFile(bayarUUID uuid.UUID, rawBytes []byte) error {
+	target, err := s.proofTargetPath(bayarUUID)
+	if err != nil {
+		return err
+	}
+	dataToWrite := rawBytes
+	if s.cfg.KeyProvider != nil {
+		aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
+		cipherBytes, encErr := s.cfg.KeyProvider.EncryptWithAAD(rawBytes, aad)
+		if encErr != nil {
+			return fmt.Errorf("enkripsi berkas bukti: %w", encErr)
+		}
+		dataToWrite = cipherBytes
+	}
+	// #nosec G304 -- target dibangun dari UUID tervalidasi dan prefix direktori terkontrol
+	if err := os.WriteFile(target, dataToWrite, 0o600); err != nil {
+		return fmt.Errorf("simpan berkas bukti: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) readDecryptedProofFile(bayarUUID uuid.UUID) ([]byte, string, error) {
+	target, err := s.proofTargetPath(bayarUUID)
+	if err != nil {
+		return nil, "", err
+	}
+	// #nosec G304 -- target diverifikasi proofTargetPath dari UUID
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
+	}
+	if s.cfg.KeyProvider != nil {
+		aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
+		plain, decErr := s.cfg.KeyProvider.DecryptWithAAD(raw, aad)
+		if decErr != nil {
+			return nil, "", fmt.Errorf("dekripsi berkas bukti: %w", decErr)
+		}
+		raw = plain
+	}
+	return raw, http.DetectContentType(raw), nil
 }
 
 func validateBuktiAttachEligibility(claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow) error {
@@ -140,20 +179,7 @@ func (s *Service) ReadBukti(ctx context.Context, claims *middleware.SessionClaim
 	if row.BuktiUrl == "" {
 		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_NOT_FOUND", "Bukti belum diunggah")
 	}
-	ext := ".jpg"
-	if strings.Contains(row.BuktiUrl, ".png") {
-		ext = ".png"
-	}
-	target, err := s.proofTargetPath(response.FromPGUUID(row.ID), ext)
-	if err != nil {
-		return nil, "", err
-	}
-	// #nosec G304 -- target diverifikasi proofTargetPath dari UUID
-	raw, err := os.ReadFile(target)
-	if err != nil {
-		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
-	}
-	return raw, http.DetectContentType(raw), nil
+	return s.readDecryptedProofFile(response.FromPGUUID(row.ID))
 }
 
 func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.SessionClaims, bayarIDStr string, in VerifyInput, ip string) (*db.VerifyPembayaranDecisionRow, error) {
@@ -287,13 +313,44 @@ func markAllocatedTargetsPaidTx(ctx context.Context, qtx *db.Queries, bayarID pg
 			}
 		}
 		if al.PesananID.Valid {
-			if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
-				Status: "dibayar",
-				ID:     al.PesananID,
-			}); err != nil {
+			if err := markPesananPaidWithStockTx(ctx, qtx, al.PesananID); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func markPesananPaidWithStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID) error {
+	ord, err := qtx.GetPesananForUpdate(ctx, pesananID)
+	if err != nil {
+		return err
+	}
+	if ord.Status == "batal" {
+		return response.NewDomainError(http.StatusConflict, "PESANAN_ALREADY_CANCELLED", "Pesanan sudah dibatalkan")
+	}
+	if ord.Status == "baru" || ord.Status == "menunggu_pembayaran" || ord.Status == "menunggu_verifikasi" {
+		items, err := qtx.ListPesananItems(ctx, pesananID)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			if _, err := qtx.DecrementProdukStock(ctx, db.DecrementProdukStockParams{
+				ID:  it.ProdukID,
+				Qty: it.Kuantitas,
+			}); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+it.NamaProduk+" tidak mencukupi untuk menyetujui pembayaran")
+				}
+				return err
+			}
+		}
+	}
+	if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
+		Status: "dibayar",
+		ID:     pesananID,
+	}); err != nil {
+		return err
 	}
 	return nil
 }

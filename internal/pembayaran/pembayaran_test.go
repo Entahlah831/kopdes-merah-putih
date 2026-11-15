@@ -1,16 +1,21 @@
 package pembayaran
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 func TestPickRandomUniqueCode(t *testing.T) {
@@ -45,5 +50,37 @@ func TestValidateProofImageAndPaymentsGuard(t *testing.T) {
 	var de *response.DomainError
 	if !errors.As(err, &de) || de.Status != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 PAYMENTS_DISABLED, got %v", err)
+	}
+}
+
+func TestProofFileEncryptionRoundTrip(t *testing.T) {
+	pngBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	dir := filepath.Join(t.TempDir(), "bukti")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := security.NewMasterKeyProvider("v1", "k1", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{cfg: Config{ProofStorageDir: dir, KeyProvider: kp}}
+	id := uuid.New()
+	if err := svc.saveEncryptedProofFile(id, pngBytes); err != nil {
+		t.Fatalf("saveEncryptedProofFile: %v", err)
+	}
+	target := filepath.Join(dir, "bukti_"+id.String()+".enc")
+	enc, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("expected encrypted proof file %s: %v", target, err)
+	}
+	if bytes.HasPrefix(enc, []byte{0x89, 'P', 'N', 'G'}) || !strings.HasPrefix(string(enc), "v1:k1:") {
+		t.Fatal("proof file on disk must be AES-GCM ciphertext, not plaintext PNG")
+	}
+	plain, mime, err := svc.readDecryptedProofFile(id)
+	if err != nil {
+		t.Fatalf("readDecryptedProofFile: %v", err)
+	}
+	if mime != "image/png" || !bytes.Equal(plain, pngBytes) {
+		t.Fatalf("decrypted proof mismatch: mime=%s len=%d", mime, len(plain))
 	}
 }

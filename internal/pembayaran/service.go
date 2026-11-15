@@ -27,6 +27,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/security"
 )
 
 type Config struct {
@@ -41,6 +42,7 @@ type Config struct {
 	Timezone           string
 	UploadMaxBytes     int64
 	ProofStorageDir    string
+	KeyProvider        security.KeyProvider
 	TrustedProxies     []string
 }
 

@@ -165,8 +165,13 @@ func (s *Service) UpdateStatus(ctx context.Context, claims *middleware.SessionCl
 	if err := authorizeOrderTransition(claims, cur, st); err != nil {
 		return nil, err
 	}
+	if !orderHadDeductedStock(cur.Status) && orderHadDeductedStock(st) {
+		if err := deductOrderStockTx(ctx, qtx, cur.ID); err != nil {
+			return nil, err
+		}
+	}
 	if st == "batal" && cur.Status != "batal" {
-		if err := restoreOrderResourcesTx(ctx, qtx, cur.ID, cur.PromoID); err != nil {
+		if err := restoreOrderResourcesTx(ctx, qtx, cur.ID, cur.PromoID, orderHadDeductedStock(cur.Status)); err != nil {
 			return nil, err
 		}
 	}
@@ -209,14 +214,39 @@ func authorizeOrderTransition(claims *middleware.SessionClaims, cur db.GetPesana
 	return nil
 }
 
-func restoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesananID, promoID pgtype.UUID) error {
+func orderHadDeductedStock(status string) bool {
+	return status == "dibayar" || status == "diproses" || status == "diantar" || status == "siap_diambil" || status == "selesai"
+}
+
+func deductOrderStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID) error {
 	items, err := qtx.ListPesananItems(ctx, pesananID)
 	if err != nil {
 		return err
 	}
 	for _, it := range items {
-		if err := qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas}); err != nil {
+		if _, err := qtx.DecrementProdukStock(ctx, db.DecrementProdukStockParams{
+			ID:  it.ProdukID,
+			Qty: it.Kuantitas,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+it.NamaProduk+" tidak mencukupi")
+			}
 			return err
+		}
+	}
+	return nil
+}
+
+func restoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesananID, promoID pgtype.UUID, restoreStock bool) error {
+	if restoreStock {
+		items, err := qtx.ListPesananItems(ctx, pesananID)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			if err := qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas}); err != nil {
+				return err
+			}
 		}
 	}
 	if promoID.Valid {
@@ -298,7 +328,7 @@ func (s *Service) ExpireUnpaidOrders(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ambil pesanan kedaluwarsa: %w", err)
 	}
 	for _, row := range expired {
-		if err := restoreOrderResourcesTx(ctx, qtx, row.ID, row.PromoID); err != nil {
+		if err := restoreOrderResourcesTx(ctx, qtx, row.ID, row.PromoID, false); err != nil {
 			return 0, err
 		}
 		if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{

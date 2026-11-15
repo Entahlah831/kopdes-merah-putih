@@ -133,6 +133,9 @@ func (s *Service) changeAuthenticatedPassword(ctx context.Context, claims *middl
 }
 
 func (s *Service) UpdatePengaturan(ctx context.Context, claims *middleware.SessionClaims, in PengaturanInput, ip string) (db.Pengaturan, error) {
+	if strings.TrimSpace(in.NamaKoperasi) == "" {
+		return db.Pengaturan{}, response.NewDomainError(http.StatusBadRequest, "INVALID_NAMA_KOPERASI", "nama_koperasi wajib diisi")
+	}
 	if in.QRISUniqueDigits == 0 {
 		in.QRISUniqueDigits = 3
 	}

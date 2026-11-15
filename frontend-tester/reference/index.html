@@ -2,53 +2,45 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <title>Referensi Minimal Frontend — Kopdes Merah Putih</title>
+  <title>Referensi Integrasi Frontend - Kopdes Merah Putih</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; margin: 16px; color: #111; background: #fff; }
-    fieldset { margin: 12px 0; padding: 10px 14px; border: 1px solid #999; }
-    pre { border: 1px solid #ccc; padding: 8px; overflow-x: auto; font-size: 12px; }
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
-  <h1>Halaman Referensi Minimal Kopdes Merah Putih</h1>
-  <p>Implementasi polos berpanduan SDK <code>docs/frontend/</code> (tanpa framework, tanpa build step, tanpa CDN, tanpa <code>localStorage</code>/<code>sessionStorage</code>/cookie).</p>
-  <nav>
-    <ul>
-      <li><a href="login.html">Referensi Login &amp; MFA (3 Cabang + Single-Flight)</a></li>
-      <li><a href="pendaftaran.html">Referensi Pendaftaran &amp; Unggah KYC</a></li>
-      <li><a href="pembayaran-qris.html">Referensi Pembayaran QRIS, Kode Unik &amp; Polling</a></li>
-      <li><a href="../index.html">Kembali ke Frontend Tester Utama (Lab Belajar)</a></li>
-    </ul>
-  </nav>
-  <fieldset>
-    <legend>Status Bootstrap <code>GET /api/v1/public/config</code></legend>
-    <button type="button" id="btnRefReloadConfig">Muat Konfigurasi Publik</button>
-    <div id="refConfigStatus">Memuat...</div>
-    <pre id="refConfigPre">{}</pre>
-  </fieldset>
+  <h1>Referensi Integrasi HTML Murni — Kopdes Merah Putih</h1>
+  <p>
+    <a href="../index.html">Kembali ke Frontend Tester Utama</a> |
+    <a href="pendaftaran.html">1. Pendaftaran &amp; KYC</a> |
+    <a href="login.html">2. Login Opaque &amp; MFA</a> |
+    <a href="pembayaran-qris.html">3. Pembayaran QRIS</a>
+  </p>
+  <h2>Konfigurasi Publik &amp; Katalog Produk Live</h2>
+  <p id="status">Memuat /config.json ...</p>
+  <button id="btnRefresh" type="button">Muat Ulang Public Config &amp; Katalog</button>
+  <h3>GET /api/v1/public/config</h3>
+  <pre id="pubConfigOut">-</pre>
+  <h3>GET /api/v1/katalog/produk</h3>
+  <pre id="katalogOut">-</pre>
   <script>
-    (function () {
-      "use strict";
-      async function load() {
-        const stEl = document.getElementById("refConfigStatus");
-        const preEl = document.getElementById("refConfigPre");
-        try {
-          const cfgResp = await fetch("/config.json", { cache: "no-store" });
-          const testerCfg = await cfgResp.json();
-          const apiBase = String(testerCfg.api_public_url || "").replace(/\/+$/, "");
-          const t0 = Date.now();
-          const pubResp = await fetch(apiBase + "/api/v1/public/config", { cache: "no-store" });
-          const pubJson = await pubResp.json();
-          const skewMs = pubJson?.data?.server_unix_ms ? Math.trunc(pubJson.data.server_unix_ms - Date.now()) : 0;
-          stEl.textContent = "OK HTTP " + pubResp.status + " | API v" + (pubJson?.data?.api_version || "-") + " | Selisih jam: " + skewMs + " ms (" + (Date.now() - t0) + " ms RTT)";
-          preEl.textContent = JSON.stringify(pubJson, null, 2);
-        } catch (err) {
-          stEl.textContent = "Gagal: " + (err && err.message ? err.message : String(err));
-        }
+    "use strict";
+    async function loadReferenceHub() {
+      const st = document.getElementById("status");
+      try {
+        const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+        const apiBase = ui.api_public_url.replace(/\/+$/, "");
+        st.textContent = "Terhubung ke API: " + apiBase + " (APP_ENV=" + ui.app_env + ")";
+        const pubResp = await fetch(apiBase + "/api/v1/public/config");
+        document.getElementById("pubConfigOut").textContent = JSON.stringify(await pubResp.json(), null, 2);
+        const katResp = await fetch(apiBase + "/api/v1/katalog/produk");
+        document.getElementById("katalogOut").textContent = JSON.stringify(await katResp.json(), null, 2);
+      } catch (e) {
+        st.textContent = "Error: " + e.message;
       }
-      document.getElementById("btnRefReloadConfig").addEventListener("click", load);
-      load();
-    })();
+    }
+    document.getElementById("btnRefresh").addEventListener("click", loadReferenceHub);
+    document.addEventListener("DOMContentLoaded", loadReferenceHub);
   </script>
 </body>
 </html>

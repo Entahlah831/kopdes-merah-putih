@@ -2,82 +2,96 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <title>Referensi Pendaftaran &amp; KYC — Kopdes Merah Putih</title>
+  <title>Referensi Pendaftaran &amp; KYC - Kopdes Merah Putih</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; margin: 16px; color: #111; background: #fff; }
-    fieldset { margin: 12px 0; padding: 10px 14px; border: 1px solid #999; }
-    pre { border: 1px solid #ccc; padding: 8px; overflow-x: auto; font-size: 12px; }
-    label { display: block; margin: 6px 0; }
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    fieldset { border: 1px solid #000; padding: 10px; margin-bottom: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
-  <h1>Referensi Formulir Pendaftaran Anggota &amp; Validasi KYC</h1>
-  <p><a href="index.html">Daftar Referensi</a> | <a href="../index.html">Tester Utama</a></p>
-  <div id="regLimitsInfo" role="status">Memuat batas unggahan dari /api/v1/public/config...</div>
+  <h1>Referensi Pendaftaran Anggota &amp; Unggah Berkas KYC</h1>
+  <p><a href="index.html">Hub Referensi</a> | <a href="../index.html">Tester Utama</a></p>
 
   <fieldset>
-    <legend>1. Pratinjau Penyamaran NIK &amp; Validasi Berkas KYC Sisi Klien</legend>
-    <label>Contoh NIK (hanya disamarkan di memori, tidak disimpan): <input type="text" id="refNikInput" maxlength="16" value="3201010101900001"></label>
-    <p>Pratinjau <code>nik_masked</code>: <strong id="refNikMasked">-</strong></p>
-    <label>Pilih File KTP (MIME &amp; Batas Ukuran dari Server): <input type="file" id="refKycFileInput"></label>
-    <label>Jenis Dokumen: <select id="refKycDocType"></select></label>
-    <p id="refFileValidationMsg" role="status">Belum ada berkas dipilih.</p>
-    <pre id="refKycInfoPre">{}</pre>
+    <legend>1. POST /api/v1/public/pendaftaran</legend>
+    <label>Nama Lengkap: <input id="namaInput" type="text" value="Dewi Referensi"></label><br>
+    <label>Email: <input id="emailInput" type="email" size="30"></label><br>
+    <label>NIK (16 digit): <input id="nikInput" type="text" size="20"></label><br>
+    <label>No HP: <input id="hpInput" type="text" size="18"></label><br>
+    <label>Tanggal Lahir: <input id="tglInput" type="text" value="1995-07-07"></label><br>
+    <label>Alamat: <input id="alamatInput" type="text" value="Jl. Desa Referensi RT 01"></label><br>
+    <label>Pekerjaan: <input id="kerjaInput" type="text" value="Wiraswasta"></label><br>
+    <button id="btnDaftar" type="button">Ajukan Pendaftaran</button>
   </fieldset>
 
+  <fieldset>
+    <legend>2. POST /api/v1/public/pendaftaran/{id}/dokumen (X-Upload-Token)</legend>
+    <label>ID Pendaftaran: <input id="regIdInput" type="text" size="40"></label><br>
+    <label>X-Upload-Token: <input id="uploadTokInput" type="text" size="50"></label><br>
+    <label>Tipe Dokumen: <select id="tipeSelect"><option value="ktp">ktp</option><option value="selfie_ktp">selfie_ktp</option><option value="kk">kk</option></select></label><br>
+    <label>Berkas JPEG/PNG: <input id="fileInput" type="file"></label><br>
+    <button id="btnUpload" type="button">Unggah Dokumen KYC</button>
+  </fieldset>
+
+  <pre id="out">-</pre>
   <script>
-    (function () {
-      "use strict";
-      let pubCfg = null;
-      function maskNik(raw) {
-        const d = String(raw || "").replace(/\D/g, "");
-        return d.length >= 8 ? d.slice(0, 4) + "*".repeat(d.length - 8) + d.slice(-4) : "****************";
-      }
-      function updateMask() {
-        document.getElementById("refNikMasked").textContent = maskNik(document.getElementById("refNikInput").value);
-      }
-      async function boot() {
-        const cfg = await (await fetch("/config.json", { cache: "no-store" })).json();
-        const apiBase = String(cfg.api_public_url || "").replace(/\/+$/, "");
-        const pub = await (await fetch(apiBase + "/api/v1/public/config")).json();
-        pubCfg = pub.data;
-        const limits = pubCfg.upload_limits;
-        document.getElementById("regLimitsInfo").textContent =
-          "Maks KYC: " + (limits.max_kyc_upload_bytes / (1024 * 1024)).toFixed(1) + " MB | MIME: " + limits.allowed_mime_types.join(", ") +
-          " | Pendaftaran aktif: " + pubCfg.features.registration_enabled;
-        document.getElementById("refKycFileInput").setAttribute("accept", limits.allowed_mime_types.join(","));
-        const sel = document.getElementById("refKycDocType");
-        for (const t of pubCfg.kyc_supported_document_types || ["ktp"]) {
-          const opt = document.createElement("option");
-          opt.value = t;
-          opt.textContent = (pubCfg.kyc_required_document_types || []).includes(t) ? t + " (wajib)" : t;
-          sel.appendChild(opt);
-        }
-        document.getElementById("refKycInfoPre").textContent = JSON.stringify({
-          upload_limits: limits,
-          kyc_required_document_types: pubCfg.kyc_required_document_types,
-          kyc_supported_document_types: pubCfg.kyc_supported_document_types
-        }, null, 2);
-      }
-      document.getElementById("refNikInput").addEventListener("input", updateMask);
-      document.getElementById("refKycFileInput").addEventListener("change", function (ev) {
-        const f = ev.target.files && ev.target.files[0];
-        const out = document.getElementById("refFileValidationMsg");
-        if (!f || !pubCfg) return;
-        const limits = pubCfg.upload_limits;
-        if (!limits.allowed_mime_types.includes(f.type)) {
-          out.textContent = "DITOLAK: Tipe MIME '" + (f.type || "unknown") + "' tidak diizinkan.";
-          return;
-        }
-        if (f.size > limits.max_kyc_upload_bytes) {
-          out.textContent = "PERLU KOMPRESI: Ukuran " + f.size + " byte melebihi max_kyc_upload_bytes (" + limits.max_kyc_upload_bytes + ").";
-          return;
-        }
-        out.textContent = "VALID: " + f.name + " (" + f.type + ", " + f.size + " byte). Siap unggah lewat FormData.";
+    "use strict";
+    function randDigits(n) {
+      const a = new Uint32Array(n);
+      crypto.getRandomValues(a);
+      return Array.from(a, x => String(x % 10)).join("");
+    }
+    document.addEventListener("DOMContentLoaded", function () {
+      document.getElementById("emailInput").value = "ref-" + randDigits(5) + "@kopdes-test.local";
+      document.getElementById("nikInput").value = "3203" + randDigits(12);
+      document.getElementById("hpInput").value = "0813" + randDigits(8);
+    });
+    async function getApiBase() {
+      const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+      return ui.api_public_url.replace(/\/+$/, "");
+    }
+    document.getElementById("btnDaftar").addEventListener("click", async function () {
+      const base = await getApiBase();
+      const resp = await fetch(base + "/api/v1/public/pendaftaran", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nama_lengkap: document.getElementById("namaInput").value,
+          email: document.getElementById("emailInput").value,
+          nik: document.getElementById("nikInput").value,
+          no_hp: document.getElementById("hpInput").value,
+          tanggal_lahir: document.getElementById("tglInput").value,
+          alamat: document.getElementById("alamatInput").value,
+          pekerjaan: document.getElementById("kerjaInput").value
+        })
       });
-      updateMask();
-      boot();
-    })();
+      const json = await resp.json();
+      if (json.data) {
+        document.getElementById("regIdInput").value = json.data.id || "";
+        document.getElementById("uploadTokInput").value = json.data.upload_token || "";
+      }
+      document.getElementById("out").textContent = "HTTP " + resp.status + "\n" + JSON.stringify(json, null, 2);
+    });
+    document.getElementById("btnUpload").addEventListener("click", async function () {
+      const base = await getApiBase();
+      const id = document.getElementById("regIdInput").value.trim();
+      const tok = document.getElementById("uploadTokInput").value.trim();
+      const fileEl = document.getElementById("fileInput");
+      if (!fileEl.files || !fileEl.files[0]) {
+        document.getElementById("out").textContent = "Pilih berkas PNG atau JPEG terlebih dahulu.";
+        return;
+      }
+      const fd = new FormData();
+      fd.append("tipe_dokumen", document.getElementById("tipeSelect").value);
+      fd.append("file", fileEl.files[0]);
+      const resp = await fetch(base + "/api/v1/public/pendaftaran/" + id + "/dokumen", {
+        method: "POST",
+        headers: { "X-Upload-Token": tok },
+        body: fd
+      });
+      document.getElementById("out").textContent = "HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2);
+    });
   </script>
 </body>
 </html>

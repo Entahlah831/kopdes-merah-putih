@@ -11,18 +11,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// HashPasswordWithCost menghasilkan hash bcrypt dengan biaya yang dapat dikonfigurasi (BCRYPT_COST).
+// HashPasswordWithCost menghasilkan hash bcrypt dengan biaya yang dikonfigurasi.
 func HashPasswordWithCost(password string, cost int) (string, error) {
 	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
 		return "", fmt.Errorf("bcrypt cost harus antara %d dan %d, dapat %d", bcrypt.MinCost, bcrypt.MaxCost, cost)
 	}
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-	return string(bytes), err
+	b, err := bcrypt.GenerateFromPassword([]byte(password), cost)
+	return string(b), err
 }
 
 // DecodeSecretMaterial menguraikan materi kunci dari format hex (>= 32 byte), base64 (>= 32 byte), atau raw UTF-8.
 func DecodeSecretMaterial(secret string) []byte {
 	s := strings.TrimSpace(secret)
+	if idx := strings.IndexByte(s, '='); idx > 0 && strings.Contains(s[:idx], ":") {
+		s = strings.TrimSpace(s[idx+1:])
+	}
 	if dec, err := hex.DecodeString(s); err == nil && len(dec) >= 32 {
 		return dec
 	}
@@ -32,9 +35,20 @@ func DecodeSecretMaterial(secret string) []byte {
 	return []byte(s)
 }
 
-// MultiKeyProvider mendukung rotasi kunci AES-256-GCM tanpa waktu henti:
-// enkripsi baru memakai active provider (version:keyID), sedangkan dekripsi
-// memilih provider berdasarkan prefix "version:keyID:" pada ciphertext.
+// ParseKeyIDSpec mengekstrak version & keyID dari spec ("v1:k1" -> "v1","k1").
+func ParseKeyIDSpec(spec string) (string, string) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "v1", "k1"
+	}
+	parts := strings.SplitN(spec, ":", 2)
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1]
+	}
+	return "v1", spec
+}
+
+// MultiKeyProvider mendukung rotasi kunci AES-256-GCM tanpa waktu henti.
 type MultiKeyProvider struct {
 	activeVersion string
 	activeKeyID   string
@@ -42,8 +56,6 @@ type MultiKeyProvider struct {
 	providers     map[string]*MasterKeyProvider
 }
 
-// NewMultiKeyProviderFromConfig membangun MultiKeyProvider dari kunci aktif (AES_KEY_VERSION, AES_KEY_ID, AES_MASTER_KEY)
-// dan kunci historis pada AES_PREVIOUS_KEYS dengan format "v1:k1=<hex/b64/raw>;v1:k2=<hex/b64/raw>".
 func NewMultiKeyProviderFromConfig(activeVersion, activeKeyID, activeKeyMaterial, previousKeysSpec string) (*MultiKeyProvider, error) {
 	if strings.TrimSpace(activeVersion) == "" {
 		activeVersion = "v1"
@@ -65,9 +77,7 @@ func NewMultiKeyProviderFromConfig(activeVersion, activeKeyID, activeKeyMaterial
 	}
 
 	if strings.TrimSpace(previousKeysSpec) != "" {
-		entries := strings.FieldsFunc(previousKeysSpec, func(r rune) bool {
-			return r == ';' || r == ','
-		})
+		entries := strings.FieldsFunc(previousKeysSpec, func(r rune) bool { return r == ';' || r == ',' })
 		for _, entry := range entries {
 			entry = strings.TrimSpace(entry)
 			if entry == "" {
@@ -75,22 +85,19 @@ func NewMultiKeyProviderFromConfig(activeVersion, activeKeyID, activeKeyMaterial
 			}
 			eq := strings.IndexByte(entry, '=')
 			if eq <= 0 {
-				return nil, fmt.Errorf("entri AES_PREVIOUS_KEYS tidak valid %q (harapkan version:key_id=material)", entry)
+				return nil, fmt.Errorf("entri AES_PREVIOUS_KEYS tidak valid %q", entry)
 			}
 			tag := strings.TrimSpace(entry[:eq])
 			mat := DecodeSecretMaterial(entry[eq+1:])
 			if len(mat) < 32 {
-				return nil, fmt.Errorf("materi kunci AES_PREVIOUS_KEYS untuk %q harus minimal 32 byte", tag)
+				return nil, fmt.Errorf("materi kunci AES_PREVIOUS_KEYS untuk %q harus >= 32 byte", tag)
 			}
-			parts := strings.SplitN(tag, ":", 2)
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				return nil, fmt.Errorf("identifier AES_PREVIOUS_KEYS tidak valid %q (harapkan version:key_id)", tag)
-			}
-			oldKP, err := NewMasterKeyProvider(parts[0], parts[1], mat[:32])
+			ver, kid := ParseKeyIDSpec(tag)
+			oldKP, err := NewMasterKeyProvider(ver, kid, mat[:32])
 			if err != nil {
 				return nil, err
 			}
-			providers[parts[0]+":"+parts[1]+":"] = oldKP
+			providers[ver+":"+kid+":"] = oldKP
 		}
 	}
 
@@ -102,12 +109,14 @@ func NewMultiKeyProviderFromConfig(activeVersion, activeKeyID, activeKeyMaterial
 	}, nil
 }
 
-// EncryptWithAAD selalu mengenkripsi memakai kunci aktif (AES_KEY_VERSION:AES_KEY_ID).
+func (m *MultiKeyProvider) KeyID() string {
+	return m.active.KeyID()
+}
+
 func (m *MultiKeyProvider) EncryptWithAAD(plaintext, aad []byte) ([]byte, error) {
 	return m.active.EncryptWithAAD(plaintext, aad)
 }
 
-// DecryptWithAAD memilih provider sesuai prefix version:keyID agar ciphertext lama tetap terbaca setelah rotasi.
 func (m *MultiKeyProvider) DecryptWithAAD(ciphertext, aad []byte) ([]byte, error) {
 	if bytes.HasPrefix(ciphertext, []byte(m.activeVersion+":"+m.activeKeyID+":")) {
 		return m.active.DecryptWithAAD(ciphertext, aad)
@@ -117,5 +126,5 @@ func (m *MultiKeyProvider) DecryptWithAAD(ciphertext, aad []byte) ([]byte, error
 			return kp.DecryptWithAAD(ciphertext, aad)
 		}
 	}
-	return nil, errors.New("versi kunci atau key_id tidak dikenali pada konfigurasi AES aktif maupun riwayat rotasi")
+	return nil, errors.New("versi kunci atau key_id tidak dikenali pada konfigurasi AES")
 }

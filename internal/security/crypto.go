@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,9 +15,7 @@ import (
 	"net/url"
 	"regexp"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/hkdf"
 )
 
 var (
@@ -24,7 +23,7 @@ var (
 	ErrInvalidKeySize     = errors.New("ukuran kunci AES-256 wajib 32 byte")
 )
 
-// ValidateSecretKey memastikan kunci kriptografis memenuhi standar keamanan minimal (32 byte)
+// ValidateSecretKey memastikan kunci kriptografis memenuhi standar keamanan minimal (32 byte).
 func ValidateSecretKey(name string, key []byte) error {
 	if len(key) < 32 {
 		return fmt.Errorf("secret %s tidak valid: panjang minimal 32 byte (didapat %d byte)", name, len(key))
@@ -32,19 +31,19 @@ func ValidateSecretKey(name string, key []byte) error {
 	return nil
 }
 
-// FormatAAD menyusun Associated Authenticated Data (AAD) untuk AES-256-GCM
-// Format: "table:column:record_id" untuk mencegah ciphertext shuffling/transposition attack
+// FormatAAD menyusun Associated Authenticated Data (AAD) untuk AES-256-GCM.
 func FormatAAD(tableName, columnName, recordID string) []byte {
 	return []byte(fmt.Sprintf("%s:%s:%s", tableName, columnName, recordID))
 }
 
-// KeyProvider mendefinisikan antarmuka manajemen kunci enkripsi dengan AAD
+// KeyProvider mendefinisikan manajemen kunci enkripsi AES-256-GCM dengan AAD dan rotasi key ID.
 type KeyProvider interface {
+	KeyID() string
 	EncryptWithAAD(plaintext, aad []byte) ([]byte, error)
 	DecryptWithAAD(ciphertext, aad []byte) ([]byte, error)
 }
 
-// MasterKeyProvider mengelola enkripsi AES-256-GCM dengan metadata versi kunci & key ID
+// MasterKeyProvider mengelola enkripsi AES-256-GCM dengan prefix versi & key ID.
 type MasterKeyProvider struct {
 	version string
 	keyID   string
@@ -61,29 +60,27 @@ func NewMasterKeyProvider(version, keyID string, masterKey []byte) (*MasterKeyPr
 	if keyID == "" {
 		keyID = "k1"
 	}
-	return &MasterKeyProvider{
-		version: version,
-		keyID:   keyID,
-		key:     masterKey,
-	}, nil
+	return &MasterKeyProvider{version: version, keyID: keyID, key: masterKey}, nil
 }
 
-// EncryptWithAAD mengenkripsi data dengan AES-256-GCM, AAD, dan prefix versi kunci ("v1:key_id:nonce+ciphertext")
+func (kp *MasterKeyProvider) KeyID() string {
+	return kp.version + ":" + kp.keyID
+}
+
 func (kp *MasterKeyProvider) EncryptWithAAD(plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(kp.key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("aes.NewCipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cipher.NewGCM: %w", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("rand nonce: %w", err)
 	}
 	sealed := gcm.Seal(nil, nonce, plaintext, aad)
-
 	prefix := []byte(fmt.Sprintf("%s:%s:", kp.version, kp.keyID))
 	result := make([]byte, len(prefix)+len(nonce)+len(sealed))
 	copy(result, prefix)
@@ -92,7 +89,6 @@ func (kp *MasterKeyProvider) EncryptWithAAD(plaintext, aad []byte) ([]byte, erro
 	return result, nil
 }
 
-// DecryptWithAAD mendekripsi data dan memvalidasi integritas AAD serta prefix versi kunci
 func (kp *MasterKeyProvider) DecryptWithAAD(ciphertext, aad []byte) ([]byte, error) {
 	prefix := []byte(fmt.Sprintf("%s:%s:", kp.version, kp.keyID))
 	if len(ciphertext) < len(prefix)+12+16 {
@@ -101,143 +97,67 @@ func (kp *MasterKeyProvider) DecryptWithAAD(ciphertext, aad []byte) ([]byte, err
 	if !bytes.HasPrefix(ciphertext, prefix) {
 		return nil, errors.New("versi kunci atau key_id tidak cocok")
 	}
-
 	data := ciphertext[len(prefix):]
 	block, err := aes.NewCipher(kp.key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("aes.NewCipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cipher.NewGCM: %w", err)
 	}
-
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
 		return nil, ErrCiphertextTooShort
 	}
-	nonce, actualCiphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, aad)
+	plaintext, err := gcm.Open(nil, data[:nonceSize], data[nonceSize:], aad)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gcm.Open: %w", err)
 	}
 	return plaintext, nil
 }
 
-// DeriveTenantBlindIndexKey menghasilkan sub-kunci HMAC per-koperasi menggunakan HKDF-SHA256
-// Mencegah korelasi blind index lintas koperasi (UU 27/2022 PDP)
-func DeriveTenantBlindIndexKey(masterSecret []byte, koperasiID uuid.UUID) ([]byte, error) {
-	if len(masterSecret) < 32 {
-		return nil, ErrInvalidKeySize
-	}
-	hkdfReader := hkdf.New(sha256.New, masterSecret, koperasiID[:], []byte("kopdes-blind-index-v1"))
-	derivedKey := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, derivedKey); err != nil {
-		return nil, err
-	}
-	return derivedKey, nil
-}
-
-// HashTenantBlindIndex menghitung blind index terisolasi per koperasi
-func HashTenantBlindIndex(value string, masterSecret []byte, koperasiID uuid.UUID) (string, error) {
-	derivedKey, err := DeriveTenantBlindIndexKey(masterSecret, koperasiID)
-	if err != nil {
-		return "", err
-	}
-	mac := hmac.New(sha256.New, derivedKey)
-	mac.Write([]byte(value))
-	return hex.EncodeToString(mac.Sum(nil)), nil
-}
-
-// HashBlindIndex menghitung HMAC-SHA256 hex global (misal untuk email pencarian akun pengguna)
+// HashBlindIndex menghitung HMAC-SHA256 hex untuk pencarian deterministik terenkripsi.
 func HashBlindIndex(value string, secret []byte) string {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(value))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// EncryptAESGCM mengenkripsi data standar tanpa AAD (legacy support)
-func EncryptAESGCM(plaintext, key []byte) ([]byte, error) {
-	if len(key) != 32 {
-		return nil, ErrInvalidKeySize
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+// BlindIndexKeyVersion menghasilkan tag versi kunci blind index non-rahasia dari secret aktif.
+func BlindIndexKeyVersion(secret []byte) string {
+	sum := sha256.Sum256(secret)
+	return "bi-" + hex.EncodeToString(sum[:4])
 }
 
-// DecryptAESGCM mendekripsi data terenkripsi standar tanpa AAD (legacy support)
-func DecryptAESGCM(ciphertext, key []byte) ([]byte, error) {
-	if len(key) != 32 {
-		return nil, ErrInvalidKeySize
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, ErrCiphertextTooShort
-	}
-
-	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
-}
-
-// HashPassword membuat hash bcrypt yang aman dari plaintext password (biaya default = 12 untuk T5)
+// HashPassword membuat hash bcrypt dengan biaya default aman (12).
 func HashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 12)
-	return string(bytes), err
+	b, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	return string(b), err
 }
 
-// CheckPassword memvalidasi kecocokan password plaintext terhadap hash bcrypt
+// CheckPassword memvalidasi kecocokan password plaintext terhadap hash bcrypt.
 func CheckPassword(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil
-}
-
-// GenesisHash merepresentasikan hash awal (64 karakter nol) untuk record pertama pada rantai append-only
-const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
-
-// ComputeHashChain menghitung SHA-256 hash berantai: SHA-256(prev_hash || payload)
-func ComputeHashChain(prevHash string, payload []byte) string {
-	if len(prevHash) != 64 {
-		prevHash = GenesisHash
+	if hash == "" {
+		return false
 	}
-	h := sha256.New()
-	h.Write([]byte(prevHash))
-	h.Write(payload)
-	return hex.EncodeToString(h.Sum(nil))
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-// RedactDSN menyamarkan password pada string DSN/URL koneksi database agar tidak bocor di log
+// DummyBcryptCheck menjalankan bcrypt waktu konstan saat akun tidak ditemukan.
+func DummyBcryptCheck(password string, dummyHash string) {
+	_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
+}
+
+// ConstantTimeEqualHex membandingkan dua string secara waktu konstan.
+func ConstantTimeEqualHex(a, b string) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// RedactDSN menyamarkan password pada string DSN koneksi database agar tidak bocor di log.
 func RedactDSN(dsn string) string {
 	u, err := url.Parse(dsn)
 	if err == nil && u.User != nil {
@@ -246,8 +166,6 @@ func RedactDSN(dsn string) string {
 			return u.String()
 		}
 	}
-
-	// Regex fallback jika format bukan standard URL
 	reURL := regexp.MustCompile(`://([^:]+):([^@]+)@`)
 	if reURL.MatchString(dsn) {
 		return reURL.ReplaceAllString(dsn, `://$1:******@`)

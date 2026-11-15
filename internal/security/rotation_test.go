@@ -52,6 +52,9 @@ func TestHashPasswordWithCost_AndMultiKeyRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultiKeyProviderFromConfig failed: %v", err)
 	}
+	if rotKP.KeyID() != "v2:k2" {
+		t.Fatalf("Expected KeyID() v2:k2, got %q", rotKP.KeyID())
+	}
 
 	// Harus dapat mendekripsi ciphertext lama v1:k1
 	ptFromOld, err := rotKP.DecryptWithAAD(ctOld, aad)

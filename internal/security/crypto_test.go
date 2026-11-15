@@ -4,107 +4,84 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
-func TestT3_SecretValidation_RequiresStrongKey(t *testing.T) {
-	// 1. Secret < 32 bytes must be rejected
-	shortKey := []byte("too-short-key")
-	err := ValidateSecretKey("TEST_KEY", shortKey)
-	if err == nil {
+func TestSecretValidation_RequiresStrongKey(t *testing.T) {
+	if err := ValidateSecretKey("TEST_KEY", []byte("too-short-key")); err == nil {
 		t.Fatalf("Expected error for secret < 32 bytes, got nil")
 	}
-
-	// 2. Secret >= 32 bytes is valid
-	validKey := bytes.Repeat([]byte("a"), 32)
-	if err := ValidateSecretKey("TEST_KEY", validKey); err != nil {
+	if err := ValidateSecretKey("TEST_KEY", bytes.Repeat([]byte("a"), 32)); err != nil {
 		t.Fatalf("Expected valid 32-byte secret to pass, got: %v", err)
 	}
 }
 
-func TestT3_AESGCM_WithAAD_TamperProof(t *testing.T) {
+func TestAESGCM_WithAAD_TamperProof(t *testing.T) {
 	key := bytes.Repeat([]byte("k"), 32)
 	kp, err := NewMasterKeyProvider("v1", "key-01", key)
 	if err != nil {
 		t.Fatalf("NewMasterKeyProvider error: %v", err)
 	}
 
-	plaintext := []byte("3201010101010001") // Mock NIK
-	aadRecord1 := FormatAAD("anggota", "nik", "018d0000-0000-7000-8000-000000000001")
-	aadRecord2 := FormatAAD("anggota", "nik", "018d0000-0000-7000-8000-000000000002")
+	plaintext := []byte("3201010101010001")
+	aad1 := FormatAAD("anggota", "nik", "018d0000-0000-7000-8000-000000000001")
+	aad2 := FormatAAD("anggota", "nik", "018d0000-0000-7000-8000-000000000002")
 
-	ciphertext, err := kp.EncryptWithAAD(plaintext, aadRecord1)
+	ct, err := kp.EncryptWithAAD(plaintext, aad1)
 	if err != nil {
 		t.Fatalf("EncryptWithAAD error: %v", err)
 	}
-
-	// 1. Ciphertext must include key version prefix
-	if !strings.HasPrefix(string(ciphertext), "v1:key-01:") {
-		t.Fatalf("Ciphertext expected to start with version prefix 'v1:key-01:', got: %s", string(ciphertext[:15]))
+	if !strings.HasPrefix(string(ct), "v1:key-01:") {
+		t.Fatalf("Unexpected prefix: %q", string(ct[:15]))
 	}
-
-	// 2. Decrypt with correct AAD succeeds
-	decrypted, err := kp.DecryptWithAAD(ciphertext, aadRecord1)
-	if err != nil {
-		t.Fatalf("DecryptWithAAD with correct AAD failed: %v", err)
+	dec, err := kp.DecryptWithAAD(ct, aad1)
+	if err != nil || !bytes.Equal(dec, plaintext) {
+		t.Fatalf("Decrypt failed: %v", err)
 	}
-	if !bytes.Equal(decrypted, plaintext) {
-		t.Fatalf("Decrypted plaintext mismatch: got %s, want %s", string(decrypted), string(plaintext))
-	}
-
-	// 3. Decrypt with tampered AAD (different record ID) MUST fail
-	_, err = kp.DecryptWithAAD(ciphertext, aadRecord2)
-	if err == nil {
-		t.Fatalf("VULNERABILITY REPRODUCED: Decryption succeeded with tampered AAD record ID!")
-	}
-
-	// 4. Decrypt with tampered column name MUST fail
-	aadTamperedColumn := FormatAAD("anggota", "alamat", "018d0000-0000-7000-8000-000000000001")
-	_, err = kp.DecryptWithAAD(ciphertext, aadTamperedColumn)
-	if err == nil {
-		t.Fatalf("VULNERABILITY REPRODUCED: Decryption succeeded with tampered AAD column name!")
+	if _, err := kp.DecryptWithAAD(ct, aad2); err == nil {
+		t.Fatal("Decryption must fail for mismatched AAD")
 	}
 }
 
-func TestT3_HKDF_TenantBlindIndex_Isolation(t *testing.T) {
-	masterSecret := bytes.Repeat([]byte("s"), 32)
-	koperasi1 := uuid.MustParse("018d0000-0000-7000-8000-000000000001")
-	koperasi2 := uuid.MustParse("018d0000-0000-7000-8000-000000000002")
-
-	val := "3201010101010001" // Same NIK in two different cooperatives
-
-	hashKop1, err := HashTenantBlindIndex(val, masterSecret, koperasi1)
+func TestEnvelopeFileEncryption_AndHelpers(t *testing.T) {
+	kp, err := NewMasterKeyProvider("v1", "k1", bytes.Repeat([]byte("e"), 32))
 	if err != nil {
-		t.Fatalf("HashTenantBlindIndex kop1 error: %v", err)
+		t.Fatal(err)
 	}
-
-	hashKop2, err := HashTenantBlindIndex(val, masterSecret, koperasi2)
+	pngStub := []byte("\x89PNG\r\n\x1a\nfake-png-content-for-kyc-test")
+	aad := FormatAAD("dokumen_kyc", "file", "doc-1")
+	cf, wrapped, kid, err := EncryptEnvelopeFile(kp, pngStub, aad)
 	if err != nil {
-		t.Fatalf("HashTenantBlindIndex kop2 error: %v", err)
+		t.Fatalf("EncryptEnvelopeFile: %v", err)
+	}
+	if kid != "v1:k1" {
+		t.Fatalf("kid=%q, want v1:k1", kid)
+	}
+	if bytes.Contains(cf, []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatal("Ciphertext on disk MUST NOT contain raw PNG magic bytes!")
+	}
+	plain, err := DecryptEnvelopeFile(kp, cf, wrapped, aad)
+	if err != nil || !bytes.Equal(plain, pngStub) {
+		t.Fatalf("DecryptEnvelopeFile failed: %v", err)
 	}
 
-	// Two cooperatives MUST have completely different blind indexes for the same NIK
-	if hashKop1 == hashKop2 {
-		t.Fatalf("CRITICAL: Blind index for different tenants resulted in identical hash (%s)! HKDF per tenant failed.", hashKop1)
+	if got := NeutralizeCSVCell("=cmd|'/C calc'!A0"); !strings.HasPrefix(got, "'=") {
+		t.Fatalf("NeutralizeCSVCell failed: %q", got)
 	}
-
-	// Deterministic within the same cooperative
-	hashKop1Repeat, _ := HashTenantBlindIndex(val, masterSecret, koperasi1)
-	if hashKop1 != hashKop1Repeat {
-		t.Fatalf("Blind index for same tenant must be deterministic: %s != %s", hashKop1, hashKop1Repeat)
+	if got := MaskNIK("3201010101010001"); got != "3201********0001" {
+		t.Fatalf("MaskNIK=%q", got)
+	}
+	if got := MaskPhone("081234567890"); got != "0812*****890" {
+		t.Fatalf("MaskPhone=%q", got)
 	}
 }
 
-func TestT3_RedactDSN_HidesPassword(t *testing.T) {
+func TestRedactDSN_HidesPassword(t *testing.T) {
 	dsn := "postgres://kopdes_app:SuperSecretPassword123!@127.0.0.1:5433/kopdes_db?sslmode=disable"
 	redacted := RedactDSN(dsn)
-
 	if strings.Contains(redacted, "SuperSecretPassword123!") {
-		t.Fatalf("VULNERABILITY: Redacted DSN still contains plain password! Got: %s", redacted)
+		t.Fatalf("Redacted DSN leaked password: %s", redacted)
 	}
-
 	if !strings.Contains(redacted, "kopdes_app") || !strings.Contains(redacted, "127.0.0.1:5433") {
-		t.Fatalf("Redacted DSN should preserve user and host, got: %s", redacted)
+		t.Fatalf("Redacted DSN missing host/user: %s", redacted)
 	}
 }

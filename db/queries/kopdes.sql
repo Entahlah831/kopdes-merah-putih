@@ -18,8 +18,8 @@ SELECT
     u.nama_lengkap AS nama_pembayar,
     rq.nama_merchant,
     rq.nmid,
-    pb.storage_key AS bukti_storage_key,
-    pb.file_hash_sha256,
+    COALESCE(pb.storage_key, '') AS bukti_storage_key,
+    COALESCE(pb.file_hash_sha256, '') AS file_hash_sha256,
     pb.nominal_klaim
 FROM pembayaran p
 JOIN users u ON u.id = p.pembayar_user_id

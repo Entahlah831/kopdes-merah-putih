@@ -143,3 +143,54 @@ func TestV5_Discrepancy04_CreateJenisIuranIncludesKlasifikasiAkuntansi(t *testin
 		t.Fatalf("Expected data.klasifikasi_akuntansi == 'KEPUTUSAN AKUNTAN', got %q (body: %s)", got, rec.Body.String())
 	}
 }
+
+func TestV5_Discrepancy15_AntreanVerifikasiHandlesNullPembayaranBukti(t *testing.T) {
+	env := setupAPITestEnv(t)
+	defer env.Pool.Close()
+
+	billID := env.CreateBill(t, env.AnggotaID, 50000)
+
+	qrisPayload := fmt.Sprintf(
+		`{"tagihan_iuran_ids":[%q],"jenis_transaksi":"iuran_bulanan","anggota_id":%q,"rekening_qris_id":%q}`,
+		billID.String(), env.AnggotaID.String(), env.RekeningID.String(),
+	)
+	reqQRIS := httptest.NewRequest(http.MethodPost, "/api/v1/pembayaran/qris", strings.NewReader(qrisPayload))
+	reqQRIS.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	reqQRIS.Header.Set("Content-Type", "application/json")
+	recQRIS := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(recQRIS, reqQRIS)
+	if recQRIS.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 for POST /pembayaran/qris, got %d (%s)", recQRIS.Code, recQRIS.Body.String())
+	}
+
+	var qrisResp struct {
+		Data struct {
+			PembayaranID string `json:"pembayaran_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recQRIS.Body.Bytes(), &qrisResp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	// Klaim RRN tanpa mengunggah baris pembayaran_bukti memicu status menunggu_verifikasi dengan pb.* = NULL
+	klaimReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/pembayaran/"+qrisResp.Data.PembayaranID+"/bukti",
+		strings.NewReader(`{"referensi_rrn":"RRN-DISC15","catatan":"tanpa baris pembayaran_bukti"}`),
+	)
+	klaimReq.Header.Set("Authorization", "Bearer "+env.AnggotaToken)
+	klaimReq.Header.Set("Content-Type", "application/json")
+	klaimRec := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(klaimRec, klaimReq)
+	if klaimRec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 for POST /pembayaran/{id}/bukti, got %d (%s)", klaimRec.Code, klaimRec.Body.String())
+	}
+
+	antreanReq := httptest.NewRequest(http.MethodGet, "/api/v1/pembayaran/antrean", nil)
+	antreanReq.Header.Set("Authorization", "Bearer "+env.AdminToken)
+	antreanRec := httptest.NewRecorder()
+	env.Server.Router().ServeHTTP(antreanRec, antreanReq)
+	if antreanRec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 for GET /api/v1/pembayaran/antrean, got %d (%s)", antreanRec.Code, antreanRec.Body.String())
+	}
+}

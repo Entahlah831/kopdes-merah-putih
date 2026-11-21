@@ -1,0 +1,263 @@
+=== ENVCHECK SET A ===
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 54 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test, API_PORT=8080
+=== ENVCHECK SET B ===
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 54 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test, API_PORT=18080
+=== ENVCHECK COMPARE ===
+DIFF  AES_MASTER_KEY                   A=***REDACTED***       B=***REDACTED***
+DIFF  AES_PREVIOUS_KEYS                A=                     B=***REDACTED***
+DIFF  ALLOWED_ORIGINS                  A=http://127.0.0.1:3000,http://127.0.0.1:8081,http://localhost:8081 B=http://127.0.0.1:13000,http://127.0.0.1:18081,http://localhost:18081
+DIFF  ALLOW_BEARER_AUTH                A=true                 B=false
+DIFF  API_HOST_PORT                    A=8080                 B=18080
+DIFF  API_PORT                         A=8080                 B=18080
+DIFF  BACKUP_AGE_RECIPIENT             A=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsetaaa B=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsetbbb
+DIFF  BACKUP_DIR                       A=./backups/test_setA  B=./backups/test_setB
+DIFF  BACKUP_RETENTION_DAYS            A=30                   B=14
+DIFF  BLIND_INDEX_SECRET               A=***REDACTED***       B=***REDACTED***
+DIFF  BUKTI_RETENTION_DAYS             A=365                  B=180
+DIFF  DB_HOST_PORT                     A=5433                 B=15433
+DIFF  DB_NAME                          A=kopdes_test          B=kopdes_alt_test
+DIFF  DB_PASSWORD                      A=***REDACTED***       B=***REDACTED***
+DIFF  DB_PORT                          A=5433                 B=15433
+DIFF  FILESVC_PORT                     A=8083                 B=18083
+DIFF  FILESVC_TOKEN                    A=***REDACTED***       B=***REDACTED***
+DIFF  LOGIN_LOCKOUT_DURATION           A=15m                  B=5m
+DIFF  LOGIN_MAX_ATTEMPTS               A=5                    B=3
+DIFF  MFA_REQUIRED_ROLES               A=admin,bendahara      B=admin,bendahara,petugas_toko
+DIFF  PAYMENT_EXPIRY_DURATION          A=15m                  B=20m
+DIFF  PDP_REJECTED_RETENTION_DAYS      A=30                   B=45
+DIFF  PENDING_LIMIT_GLOBAL             A=50                   B=30
+DIFF  PENDING_LIMIT_PER_MEMBER         A=2                    B=3
+DIFF  PILOT_MAX_PER_DAY                A=2000000              B=2500000
+DIFF  PILOT_MAX_PER_TX                 A=500000               B=750000
+DIFF  POSTGRES_PASSWORD                A=***REDACTED***       B=***REDACTED***
+DIFF  QRIS_UNIQUE_DIGITS               A=3                    B=4
+DIFF  SESSION_ABS_TTL                  A=12h                  B=8h
+DIFF  SESSION_IDLE_TTL                 A=30m                  B=20m
+DIFF  STOCK_HOLD_MINUTES               A=60                   B=90
+DIFF  STORAGE_BUKTI_DIR                A=./storage/bukti_test_setA B=./storage/bukti_test_setB
+DIFF  STORAGE_KYC_DIR                  A=./storage/kyc_test_setA B=./storage/kyc_test_setB
+DIFF  TRUSTED_PROXIES                  A=127.0.0.1/32         B=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12
+DIFF  UI_PORT                          A=8081                 B=18081
+DIFF  WORKER_PORT                      A=8082                 B=18082
+envcheck COMPARE PASS: skema kunci 100% identik (54 kunci).
+=== GO TEST CONFIG ===
+=== RUN   TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak
+--- PASS: TestBuildDatabaseDSN_ConflictDetection_AndNoPasswordLeak (0.00s)
+=== RUN   TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv
+--- PASS: TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv (0.00s)
+=== RUN   TestCatalogAndEnvReferenceMarkdown
+--- PASS: TestCatalogAndEnvReferenceMarkdown (0.00s)
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/DockerBridge12
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/ClassA8
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/AllIPv4
+=== RUN   TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/InvalidCIDR
+--- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL (0.00s)
+    --- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/DockerBridge12 (0.00s)
+    --- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/ClassA8 (0.00s)
+    --- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/AllIPv4 (0.00s)
+    --- PASS: TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL/InvalidCIDR (0.00s)
+=== RUN   TestAuditEnvVarsAndProductionGuards
+--- PASS: TestAuditEnvVarsAndProductionGuards (0.00s)
+=== RUN   TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh
+--- PASS: TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh (0.01s)
+=== RUN   TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist
+--- PASS: TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist (0.00s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/config	0.667s
+=== GO TEST FILESTORE SPIKE ===
+=== RUN   TestFilesvcSpike_LatencyAndSecurity
+    filesvc_spike_test.go:230: filesvc spike metrics written to ..\..\reports\spike\filesvc_metrics.json (save_p95_delta=1.013ms load_p95_delta=-0.599ms)
+--- PASS: TestFilesvcSpike_LatencyAndSecurity (1.94s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/filestore	4.147s
+=== GO TEST API SPIKE + STRUCTURAL ===
+=== RUN   TestFilesvcSpike_FaultIsolationAndZeroAPIFileKeys
+    filesvc_spike_test.go:278: Phase A=201/200 Phase B non-file=200/200/200 file=503/503 Phase C=200
+--- PASS: TestFilesvcSpike_FaultIsolationAndZeroAPIFileKeys (2.38s)
+=== RUN   TestStructural_LeanBudgetsAndLimits
+--- PASS: TestStructural_LeanBudgetsAndLimits (0.01s)
+=== RUN   TestStructural_FileAndFunctionSizes_NoRawSQL
+--- PASS: TestStructural_FileAndFunctionSizes_NoRawSQL (0.66s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	4.169s
+=== STATICCHECK ===
+
+=== GOSEC ===
+gosec : [gosec] 2026/11/22 01:54:19 Including rules: default
+At line:21 char:20
++ Run-Step "GOSEC" { gosec ./... }
++                    ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([gosec] 2026/11... rules: default:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[gosec] 2026/11/22 01:54:19 Excluding rules: default
+[gosec] 2026/11/22 01:54:19 Including analyzers: default
+[gosec] 2026/11/22 01:54:19 Excluding analyzers: default
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\cmd\envcheck
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\cmd\seed_test_accounts
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\anggota
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\cmd\server
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\api\middleware
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\testseed
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\worker
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\api
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\filestore
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\internal\api\handlers
+[gosec] 2026/11/22 01:54:19 Import directory: C:\Users\12\kopdes-merah-putih\tools\loadtest
+[gosec] 2026/11/22 01:54:20 Import directory: C:\Users\12\kopdes-merah-putih\cmd\kopdes
+[gosec] 2026/11/22 01:54:21 Checking package: middleware
+[gosec] 2026/11/22 01:54:21 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\auth.go
+[gosec] 2026/11/22 01:54:22 Checking package: testseed
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\testseed\seed.go
+[gosec] 2026/11/22 01:54:22 Checking package: main
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\seed_test_accounts\main.go
+[gosec] 2026/11/22 01:54:22 Checking package: handlers
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\handlers\health_handler.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\body_limit.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\cors.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\csrf.go
+[gosec] 2026/11/22 01:54:22 Checking file: 
+C:\Users\12\kopdes-merah-putih\internal\api\handlers\public_config_handler.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\ratelimit.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\ratelimit_hybrid.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\recovery.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\middleware\security_headers.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\pengaturan\api
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\pembayaran
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\katalog\api
+[gosec] 2026/11/22 01:54:22 Checking package: main
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\tools\loadtest\main.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\pembayaran\api
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\cmd\uitester
+[gosec] 2026/11/22 01:54:22 Checking package: main
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\envcheck\main.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\laporan
+[gosec] 2026/11/22 01:54:22 Checking package: main
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\server\main.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\pesanan
+[gosec] 2026/11/22 01:54:22 Checking package: filestore
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\filestore\remote.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\filestore\server.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\filestore\store.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\api\response
+[gosec] 2026/11/22 01:54:22 Checking package: worker
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\worker\worker.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\pesanan\api
+[gosec] 2026/11/22 01:54:22 Checking package: anggota
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\handler.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\impor.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\pendaftaran_handler.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\pendaftaran_service.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\pendaftaran_workflow.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\service.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\uiserve
+[gosec] 2026/11/22 01:54:22 Checking package: api
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\routes.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\runtime.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\server.go
+[gosec] 2026/11/22 01:54:22 Checking package: main
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\kopdes\admin_ops.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\kopdes\main.go
+[gosec] 2026/11/22 01:54:22 Checking file: C:\Users\12\kopdes-merah-putih\cmd\kopdes\storage_ops.go
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\tools\chaosdrill
+[gosec] 2026/11/22 01:54:22 Import directory: C:\Users\12\kopdes-merah-putih\internal\katalog
+[gosec] 2026/11/22 01:54:24 Checking package: api
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\pengaturan\api\types.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\pengaturan
+[gosec] 2026/11/22 01:54:24 Checking package: api
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\katalog\api\types.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\anggota\api
+[gosec] 2026/11/22 01:54:24 Checking package: api
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\pesanan\api\types.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\auth
+[gosec] 2026/11/22 01:54:24 Checking package: api
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\api\types.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\auth\api
+[gosec] 2026/11/22 01:54:24 Checking package: main
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\cmd\uitester\main.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\config
+[gosec] 2026/11/22 01:54:24 Checking package: laporan
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\laporan\handler.go
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\laporan\service.go
+[gosec] 2026/11/22 01:54:24 Import directory: C:\Users\12\kopdes-merah-putih\internal\db
+[gosec] 2026/11/22 01:54:24 Checking package: uiserve
+[gosec] 2026/11/22 01:54:24 Checking file: C:\Users\12\kopdes-merah-putih\internal\uiserve\server.go
+[gosec] 2026/11/22 01:54:25 Checking package: katalog
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\katalog\contracts.go
+[gosec] 2026/11/22 01:54:25 Import directory: C:\Users\12\kopdes-merah-putih\internal\iuran\api
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\katalog\handler.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\katalog\service.go
+[gosec] 2026/11/22 01:54:25 Checking package: response
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\response\http_helpers.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\api\response\response.go
+[gosec] 2026/11/22 01:54:25 Import directory: C:\Users\12\kopdes-merah-putih\internal\iuran
+[gosec] 2026/11/22 01:54:25 Import directory: C:\Users\12\kopdes-merah-putih\internal\security
+[gosec] 2026/11/22 01:54:25 Checking package: main
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\tools\chaosdrill\main.go
+[gosec] 2026/11/22 01:54:25 Checking package: pesanan
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pesanan\contracts.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pesanan\handler.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pesanan\lifecycle.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pesanan\service.go
+[gosec] 2026/11/22 01:54:25 Checking package: pembayaran
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\breakglass.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\contracts.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\handler.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\refund.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\service.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pembayaran\verifikasi.go
+[gosec] 2026/11/22 01:54:25 Checking package: pengaturan
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pengaturan\handler.go
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\pengaturan\service.go
+[gosec] 2026/11/22 01:54:25 Checking package: api
+[gosec] 2026/11/22 01:54:25 Checking file: C:\Users\12\kopdes-merah-putih\internal\anggota\api\types.go
+[gosec] 2026/11/22 01:54:26 Checking package: config
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\config\config.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\config\dotenv.go
+[gosec] 2026/11/22 01:54:26 Checking package: api
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\api\types.go
+[gosec] 2026/11/22 01:54:26 Checking package: security
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\security\crypto.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\security\helpers.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\security\kdf.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\security\rotation.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\security\totp.go
+[gosec] 2026/11/22 01:54:26 Checking package: api
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\iuran\api\types.go
+[gosec] 2026/11/22 01:54:26 Checking package: auth
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\admin_service.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\admin_update.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\contracts.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\handler.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\mfa.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\auth\service.go
+[gosec] 2026/11/22 01:54:26 Checking package: db
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\anggota.sql.go
+[gosec] 2026/11/22 01:54:26 Checking package: iuran
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\iuran\contracts.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\iuran\handler.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\iuran\service.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\auth.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\db.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\iuran.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\katalog.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\models.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\pembayaran.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\pengaturan.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\pesanan.sql.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\role_guard.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\test_guard.go
+[gosec] 2026/11/22 01:54:26 Checking file: C:\Users\12\kopdes-merah-putih\internal\db\worker.sql.go
+Results:
+
+
+[1;36mSummary:[0m
+  Gosec  : dev
+  Files  : 88
+  Lines  : 20384
+  Nosec  : 70
+  Issues : [1;32m0[0m

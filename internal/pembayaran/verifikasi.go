@@ -21,10 +21,12 @@ import (
 )
 
 type VerifyInput struct {
-	Keputusan               string `json:"keputusan"`
-	NominalDibayar          int64  `json:"nominal_dibayar"`
-	Alasan                  string `json:"alasan"`
-	SelesaikanTindakLanjut  bool   `json:"selesaikan_tindak_lanjut,omitempty"`
+	Keputusan              string `json:"keputusan"`
+	NominalDibayar         int64  `json:"nominal_dibayar"`
+	Alasan                 string `json:"alasan"`
+	SelesaikanTindakLanjut bool   `json:"selesaikan_tindak_lanjut,omitempty"`
+	Breakglass             bool   `json:"breakglass,omitempty"`
+	MFACode                string `json:"mfa_code,omitempty"`
 }
 
 func (s *Service) proofTargetPath(bayarID uuid.UUID) (string, error) {
@@ -265,13 +267,14 @@ func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.Session
 	if err != nil {
 		return nil, err
 	}
-	if response.FromPGUUID(cur.DibuatOleh) == claims.UserID {
-		return nil, response.NewDomainError(http.StatusForbidden, "DUAL_CONTROL_VIOLATION", "Pembuat dan verifikator pembayaran harus orang yang berbeda")
+	usedBG, err := s.authorizeDualControlOrBreakglassTx(ctx, qtx, claims, response.FromPGUUID(cur.DibuatOleh), in.Breakglass, in.MFACode, in.Alasan)
+	if err != nil {
+		return nil, err
 	}
 	if cur.Status != "menunggu_verifikasi" && cur.Status != "perlu_tindak_lanjut" {
 		return nil, response.NewDomainError(http.StatusConflict, "INVALID_PAYMENT_STATUS", "Pembayaran tidak dalam status siap verifikasi")
 	}
-	updated, err := applyVerificationDecisionTx(ctx, tx, qtx, claims, cur, keputusan, in, ip)
+	updated, err := applyVerificationDecisionTx(ctx, tx, qtx, claims, cur, keputusan, in, usedBG, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +326,7 @@ func applyVerificationDecisionTx(
 	cur db.GetPembayaranForUpdateRow,
 	keputusan string,
 	in VerifyInput,
+	usedBG bool,
 	ip string,
 ) (*db.VerifyPembayaranDecisionRow, error) {
 	alasan := strings.TrimSpace(in.Alasan)
@@ -358,10 +362,10 @@ func applyVerificationDecisionTx(
 			return nil, cErr
 		}
 	}
-	return persistVerificationOutcomeTx(ctx, qtx, claims, cur, finalStatus, in.NominalDibayar, kwtPG, alasan, ip)
+	return persistVerificationOutcomeTx(ctx, qtx, claims, cur, finalStatus, in.NominalDibayar, kwtPG, alasan, usedBG, ip)
 }
 
-func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow, finalStatus string, nominalDibayar int64, kwtPG pgtype.Text, alasan, ip string) (*db.VerifyPembayaranDecisionRow, error) {
+func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow, finalStatus string, nominalDibayar int64, kwtPG pgtype.Text, alasan string, usedBG bool, ip string) (*db.VerifyPembayaranDecisionRow, error) {
 	updated, err := qtx.VerifyPembayaranDecision(ctx, db.VerifyPembayaranDecisionParams{
 		Status: finalStatus, NominalDibayar: nominalDibayar, NomorKwitansi: kwtPG,
 		AlasanVerifikasi: alasan, DiverifikasiOleh: response.ToPGUUID(claims.UserID), ID: cur.ID,
@@ -369,11 +373,15 @@ func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *
 	if err != nil {
 		return nil, fmt.Errorf("verifikasi pembayaran: %w", err)
 	}
+	aksiAudit := "pembayaran.verify_" + finalStatus
+	if usedBG {
+		aksiAudit = "pembayaran.verify_breakglass"
+	}
 	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
 		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "pembayaran.verify_" + finalStatus, Entitas: "pembayaran",
+		Aksi: aksiAudit, Entitas: "pembayaran",
 		EntitasID: response.FromPGUUID(cur.ID).String(),
-		Ringkasan: fmt.Sprintf("%s -> %s (dibayar %d)", cur.NomorPembayaran, finalStatus, nominalDibayar),
+		Ringkasan: fmt.Sprintf("%s -> %s (dibayar %d, breakglass=%t)", cur.NomorPembayaran, finalStatus, nominalDibayar, usedBG),
 		IpAddress: ip,
 	})
 	return &updated, nil

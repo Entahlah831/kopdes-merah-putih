@@ -78,6 +78,80 @@ func (q *Queries) ClearPembayaranBukti(ctx context.Context, id pgtype.UUID) erro
 	return err
 }
 
+const completePengembalianDecision = `-- name: CompletePengembalianDecision :one
+UPDATE pengembalian_dana
+SET status = $1,
+    catatan_pelaksana = $2,
+    dilaksanakan_oleh = $3,
+    breakglass = $4,
+    bukti_url = COALESCE(NULLIF($5::text, ''), bukti_url),
+    bukti_hash = COALESCE($6, bukti_hash),
+    bukti_key_id = COALESCE(NULLIF($7::text, ''), bukti_key_id),
+    bukti_dek_wrapped = COALESCE($8, bukti_dek_wrapped),
+    selesai_at = CASE WHEN $1 = 'selesai' THEN NOW() ELSE NULL END
+WHERE id = $9
+RETURNING id, pembayaran_id, nominal, metode, alasan, status, bukti_url, catatan_pelaksana, diajukan_oleh, dilaksanakan_oleh, breakglass, selesai_at, updated_at
+`
+
+type CompletePengembalianDecisionParams struct {
+	Status           string      `json:"status"`
+	CatatanPelaksana string      `json:"catatan_pelaksana"`
+	DilaksanakanOleh pgtype.UUID `json:"dilaksanakan_oleh"`
+	Breakglass       bool        `json:"breakglass"`
+	BuktiUrl         string      `json:"bukti_url"`
+	BuktiHash        pgtype.Text `json:"bukti_hash"`
+	BuktiKeyID       string      `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte      `json:"bukti_dek_wrapped"`
+	ID               pgtype.UUID `json:"id"`
+}
+
+type CompletePengembalianDecisionRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	PembayaranID     pgtype.UUID        `json:"pembayaran_id"`
+	Nominal          int64              `json:"nominal"`
+	Metode           string             `json:"metode"`
+	Alasan           string             `json:"alasan"`
+	Status           string             `json:"status"`
+	BuktiUrl         string             `json:"bukti_url"`
+	CatatanPelaksana string             `json:"catatan_pelaksana"`
+	DiajukanOleh     pgtype.UUID        `json:"diajukan_oleh"`
+	DilaksanakanOleh pgtype.UUID        `json:"dilaksanakan_oleh"`
+	Breakglass       bool               `json:"breakglass"`
+	SelesaiAt        pgtype.Timestamptz `json:"selesai_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) CompletePengembalianDecision(ctx context.Context, arg CompletePengembalianDecisionParams) (CompletePengembalianDecisionRow, error) {
+	row := q.db.QueryRow(ctx, completePengembalianDecision,
+		arg.Status,
+		arg.CatatanPelaksana,
+		arg.DilaksanakanOleh,
+		arg.Breakglass,
+		arg.BuktiUrl,
+		arg.BuktiHash,
+		arg.BuktiKeyID,
+		arg.BuktiDekWrapped,
+		arg.ID,
+	)
+	var i CompletePengembalianDecisionRow
+	err := row.Scan(
+		&i.ID,
+		&i.PembayaranID,
+		&i.Nominal,
+		&i.Metode,
+		&i.Alasan,
+		&i.Status,
+		&i.BuktiUrl,
+		&i.CatatanPelaksana,
+		&i.DiajukanOleh,
+		&i.DilaksanakanOleh,
+		&i.Breakglass,
+		&i.SelesaiAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countActivePendingQRISByUser = `-- name: CountActivePendingQRISByUser :one
 SELECT COUNT(*)::int
 FROM pembayaran
@@ -561,6 +635,156 @@ func (q *Queries) GetPembayaranForUpdate(ctx context.Context, id pgtype.UUID) (G
 	return i, err
 }
 
+const getPengembalianByBuktiHash = `-- name: GetPengembalianByBuktiHash :one
+SELECT id, pembayaran_id FROM pengembalian_dana WHERE bukti_hash = $1
+`
+
+type GetPengembalianByBuktiHashRow struct {
+	ID           pgtype.UUID `json:"id"`
+	PembayaranID pgtype.UUID `json:"pembayaran_id"`
+}
+
+func (q *Queries) GetPengembalianByBuktiHash(ctx context.Context, buktiHash pgtype.Text) (GetPengembalianByBuktiHashRow, error) {
+	row := q.db.QueryRow(ctx, getPengembalianByBuktiHash, buktiHash)
+	var i GetPengembalianByBuktiHashRow
+	err := row.Scan(&i.ID, &i.PembayaranID)
+	return i, err
+}
+
+const getPengembalianByID = `-- name: GetPengembalianByID :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at, created_at
+FROM pengembalian_dana
+WHERE id = $1
+`
+
+type GetPengembalianByIDRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	PembayaranID     pgtype.UUID        `json:"pembayaran_id"`
+	Nominal          int64              `json:"nominal"`
+	Metode           string             `json:"metode"`
+	Alasan           string             `json:"alasan"`
+	Status           string             `json:"status"`
+	BuktiUrl         string             `json:"bukti_url"`
+	BuktiHash        pgtype.Text        `json:"bukti_hash"`
+	BuktiKeyID       string             `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte             `json:"bukti_dek_wrapped"`
+	CatatanPelaksana string             `json:"catatan_pelaksana"`
+	DiajukanOleh     pgtype.UUID        `json:"diajukan_oleh"`
+	DilaksanakanOleh pgtype.UUID        `json:"dilaksanakan_oleh"`
+	Breakglass       bool               `json:"breakglass"`
+	SelesaiAt        pgtype.Timestamptz `json:"selesai_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) GetPengembalianByID(ctx context.Context, id pgtype.UUID) (GetPengembalianByIDRow, error) {
+	row := q.db.QueryRow(ctx, getPengembalianByID, id)
+	var i GetPengembalianByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.PembayaranID,
+		&i.Nominal,
+		&i.Metode,
+		&i.Alasan,
+		&i.Status,
+		&i.BuktiUrl,
+		&i.BuktiHash,
+		&i.BuktiKeyID,
+		&i.BuktiDekWrapped,
+		&i.CatatanPelaksana,
+		&i.DiajukanOleh,
+		&i.DilaksanakanOleh,
+		&i.Breakglass,
+		&i.SelesaiAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPengembalianByPembayaranID = `-- name: GetPengembalianByPembayaranID :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at, created_at, updated_at
+FROM pengembalian_dana
+WHERE pembayaran_id = $1
+`
+
+func (q *Queries) GetPengembalianByPembayaranID(ctx context.Context, pembayaranID pgtype.UUID) (PengembalianDana, error) {
+	row := q.db.QueryRow(ctx, getPengembalianByPembayaranID, pembayaranID)
+	var i PengembalianDana
+	err := row.Scan(
+		&i.ID,
+		&i.PembayaranID,
+		&i.Nominal,
+		&i.Metode,
+		&i.Alasan,
+		&i.Status,
+		&i.BuktiUrl,
+		&i.BuktiHash,
+		&i.BuktiKeyID,
+		&i.BuktiDekWrapped,
+		&i.CatatanPelaksana,
+		&i.DiajukanOleh,
+		&i.DilaksanakanOleh,
+		&i.Breakglass,
+		&i.SelesaiAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPengembalianByPembayaranIDForUpdate = `-- name: GetPengembalianByPembayaranIDForUpdate :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at
+FROM pengembalian_dana
+WHERE pembayaran_id = $1
+FOR UPDATE
+`
+
+type GetPengembalianByPembayaranIDForUpdateRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	PembayaranID     pgtype.UUID        `json:"pembayaran_id"`
+	Nominal          int64              `json:"nominal"`
+	Metode           string             `json:"metode"`
+	Alasan           string             `json:"alasan"`
+	Status           string             `json:"status"`
+	BuktiUrl         string             `json:"bukti_url"`
+	BuktiHash        pgtype.Text        `json:"bukti_hash"`
+	BuktiKeyID       string             `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte             `json:"bukti_dek_wrapped"`
+	CatatanPelaksana string             `json:"catatan_pelaksana"`
+	DiajukanOleh     pgtype.UUID        `json:"diajukan_oleh"`
+	DilaksanakanOleh pgtype.UUID        `json:"dilaksanakan_oleh"`
+	Breakglass       bool               `json:"breakglass"`
+	SelesaiAt        pgtype.Timestamptz `json:"selesai_at"`
+}
+
+func (q *Queries) GetPengembalianByPembayaranIDForUpdate(ctx context.Context, pembayaranID pgtype.UUID) (GetPengembalianByPembayaranIDForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getPengembalianByPembayaranIDForUpdate, pembayaranID)
+	var i GetPengembalianByPembayaranIDForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.PembayaranID,
+		&i.Nominal,
+		&i.Metode,
+		&i.Alasan,
+		&i.Status,
+		&i.BuktiUrl,
+		&i.BuktiHash,
+		&i.BuktiKeyID,
+		&i.BuktiDekWrapped,
+		&i.CatatanPelaksana,
+		&i.DiajukanOleh,
+		&i.DilaksanakanOleh,
+		&i.Breakglass,
+		&i.SelesaiAt,
+	)
+	return i, err
+}
+
 const getRekeningQRISByID = `-- name: GetRekeningQRISByID :one
 SELECT id, nama_merchant, nmid, nama_bank, nomor_rekening, nama_pemilik,
        jenis_pemilik, qris_image_url, qris_payload, aktif, created_at
@@ -942,6 +1166,17 @@ func (q *Queries) ListUsedActiveKodeUnik(ctx context.Context, arg ListUsedActive
 	return items, nil
 }
 
+const markPembayaranDikembalikan = `-- name: MarkPembayaranDikembalikan :exec
+UPDATE pembayaran
+SET status = 'dikembalikan'
+WHERE id = $1
+`
+
+func (q *Queries) MarkPembayaranDikembalikan(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markPembayaranDikembalikan, id)
+	return err
+}
+
 const markPembayaranKedaluwarsa = `-- name: MarkPembayaranKedaluwarsa :exec
 UPDATE pembayaran
 SET status = 'kedaluwarsa'
@@ -1000,6 +1235,73 @@ type UpdatePembayaranBuktiEnvelopeParams struct {
 func (q *Queries) UpdatePembayaranBuktiEnvelope(ctx context.Context, arg UpdatePembayaranBuktiEnvelopeParams) error {
 	_, err := q.db.Exec(ctx, updatePembayaranBuktiEnvelope, arg.BuktiKeyID, arg.BuktiDekWrapped, arg.ID)
 	return err
+}
+
+const upsertPengembalianRequest = `-- name: UpsertPengembalianRequest :one
+INSERT INTO pengembalian_dana (
+    pembayaran_id, nominal, metode, alasan, status, diajukan_oleh
+) VALUES (
+    $1, $2, $3, $4, 'diajukan', $5
+)
+ON CONFLICT (pembayaran_id) DO UPDATE
+SET nominal = EXCLUDED.nominal,
+    metode = EXCLUDED.metode,
+    alasan = EXCLUDED.alasan,
+    status = 'diajukan',
+    diajukan_oleh = EXCLUDED.diajukan_oleh,
+    dilaksanakan_oleh = NULL,
+    breakglass = FALSE,
+    catatan_pelaksana = '',
+    bukti_url = '',
+    bukti_hash = NULL,
+    bukti_key_id = '',
+    bukti_dek_wrapped = NULL,
+    selesai_at = NULL
+WHERE pengembalian_dana.status = 'ditolak'
+RETURNING id, pembayaran_id, nominal, metode, alasan, status, diajukan_oleh, created_at, updated_at
+`
+
+type UpsertPengembalianRequestParams struct {
+	PembayaranID pgtype.UUID `json:"pembayaran_id"`
+	Nominal      int64       `json:"nominal"`
+	Metode       string      `json:"metode"`
+	Alasan       string      `json:"alasan"`
+	DiajukanOleh pgtype.UUID `json:"diajukan_oleh"`
+}
+
+type UpsertPengembalianRequestRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	PembayaranID pgtype.UUID        `json:"pembayaran_id"`
+	Nominal      int64              `json:"nominal"`
+	Metode       string             `json:"metode"`
+	Alasan       string             `json:"alasan"`
+	Status       string             `json:"status"`
+	DiajukanOleh pgtype.UUID        `json:"diajukan_oleh"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpsertPengembalianRequest(ctx context.Context, arg UpsertPengembalianRequestParams) (UpsertPengembalianRequestRow, error) {
+	row := q.db.QueryRow(ctx, upsertPengembalianRequest,
+		arg.PembayaranID,
+		arg.Nominal,
+		arg.Metode,
+		arg.Alasan,
+		arg.DiajukanOleh,
+	)
+	var i UpsertPengembalianRequestRow
+	err := row.Scan(
+		&i.ID,
+		&i.PembayaranID,
+		&i.Nominal,
+		&i.Metode,
+		&i.Alasan,
+		&i.Status,
+		&i.DiajukanOleh,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const verifyPembayaranDecision = `-- name: VerifyPembayaranDecision :one

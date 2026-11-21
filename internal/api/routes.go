@@ -84,10 +84,10 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, ks *security.PurposeKey
 		PaymentsEnabled: !cfg.PaymentsDisabled, AllowPersonalPilot: cfg.AllowPersonalPaymentPilot,
 		PilotMaxPerTx: cfg.PilotMaxPerTx, PilotMaxPerDay: cfg.PilotMaxPerDay,
 		PaymentExpiry: cfg.PaymentExpiryDuration, MaxPendingPerUser: cfg.PendingLimitPerMember,
-		MaxPendingGlobal: cfg.PendingLimitGlobal, Timezone: cfg.AppTimezone,
-		UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: buktiDir,
+		MaxPendingGlobal: cfg.PendingLimitGlobal, DualControlBreakglassEnabled: cfg.DualControlBreakglassEnabled,
+		Timezone: cfg.AppTimezone, UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: buktiDir,
 		LegacyKYCStorageDir: filepath.Join(kycDir, "bukti"), BuktiRetentionDays: cfg.BuktiRetentionDays,
-		KeyProvider: buktiKP, LegacyKeyProvider: masterKP, TrustedProxies: cfg.TrustedProxies,
+		KeyProvider: buktiKP, DBKeyProvider: dbKP, LegacyKeyProvider: masterKP, TrustedProxies: cfg.TrustedProxies,
 	})
 	return &domainHandlers{
 		health: handlers.NewHealthHandler(pool), publicConfig: handlers.NewPublicConfigHandler(buildPublicConfigOpts(pool, cfg)),
@@ -178,6 +178,7 @@ func registerCommerceFinanceRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg C
 	mux.Handle("GET /api/v1/pembayaran", fullSes(http.HandlerFunc(dh.pembayaran.HandleList)))
 	mux.Handle("POST /api/v1/pembayaran", fullSes(http.HandlerFunc(dh.pembayaran.HandlePost)))
 	mux.Handle("POST /api/v1/pembayaran/{id}/verifikasi", fullSes(bayarRoles(http.HandlerFunc(dh.pembayaran.HandleVerify))))
+	mux.Handle("POST /api/v1/pembayaran/{id}/refund", fullSes(bayarRoles(http.HandlerFunc(dh.pembayaran.HandleRefund))))
 	mux.Handle("GET /api/v1/laporan", fullSes(laporanRoles(http.HandlerFunc(dh.laporan.HandleGet))))
 }
 

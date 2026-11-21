@@ -141,7 +141,7 @@ func (s *Service) reportPembayaran(ctx context.Context, dari, sampai pgtype.Date
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("laporan pembayaran: %w", err)
 	}
-	hdr := []string{"jenis_transaksi", "metode", "status", "jumlah_transaksi", "total_pokok", "total_selisih_kode_unik", "total_dibayar"}
+	hdr := []string{"jenis_transaksi", "metode", "status", "jumlah_transaksi", "total_pokok", "total_selisih_kode_unik", "total_dibayar", "total_dikembalikan"}
 	tbl := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		tbl = append(tbl, []string{
@@ -152,6 +152,7 @@ func (s *Service) reportPembayaran(ctx context.Context, dari, sampai pgtype.Date
 			strconv.FormatInt(r.TotalPokok, 10),
 			strconv.FormatInt(r.TotalSelisihKodeUnik, 10),
 			strconv.FormatInt(r.TotalDibayar, 10),
+			strconv.FormatInt(r.TotalDikembalikan, 10),
 		})
 	}
 	return rows, hdr, tbl, nil

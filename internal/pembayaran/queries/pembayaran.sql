@@ -208,3 +208,70 @@ UPDATE pembayaran
 SET bukti_key_id = sqlc.arg(bukti_key_id),
     bukti_dek_wrapped = sqlc.arg(bukti_dek_wrapped)
 WHERE id = sqlc.arg(id);
+
+-- name: MarkPembayaranDikembalikan :exec
+UPDATE pembayaran
+SET status = 'dikembalikan'
+WHERE id = sqlc.arg(id);
+
+-- name: GetPengembalianByPembayaranID :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at, created_at, updated_at
+FROM pengembalian_dana
+WHERE pembayaran_id = sqlc.arg(pembayaran_id);
+
+-- name: GetPengembalianByPembayaranIDForUpdate :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at
+FROM pengembalian_dana
+WHERE pembayaran_id = sqlc.arg(pembayaran_id)
+FOR UPDATE;
+
+-- name: GetPengembalianByID :one
+SELECT id, pembayaran_id, nominal, metode, alasan, status, bukti_url, bukti_hash,
+       bukti_key_id, bukti_dek_wrapped, catatan_pelaksana, diajukan_oleh,
+       dilaksanakan_oleh, breakglass, selesai_at, created_at
+FROM pengembalian_dana
+WHERE id = sqlc.arg(id);
+
+-- name: GetPengembalianByBuktiHash :one
+SELECT id, pembayaran_id FROM pengembalian_dana WHERE bukti_hash = sqlc.arg(bukti_hash);
+
+-- name: UpsertPengembalianRequest :one
+INSERT INTO pengembalian_dana (
+    pembayaran_id, nominal, metode, alasan, status, diajukan_oleh
+) VALUES (
+    sqlc.arg(pembayaran_id), sqlc.arg(nominal), sqlc.arg(metode), sqlc.arg(alasan), 'diajukan', sqlc.arg(diajukan_oleh)
+)
+ON CONFLICT (pembayaran_id) DO UPDATE
+SET nominal = EXCLUDED.nominal,
+    metode = EXCLUDED.metode,
+    alasan = EXCLUDED.alasan,
+    status = 'diajukan',
+    diajukan_oleh = EXCLUDED.diajukan_oleh,
+    dilaksanakan_oleh = NULL,
+    breakglass = FALSE,
+    catatan_pelaksana = '',
+    bukti_url = '',
+    bukti_hash = NULL,
+    bukti_key_id = '',
+    bukti_dek_wrapped = NULL,
+    selesai_at = NULL
+WHERE pengembalian_dana.status = 'ditolak'
+RETURNING id, pembayaran_id, nominal, metode, alasan, status, diajukan_oleh, created_at, updated_at;
+
+-- name: CompletePengembalianDecision :one
+UPDATE pengembalian_dana
+SET status = sqlc.arg(status),
+    catatan_pelaksana = sqlc.arg(catatan_pelaksana),
+    dilaksanakan_oleh = sqlc.arg(dilaksanakan_oleh),
+    breakglass = sqlc.arg(breakglass),
+    bukti_url = COALESCE(NULLIF(sqlc.arg(bukti_url)::text, ''), bukti_url),
+    bukti_hash = COALESCE(sqlc.narg(bukti_hash), bukti_hash),
+    bukti_key_id = COALESCE(NULLIF(sqlc.arg(bukti_key_id)::text, ''), bukti_key_id),
+    bukti_dek_wrapped = COALESCE(sqlc.narg(bukti_dek_wrapped), bukti_dek_wrapped),
+    selesai_at = CASE WHEN sqlc.arg(status) = 'selesai' THEN NOW() ELSE NULL END
+WHERE id = sqlc.arg(id)
+RETURNING id, pembayaran_id, nominal, metode, alasan, status, bukti_url, catatan_pelaksana, diajukan_oleh, dilaksanakan_oleh, breakglass, selesai_at, updated_at;

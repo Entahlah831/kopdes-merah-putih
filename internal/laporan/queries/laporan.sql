@@ -35,15 +35,17 @@ GROUP BY (created_at AT TIME ZONE sqlc.arg(tz)::text)::date
 ORDER BY tanggal DESC;
 
 -- name: LaporanPembayaranRekap :many
-SELECT jenis_transaksi,
-       metode,
-       status,
+SELECT p.jenis_transaksi,
+       p.metode,
+       p.status,
        COUNT(*)::bigint AS jumlah_transaksi,
-       COALESCE(SUM(nominal_pokok), 0)::bigint AS total_pokok,
-       COALESCE(SUM(selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
-       COALESCE(SUM(nominal_dibayar), 0)::bigint AS total_dibayar
-FROM pembayaran
-WHERE (sqlc.narg(dari)::date IS NULL OR (created_at AT TIME ZONE sqlc.arg(tz)::text)::date >= sqlc.narg(dari)::date)
-  AND (sqlc.narg(sampai)::date IS NULL OR (created_at AT TIME ZONE sqlc.arg(tz)::text)::date <= sqlc.narg(sampai)::date)
-GROUP BY jenis_transaksi, metode, status
-ORDER BY jenis_transaksi ASC, metode ASC, status ASC;
+       COALESCE(SUM(p.nominal_pokok), 0)::bigint AS total_pokok,
+       COALESCE(SUM(p.selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
+       COALESCE(SUM(p.nominal_dibayar), 0)::bigint AS total_dibayar,
+       COALESCE(SUM(CASE WHEN pd.status = 'selesai' THEN pd.nominal ELSE 0 END), 0)::bigint AS total_dikembalikan
+FROM pembayaran p
+LEFT JOIN pengembalian_dana pd ON pd.pembayaran_id = p.id
+WHERE (sqlc.narg(dari)::date IS NULL OR (p.created_at AT TIME ZONE sqlc.arg(tz)::text)::date >= sqlc.narg(dari)::date)
+  AND (sqlc.narg(sampai)::date IS NULL OR (p.created_at AT TIME ZONE sqlc.arg(tz)::text)::date <= sqlc.narg(sampai)::date)
+GROUP BY p.jenis_transaksi, p.metode, p.status
+ORDER BY p.jenis_transaksi ASC, p.metode ASC, p.status ASC;

@@ -31,22 +31,24 @@ import (
 )
 
 type Config struct {
-	PaymentsEnabled     bool
-	AllowPersonalPilot  bool
-	PilotMaxPerTx       int64
-	PilotMaxPerDay      int64
-	QRISExpiryHours     int
-	PaymentExpiry       time.Duration
-	MaxPendingPerUser   int
-	MaxPendingGlobal    int
-	Timezone            string
-	UploadMaxBytes      int64
-	ProofStorageDir     string
-	LegacyKYCStorageDir string
-	BuktiRetentionDays  int
-	KeyProvider         security.KeyProvider
-	LegacyKeyProvider   security.KeyProvider
-	TrustedProxies      []string
+	PaymentsEnabled              bool
+	AllowPersonalPilot           bool
+	PilotMaxPerTx                int64
+	PilotMaxPerDay               int64
+	QRISExpiryHours              int
+	PaymentExpiry                time.Duration
+	MaxPendingPerUser            int
+	MaxPendingGlobal             int
+	DualControlBreakglassEnabled bool
+	Timezone                     string
+	UploadMaxBytes               int64
+	ProofStorageDir              string
+	LegacyKYCStorageDir          string
+	BuktiRetentionDays           int
+	KeyProvider                  security.KeyProvider
+	DBKeyProvider                security.KeyProvider
+	LegacyKeyProvider            security.KeyProvider
+	TrustedProxies               []string
 }
 
 type Service struct {

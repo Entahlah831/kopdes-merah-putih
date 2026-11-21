@@ -12,18 +12,20 @@ import (
 )
 
 const laporanPembayaranRekap = `-- name: LaporanPembayaranRekap :many
-SELECT jenis_transaksi,
-       metode,
-       status,
+SELECT p.jenis_transaksi,
+       p.metode,
+       p.status,
        COUNT(*)::bigint AS jumlah_transaksi,
-       COALESCE(SUM(nominal_pokok), 0)::bigint AS total_pokok,
-       COALESCE(SUM(selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
-       COALESCE(SUM(nominal_dibayar), 0)::bigint AS total_dibayar
-FROM pembayaran
-WHERE ($1::date IS NULL OR (created_at AT TIME ZONE $2::text)::date >= $1::date)
-  AND ($3::date IS NULL OR (created_at AT TIME ZONE $2::text)::date <= $3::date)
-GROUP BY jenis_transaksi, metode, status
-ORDER BY jenis_transaksi ASC, metode ASC, status ASC
+       COALESCE(SUM(p.nominal_pokok), 0)::bigint AS total_pokok,
+       COALESCE(SUM(p.selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
+       COALESCE(SUM(p.nominal_dibayar), 0)::bigint AS total_dibayar,
+       COALESCE(SUM(CASE WHEN pd.status = 'selesai' THEN pd.nominal ELSE 0 END), 0)::bigint AS total_dikembalikan
+FROM pembayaran p
+LEFT JOIN pengembalian_dana pd ON pd.pembayaran_id = p.id
+WHERE ($1::date IS NULL OR (p.created_at AT TIME ZONE $2::text)::date >= $1::date)
+  AND ($3::date IS NULL OR (p.created_at AT TIME ZONE $2::text)::date <= $3::date)
+GROUP BY p.jenis_transaksi, p.metode, p.status
+ORDER BY p.jenis_transaksi ASC, p.metode ASC, p.status ASC
 `
 
 type LaporanPembayaranRekapParams struct {
@@ -40,6 +42,7 @@ type LaporanPembayaranRekapRow struct {
 	TotalPokok           int64  `json:"total_pokok"`
 	TotalSelisihKodeUnik int64  `json:"total_selisih_kode_unik"`
 	TotalDibayar         int64  `json:"total_dibayar"`
+	TotalDikembalikan    int64  `json:"total_dikembalikan"`
 }
 
 func (q *Queries) LaporanPembayaranRekap(ctx context.Context, arg LaporanPembayaranRekapParams) ([]LaporanPembayaranRekapRow, error) {
@@ -59,6 +62,7 @@ func (q *Queries) LaporanPembayaranRekap(ctx context.Context, arg LaporanPembaya
 			&i.TotalPokok,
 			&i.TotalSelisihKodeUnik,
 			&i.TotalDibayar,
+			&i.TotalDikembalikan,
 		); err != nil {
 			return nil, err
 		}

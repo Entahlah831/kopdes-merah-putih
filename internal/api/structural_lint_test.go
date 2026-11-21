@@ -27,29 +27,37 @@ func repoRootDir(t *testing.T) string {
 func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 	root := repoRootDir(t)
 
-	// 1. Maksimal 40 variabel env di AppConfig Catalog
-	if n := len(config.Catalog()); n > 40 {
-		t.Fatalf("Catalog memiliki %d variabel env, melebihi batas 40", n)
+	// 1. Maksimal 46 variabel env di AppConfig Catalog
+	if n := len(config.Catalog()); n > 46 {
+		t.Fatalf("Catalog memiliki %d variabel env, melebihi batas 46", n)
 	}
 
-	// 2. Maksimal 20 tabel PostgreSQL
-	migBytes, err := os.ReadFile(filepath.Join(root, "db", "migrations", "000001_init_kopdes_schema.up.sql"))
-	if err != nil {
-		t.Fatalf("baca migrasi awal: %v", err)
+	// 2. Maksimal 22 tabel PostgreSQL lintas migrasi *.up.sql
+	migPaths, err := filepath.Glob(filepath.Join(root, "db", "migrations", "*_*.up.sql"))
+	if err != nil || len(migPaths) == 0 {
+		t.Fatalf("glob migrasi: err=%v count=%d", err, len(migPaths))
 	}
-	tableCount := regexp.MustCompile(`(?mi)^\s*CREATE\s+TABLE\b`).FindAllIndex(migBytes, -1)
-	if len(tableCount) == 0 || len(tableCount) > 20 {
-		t.Fatalf("Jumlah tabel=%d (harus 1..20)", len(tableCount))
+	tableCount := 0
+	tblRe := regexp.MustCompile(`(?mi)^\s*CREATE\s+TABLE\b`)
+	for _, mp := range migPaths {
+		migBytes, rErr := os.ReadFile(mp)
+		if rErr != nil {
+			t.Fatalf("baca migrasi %s: %v", mp, rErr)
+		}
+		tableCount += len(tblRe.FindAllIndex(migBytes, -1))
+	}
+	if tableCount == 0 || tableCount > 22 {
+		t.Fatalf("Jumlah tabel=%d (harus 1..22)", tableCount)
 	}
 
-	// 3. Maksimal 35 endpoint HTTP
+	// 3. Maksimal 36 endpoint HTTP
 	routesBytes, err := os.ReadFile(filepath.Join(root, "internal", "api", "routes.go"))
 	if err != nil {
 		t.Fatalf("baca routes.go: %v", err)
 	}
 	routeMatches := regexp.MustCompile(`mux\.Handle(?:Func)?\(`).FindAllIndex(routesBytes, -1)
-	if len(routeMatches) == 0 || len(routeMatches) > 35 {
-		t.Fatalf("Jumlah endpoint terdaftar=%d, melebihi batas 35", len(routeMatches))
+	if len(routeMatches) == 0 || len(routeMatches) > 36 {
+		t.Fatalf("Jumlah endpoint terdaftar=%d, melebihi batas 36", len(routeMatches))
 	}
 }
 

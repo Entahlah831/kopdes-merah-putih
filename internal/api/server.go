@@ -34,21 +34,27 @@ type Config struct {
 	BcryptCost                int
 	MFAIssuer                 string
 	MFAMaxAttempts            int
-	SessionIdleTTL            time.Duration
-	SessionAbsTTL             time.Duration
-	MFARequiredRoles          []string
-	LoginMaxAttempts          int
-	LoginLockoutDuration      time.Duration
-	AllowPersonalPaymentPilot bool
-	PilotMaxPerTx             int64
-	PilotMaxPerDay            int64
-	QRISUniqueDigits          int
-	PaymentExpiryDuration     time.Duration
-	PendingLimitPerMember     int
-	PendingLimitGlobal        int
-	PDPRejectedRetentionDays  int
-	StorageKYCDir             string
-	MaxKYCUploadBytes         int64
+	SessionIdleTTL               time.Duration
+	SessionAbsTTL                time.Duration
+	CookieSecure                 string
+	AllowBearerAuth              bool
+	MFARequiredRoles             []string
+	LoginMaxAttempts             int
+	LoginLockoutDuration         time.Duration
+	AllowPersonalPaymentPilot    bool
+	PilotMaxPerTx                int64
+	PilotMaxPerDay               int64
+	QRISUniqueDigits             int
+	PaymentExpiryDuration        time.Duration
+	StockHoldMinutes             int
+	PendingLimitPerMember        int
+	PendingLimitGlobal           int
+	DualControlBreakglassEnabled bool
+	PDPRejectedRetentionDays     int
+	StorageKYCDir                string
+	StorageBuktiDir              string
+	BuktiRetentionDays           int
+	MaxKYCUploadBytes            int64
 	APIVersion                string
 	PaymentsDisabled          bool
 	RegistrationDisabled      bool
@@ -95,21 +101,27 @@ func ConfigFromAppConfig(c config.AppConfig) Config {
 		BcryptCost:                defaultBcryptCost(c.AppEnv),
 		MFAIssuer:                 def.MFAIssuer,
 		MFAMaxAttempts:            def.MFAMaxAttempts,
-		SessionIdleTTL:            c.SessionIdleTTL,
-		SessionAbsTTL:             c.SessionAbsTTL,
-		MFARequiredRoles:          c.MFARequiredRoles,
-		LoginMaxAttempts:          c.LoginMaxAttempts,
-		LoginLockoutDuration:      c.LoginLockoutDuration,
-		AllowPersonalPaymentPilot: c.AllowPersonalPaymentPilot,
-		PilotMaxPerTx:             c.PilotMaxPerTx,
-		PilotMaxPerDay:            c.PilotMaxPerDay,
-		QRISUniqueDigits:          c.QRISUniqueDigits,
-		PaymentExpiryDuration:     c.PaymentExpiryDuration,
-		PendingLimitPerMember:     c.PendingLimitPerMember,
-		PendingLimitGlobal:        c.PendingLimitGlobal,
-		PDPRejectedRetentionDays:  c.PDPRejectedRetentionDays,
-		StorageKYCDir:             c.StorageKYCDir,
-		MaxKYCUploadBytes:         def.MaxKYCUploadBytes,
+		SessionIdleTTL:               c.SessionIdleTTL,
+		SessionAbsTTL:                c.SessionAbsTTL,
+		CookieSecure:                 c.CookieSecure,
+		AllowBearerAuth:              c.AllowBearerAuth,
+		MFARequiredRoles:             c.MFARequiredRoles,
+		LoginMaxAttempts:             c.LoginMaxAttempts,
+		LoginLockoutDuration:         c.LoginLockoutDuration,
+		AllowPersonalPaymentPilot:    c.AllowPersonalPaymentPilot,
+		PilotMaxPerTx:                c.PilotMaxPerTx,
+		PilotMaxPerDay:               c.PilotMaxPerDay,
+		QRISUniqueDigits:             c.QRISUniqueDigits,
+		PaymentExpiryDuration:        c.PaymentExpiryDuration,
+		StockHoldMinutes:             c.StockHoldMinutes,
+		PendingLimitPerMember:        c.PendingLimitPerMember,
+		PendingLimitGlobal:           c.PendingLimitGlobal,
+		DualControlBreakglassEnabled: c.DualControlBreakglassEnabled,
+		PDPRejectedRetentionDays:     c.PDPRejectedRetentionDays,
+		StorageKYCDir:                c.StorageKYCDir,
+		StorageBuktiDir:              c.StorageBuktiDir,
+		BuktiRetentionDays:           c.BuktiRetentionDays,
+		MaxKYCUploadBytes:            def.MaxKYCUploadBytes,
 		APIVersion:                def.APIVersion,
 		PaymentsDisabled:          !c.PaymentsEnabled,
 		RegistrationDisabled:      !c.RegistrationEnabled,
@@ -174,6 +186,8 @@ func DefaultConfig() Config {
 		MFAMaxAttempts:           3,
 		SessionIdleTTL:           30 * time.Minute,
 		SessionAbsTTL:            12 * time.Hour,
+		CookieSecure:             "auto",
+		AllowBearerAuth:          true,
 		MFARequiredRoles:         []string{"admin", "bendahara"},
 		LoginMaxAttempts:         5,
 		LoginLockoutDuration:     15 * time.Minute,
@@ -181,10 +195,13 @@ func DefaultConfig() Config {
 		PilotMaxPerDay:           2000000,
 		QRISUniqueDigits:         3,
 		PaymentExpiryDuration:    15 * time.Minute,
+		StockHoldMinutes:         60,
 		PendingLimitPerMember:    2,
 		PendingLimitGlobal:       50,
 		PDPRejectedRetentionDays: 30,
 		StorageKYCDir:            "./storage/kyc",
+		StorageBuktiDir:          "./storage/bukti",
+		BuktiRetentionDays:       365,
 		MaxKYCUploadBytes:        5 * 1024 * 1024,
 		APIVersion:               "2.0.0-lean",
 		PollingIntervalMS:        3000,

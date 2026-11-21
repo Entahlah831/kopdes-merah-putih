@@ -29,7 +29,7 @@ if (Test-Path $Target) {
 }
 
 $secretKeys = @(
-    "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "DB_PASSWORD", "POSTGRES_PASSWORD", "BACKUP_ENCRYPTION_KEY"
+    "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "DB_PASSWORD", "POSTGRES_PASSWORD"
 )
 
 function New-RandomHex([int]$Bytes = 32) {

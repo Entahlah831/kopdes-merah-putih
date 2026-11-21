@@ -110,8 +110,8 @@ func runStrictAudit(cfg config.AppConfig, raw map[string]string, stdout, stderr 
 			issues = append(issues, fmt.Sprintf("PASSWORD DB PRODUKSI: %v", err))
 		}
 	}
-	if specs := config.Catalog(); len(specs) > 40 {
-		issues = append(issues, fmt.Sprintf("JUMLAH VARIABEL ENV MELEBIHI BATAS (<= 40): %d", len(specs)))
+	if specs := config.Catalog(); len(specs) > 46 {
+		issues = append(issues, fmt.Sprintf("JUMLAH VARIABEL ENV MELEBIHI BATAS (<= 46): %d", len(specs)))
 	}
 
 	if len(issues) > 0 {

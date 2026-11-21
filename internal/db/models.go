@@ -112,6 +112,8 @@ type Pembayaran struct {
 	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	BuktiKeyID       string             `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte             `json:"bukti_dek_wrapped"`
 }
 
 type PembayaranAlokasi struct {
@@ -162,6 +164,26 @@ type Pengaturan struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type PengembalianDana struct {
+	ID               pgtype.UUID        `json:"id"`
+	PembayaranID     pgtype.UUID        `json:"pembayaran_id"`
+	Nominal          int64              `json:"nominal"`
+	Metode           string             `json:"metode"`
+	Alasan           string             `json:"alasan"`
+	Status           string             `json:"status"`
+	BuktiUrl         string             `json:"bukti_url"`
+	BuktiHash        pgtype.Text        `json:"bukti_hash"`
+	BuktiKeyID       string             `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte             `json:"bukti_dek_wrapped"`
+	CatatanPelaksana string             `json:"catatan_pelaksana"`
+	DiajukanOleh     pgtype.UUID        `json:"diajukan_oleh"`
+	DilaksanakanOleh pgtype.UUID        `json:"dilaksanakan_oleh"`
+	Breakglass       bool               `json:"breakglass"`
+	SelesaiAt        pgtype.Timestamptz `json:"selesai_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Pesanan struct {
 	ID                   pgtype.UUID        `json:"id"`
 	NomorPesanan         string             `json:"nomor_pesanan"`
@@ -185,6 +207,8 @@ type Pesanan struct {
 	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	StokStatus           string             `json:"stok_status"`
+	StokHoldExpiresAt    pgtype.Timestamptz `json:"stok_hold_expires_at"`
 }
 
 type PesananItem struct {
@@ -211,6 +235,7 @@ type Produk struct {
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	StokTertahan int32              `json:"stok_tertahan"`
 }
 
 type Promo struct {
@@ -305,4 +330,15 @@ type User struct {
 	LastFailedAt      pgtype.Timestamptz `json:"last_failed_at"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WorkerRun struct {
+	JobName        string             `json:"job_name"`
+	LastStartedAt  pgtype.Timestamptz `json:"last_started_at"`
+	LastFinishedAt pgtype.Timestamptz `json:"last_finished_at"`
+	LastStatus     string             `json:"last_status"`
+	LastSummary    string             `json:"last_summary"`
+	LastError      string             `json:"last_error"`
+	RunCount       int64              `json:"run_count"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }

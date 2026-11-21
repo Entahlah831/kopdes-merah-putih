@@ -137,8 +137,8 @@ func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.
 
 func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 	specs := config.Catalog()
-	if len(specs) != 40 {
-		t.Fatalf("Expected exact 40 lean env vars, got %d", len(specs))
+	if len(specs) != 46 {
+		t.Fatalf("Expected exact 46 lean env vars, got %d", len(specs))
 	}
 	md := config.RenderEnvReferenceMarkdown()
 	if !strings.Contains(md, "| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | CONTOH NILAI SINTETIS |") {
@@ -160,7 +160,7 @@ func TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL(t *testi
 		"DB_SSLMODE":            "require",
 		"BLIND_INDEX_SECRET":    strings.Repeat("b2", 32),
 		"AES_MASTER_KEY":        strings.Repeat("c3", 32),
-		"BACKUP_ENCRYPTION_KEY": "ProdBackupKeyStrong!@#",
+		"BACKUP_AGE_RECIPIENT":  "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
 		"ALLOWED_ORIGINS":       "https://koperasi.example.id",
 	}
 
@@ -208,5 +208,64 @@ func TestValidateProduction_RejectsWideTrustedProxiesCIDRAndInsecureSSL(t *testi
 	}
 	if err := cfgOK.ValidateProduction(); err != nil {
 		t.Fatalf("Expected ValidateProduction to accept /32 and /16 TRUSTED_PROXIES, got: %v", err)
+	}
+}
+
+func TestAuditEnvVarsAndProductionGuards(t *testing.T) {
+	baseProd := map[string]string{
+		"APP_ENV":                         "production",
+		"DB_HOST":                         "10.20.1.5",
+		"DB_PORT":                         "5432",
+		"DB_NAME":                         "kopdes_prod",
+		"DB_USER":                         "kopdes_app",
+		"DB_PASSWORD":                     "ProdStrongPass123!@#",
+		"DB_SSLMODE":                      "require",
+		"BLIND_INDEX_SECRET":              strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":                  strings.Repeat("c3", 32),
+		"BACKUP_AGE_RECIPIENT":            "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+		"ALLOWED_ORIGINS":                 "https://koperasi.example.id",
+		"STOCK_HOLD_MINUTES":              "45",
+		"COOKIE_SECURE":                   "true",
+		"ALLOW_BEARER_AUTH":               "false",
+		"STORAGE_BUKTI_DIR":               "./storage/bukti_custom",
+		"BUKTI_RETENTION_DAYS":            "180",
+		"DUAL_CONTROL_BREAKGLASS_ENABLED": "true",
+	}
+	cfg, err := config.Load(func(k string) (string, bool) {
+		v, ok := baseProd[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatalf("unexpected Load error: %v", err)
+	}
+	if cfg.StockHoldMinutes != 45 || cfg.CookieSecure != "true" || cfg.AllowBearerAuth ||
+		cfg.StorageBuktiDir != "./storage/bukti_custom" || cfg.BuktiRetentionDays != 180 ||
+		!cfg.DualControlBreakglassEnabled {
+		t.Fatalf("audit config fields not bound properly: %+v", cfg)
+	}
+	if err := cfg.ValidateProduction(); err != nil {
+		t.Fatalf("ValidateProduction failed: %v", err)
+	}
+
+	badCookie := make(map[string]string, len(baseProd))
+	for k, v := range baseProd {
+		badCookie[k] = v
+	}
+	badCookie["COOKIE_SECURE"] = "false"
+	cBad, err := config.Load(func(k string) (string, bool) { return badCookie[k], true })
+	if err != nil {
+		t.Fatalf("unexpected Load error: %v", err)
+	}
+	if err := cBad.ValidateProduction(); err == nil {
+		t.Fatal("expected ValidateProduction to reject COOKIE_SECURE=false")
+	}
+
+	badAge := make(map[string]string, len(baseProd))
+	for k, v := range baseProd {
+		badAge[k] = v
+	}
+	badAge["BACKUP_AGE_RECIPIENT"] = "not-an-age-pubkey"
+	if _, err := config.Load(func(k string) (string, bool) { return badAge[k], true }); err == nil {
+		t.Fatal("expected Load to reject invalid BACKUP_AGE_RECIPIENT prefix")
 	}
 }

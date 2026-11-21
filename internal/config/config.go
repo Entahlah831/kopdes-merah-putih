@@ -26,7 +26,7 @@ type EnvVarSpec struct {
 }
 
 // AppConfig merupakan satu-satunya sumber kebenaran (single source of truth)
-// untuk 40 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
+// untuk 46 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
 type AppConfig struct {
 	// --- Runtime & Network (7) ---
 	AppEnv         string   `env:"APP_ENV" type:"string" default:"development" required:"all" secret:"false" component:"api,db-init" desc:"Lingkungan runtime (development|test|staging|production)" example:"test"`
@@ -47,35 +47,41 @@ type AppConfig struct {
 	DBSSLMode        string `env:"DB_SSLMODE" type:"string" default:"disable" required:"all" secret:"false" component:"api,scripts" desc:"Mode SSL PostgreSQL (require/verify-full di production)" example:"disable"`
 	PostgresPassword string `env:"POSTGRES_PASSWORD" type:"string" default:"" required:"compose" secret:"true" component:"compose" desc:"Sandi bootstrap superuser postgres di kontainer (init only)" example:"pg_test_bootstrap_123!"`
 
-	// --- Kriptografi & Sesi Autentikasi (8) ---
-	AESMasterKey         string        `env:"AES_MASTER_KEY" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci AES-256-GCM enkripsi PII/KYC (opsional prefix ver:id=hex)" example:"v1:k1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`
+	// --- Kriptografi & Sesi Autentikasi (10) ---
+	AESMasterKey         string        `env:"AES_MASTER_KEY" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Kunci AES-256-GCM enkripsi PII/KYC/bukti (opsional prefix ver:id=hex)" example:"v1:k1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`
 	AESPreviousKeys      string        `env:"AES_PREVIOUS_KEYS" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Kunci AES historis format 'v1:k1=hex;v1:k2=hex' saat rotasi" example:""`
 	BlindIndexSecret     string        `env:"BLIND_INDEX_SECRET" type:"string" default:"" required:"all" secret:"true" component:"api" desc:"Rahasia root HKDF-SHA256 untuk blind index NIK/email/token" example:"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"`
 	SessionIdleTTL       time.Duration `env:"SESSION_IDLE_TTL" type:"duration" default:"30m" required:"all" secret:"false" component:"api,frontend" desc:"Masa berlaku idle sesi opaque sebelum kedaluwarsa" example:"30m"`
 	SessionAbsTTL        time.Duration `env:"SESSION_ABS_TTL" type:"duration" default:"12h" required:"all" secret:"false" component:"api,frontend" desc:"Masa berlaku absolut maksimum satu sesi login" example:"12h"`
+	CookieSecure         string        `env:"COOKIE_SECURE" type:"string" default:"auto" required:"all" secret:"false" component:"api,frontend" desc:"Kebijakan atribut Secure cookie sesi (auto|true|false; produksi wajib auto/true)" example:"auto"`
+	AllowBearerAuth      bool          `env:"ALLOW_BEARER_AUTH" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Izinkan header Authorization Bearer untuk klien non-browser (default false di produksi)" example:"false"`
 	MFARequiredRoles     []string      `env:"MFA_REQUIRED_ROLES" type:"[]string" default:"admin,bendahara" required:"all" secret:"false" component:"api,frontend" desc:"Daftar peran yang wajib MFA TOTP" example:"admin,bendahara"`
 	LoginMaxAttempts     int           `env:"LOGIN_MAX_ATTEMPTS" type:"int" default:"5" required:"all" secret:"false" component:"api" desc:"Batas kegagalan login sebelum kunci sementara" example:"5"`
 	LoginLockoutDuration time.Duration `env:"LOGIN_LOCKOUT_DURATION" type:"duration" default:"15m" required:"all" secret:"false" component:"api" desc:"Durasi penguncian login setelah batas percobaan terlampaui" example:"15m"`
 
-	// --- CAPTCHA & Pembayaran QRIS / Pilot (12) ---
-	CaptchaEnabled            bool          `env:"CAPTCHA_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Aktifkan verifikasi CAPTCHA Turnstile pada endpoint publik" example:"false"`
-	CaptchaSiteKey            string        `env:"CAPTCHA_SITE_KEY" type:"string" default:"" required:"optional" secret:"false" component:"api,frontend" desc:"Public site key Turnstile untuk frontend" example:""`
-	CaptchaSecretKey          string        `env:"CAPTCHA_SECRET_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Secret key verifikasi server-side CAPTCHA Turnstile" example:""`
-	PaymentsEnabled           bool          `env:"PAYMENTS_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pembuatan & verifikasi pembayaran" example:"true"`
-	RegistrationEnabled       bool          `env:"REGISTRATION_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pendaftaran anggota baru & unggah KYC" example:"true"`
-	AllowPersonalPaymentPilot bool          `env:"ALLOW_PERSONAL_PAYMENT_PILOT" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Izinkan rekening pilot perorangan terbatas batas nominal/harian" example:"false"`
-	PilotMaxPerTx             int64         `env:"PILOT_MAX_PER_TX" type:"int64" default:"500000" required:"optional" secret:"false" component:"api" desc:"Batas nominal per transaksi rekening pilot (Rupiah)" example:"500000"`
-	PilotMaxPerDay            int64         `env:"PILOT_MAX_PER_DAY" type:"int64" default:"2000000" required:"optional" secret:"false" component:"api" desc:"Batas nominal harian rekening pilot Asia/Jakarta (Rupiah)" example:"2000000"`
-	QRISUniqueDigits          int           `env:"QRIS_UNIQUE_DIGITS" type:"int" default:"3" required:"optional" secret:"false" component:"api,frontend" desc:"Jumlah digit kode unik integer QRIS statis (3 atau 4)" example:"3"`
-	PaymentExpiryDuration     time.Duration `env:"PAYMENT_EXPIRY_DURATION" type:"duration" default:"15m" required:"optional" secret:"false" component:"api,frontend" desc:"Durasi kedaluwarsa tagihan pembayaran QRIS menunggu bayar" example:"15m"`
-	PendingLimitPerMember     int           `env:"PENDING_LIMIT_PER_MEMBER" type:"int" default:"2" required:"optional" secret:"false" component:"api" desc:"Batas maksimal pembayaran QRIS berstatus menunggu per anggota" example:"2"`
-	PendingLimitGlobal        int           `env:"PENDING_LIMIT_GLOBAL" type:"int" default:"50" required:"optional" secret:"false" component:"api" desc:"Batas global pembayaran QRIS aktif bersamaan untuk ruang kode unik" example:"50"`
+	// --- CAPTCHA, Stok, & Pembayaran QRIS / Kendali Ganda (14) ---
+	CaptchaEnabled               bool          `env:"CAPTCHA_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Aktifkan verifikasi CAPTCHA Turnstile pada endpoint publik" example:"false"`
+	CaptchaSiteKey               string        `env:"CAPTCHA_SITE_KEY" type:"string" default:"" required:"optional" secret:"false" component:"api,frontend" desc:"Public site key Turnstile untuk frontend" example:""`
+	CaptchaSecretKey             string        `env:"CAPTCHA_SECRET_KEY" type:"string" default:"" required:"optional" secret:"true" component:"api" desc:"Secret key verifikasi server-side CAPTCHA Turnstile" example:""`
+	PaymentsEnabled              bool          `env:"PAYMENTS_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pembuatan & verifikasi pembayaran" example:"true"`
+	RegistrationEnabled          bool          `env:"REGISTRATION_ENABLED" type:"bool" default:"true" required:"optional" secret:"false" component:"api,frontend" desc:"Status fitur pendaftaran anggota baru & unggah KYC" example:"true"`
+	AllowPersonalPaymentPilot    bool          `env:"ALLOW_PERSONAL_PAYMENT_PILOT" type:"bool" default:"false" required:"optional" secret:"false" component:"api,frontend" desc:"Izinkan rekening pilot perorangan terbatas batas nominal/harian" example:"false"`
+	PilotMaxPerTx                int64         `env:"PILOT_MAX_PER_TX" type:"int64" default:"500000" required:"optional" secret:"false" component:"api" desc:"Batas nominal per transaksi rekening pilot (Rupiah)" example:"500000"`
+	PilotMaxPerDay               int64         `env:"PILOT_MAX_PER_DAY" type:"int64" default:"2000000" required:"optional" secret:"false" component:"api" desc:"Batas nominal harian rekening pilot Asia/Jakarta (Rupiah)" example:"2000000"`
+	QRISUniqueDigits             int           `env:"QRIS_UNIQUE_DIGITS" type:"int" default:"3" required:"optional" secret:"false" component:"api,frontend" desc:"Jumlah digit kode unik integer QRIS statis (3 atau 4)" example:"3"`
+	PaymentExpiryDuration        time.Duration `env:"PAYMENT_EXPIRY_DURATION" type:"duration" default:"15m" required:"optional" secret:"false" component:"api,frontend" desc:"Durasi kedaluwarsa tagihan pembayaran QRIS menunggu bayar" example:"15m"`
+	StockHoldMinutes             int           `env:"STOCK_HOLD_MINUTES" type:"int" default:"60" required:"optional" secret:"false" component:"api,cli" desc:"Durasi tahan (reservasi) stok pesanan dalam menit mencakup batas bayar + SLA verifikasi (KEPUTUSAN PEMILIK)" example:"60"`
+	PendingLimitPerMember        int           `env:"PENDING_LIMIT_PER_MEMBER" type:"int" default:"2" required:"optional" secret:"false" component:"api" desc:"Batas maksimal pembayaran QRIS berstatus menunggu per anggota" example:"2"`
+	PendingLimitGlobal           int           `env:"PENDING_LIMIT_GLOBAL" type:"int" default:"50" required:"optional" secret:"false" component:"api" desc:"Batas global pembayaran QRIS aktif bersamaan untuk ruang kode unik" example:"50"`
+	DualControlBreakglassEnabled bool          `env:"DUAL_CONTROL_BREAKGLASS_ENABLED" type:"bool" default:"false" required:"optional" secret:"false" component:"api" desc:"Izinkan mode darurat break-glass admin ber-MFA untuk kendali ganda (KEPUTUSAN PEMILIK)" example:"false"`
 
-	// --- Retensi PDP, Penyimpanan KYC & Backup (5) ---
+	// --- Retensi PDP, Penyimpanan KYC/Bukti & Backup Terautentikasi (7) ---
 	PDPRejectedRetentionDays int    `env:"PDP_REJECTED_RETENTION_DAYS" type:"int" default:"30" required:"optional" secret:"false" component:"api,cli" desc:"Retensi hari berkas pendaftaran ditolak sebelum purge (PERLU VERIFIKASI HUKUM)" example:"30"`
-	StorageKYCDir            string `env:"STORAGE_KYC_DIR" type:"string" default:"./storage/kyc" required:"all" secret:"false" component:"api,compose" desc:"Direktori penyimpanan berkas KYC terenkripsi AES-256-GCM" example:"./storage/kyc"`
-	BackupDir                string `env:"BACKUP_DIR" type:"string" default:"./backups" required:"scripts" secret:"false" component:"scripts" desc:"Direktori penyimpanan arsip backup PostgreSQL terenkripsi" example:"./backups"`
-	BackupEncryptionKey      string `env:"BACKUP_ENCRYPTION_KEY" type:"string" default:"" required:"prod" secret:"true" component:"scripts" desc:"Passphrase OpenSSL AES-256-CBC untuk enkripsi arsip backup" example:"setA_backup_enc_key_0123456789abcdef!"`
+	StorageKYCDir            string `env:"STORAGE_KYC_DIR" type:"string" default:"./storage/kyc" required:"all" secret:"false" component:"api,cli,compose" desc:"Direktori penyimpanan berkas KYC terenkripsi AES-256-GCM" example:"./storage/kyc"`
+	StorageBuktiDir          string `env:"STORAGE_BUKTI_DIR" type:"string" default:"./storage/bukti" required:"all" secret:"false" component:"api,cli,compose" desc:"Direktori/volume penyimpanan berkas bukti bayar & refund terenkripsi terpisah dari KYC" example:"./storage/bukti"`
+	BuktiRetentionDays       int    `env:"BUKTI_RETENTION_DAYS" type:"int" default:"365" required:"optional" secret:"false" component:"api,cli" desc:"Retensi hari berkas bukti bayar non-lunas sebelum purge (PERLU VERIFIKASI HUKUM)" example:"365"`
+	BackupDir                string `env:"BACKUP_DIR" type:"string" default:"./backups" required:"scripts" secret:"false" component:"scripts" desc:"Direktori penyimpanan arsip backup PostgreSQL & berkas terenkripsi" example:"./backups"`
+	BackupAgeRecipient       string `env:"BACKUP_AGE_RECIPIENT" type:"string" default:"" required:"prod" secret:"false" component:"scripts" desc:"Public key penerima age (age1...) untuk enkripsi backup terautentikasi; private key WAJIB disimpan di luar server" example:"age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"`
 	BackupRetentionDays      int    `env:"BACKUP_RETENTION_DAYS" type:"int" default:"30" required:"scripts" secret:"false" component:"scripts" desc:"Jumlah hari retensi arsip backup lokal" example:"30"`
 
 	// DatabaseURL opsional dari OS env/PaaS (tidak masuk daftar 40 var .env) untuk deteksi konflik DSN.
@@ -233,8 +239,18 @@ func (c AppConfig) validateSessionAndLimits() error {
 	if c.PaymentExpiryDuration <= 0 || c.PendingLimitPerMember <= 0 || c.PendingLimitGlobal < c.PendingLimitPerMember {
 		return fmt.Errorf("batas pembayaran/pending QRIS tidak valid")
 	}
-	if c.PDPRejectedRetentionDays <= 0 || c.BackupRetentionDays <= 0 {
-		return fmt.Errorf("retensi PDP dan backup wajib > 0 hari")
+	if c.PDPRejectedRetentionDays <= 0 || c.BackupRetentionDays <= 0 || c.BuktiRetentionDays <= 0 {
+		return fmt.Errorf("retensi PDP, bukti, dan backup wajib > 0 hari")
+	}
+	if c.StockHoldMinutes <= 0 {
+		return fmt.Errorf("STOCK_HOLD_MINUTES wajib > 0")
+	}
+	cs := strings.ToLower(strings.TrimSpace(c.CookieSecure))
+	if cs != "auto" && cs != "true" && cs != "false" {
+		return fmt.Errorf("COOKIE_SECURE harus auto, true, atau false (dapat %q)", c.CookieSecure)
+	}
+	if rec := strings.TrimSpace(c.BackupAgeRecipient); rec != "" && !strings.HasPrefix(rec, "age1") {
+		return fmt.Errorf("BACKUP_AGE_RECIPIENT harus berupa public key age berawalan age1")
 	}
 	return nil
 }
@@ -247,11 +263,14 @@ func (c AppConfig) ValidateProduction() error {
 	if strings.TrimSpace(c.DBPassword) == "" {
 		return fmt.Errorf("DB_PASSWORD wajib diisi di produksi")
 	}
+	if strings.EqualFold(strings.TrimSpace(c.CookieSecure), "false") {
+		return fmt.Errorf("COOKIE_SECURE tidak boleh false di produksi")
+	}
 	if c.CaptchaEnabled && (strings.TrimSpace(c.CaptchaSiteKey) == "" || strings.TrimSpace(c.CaptchaSecretKey) == "") {
 		return fmt.Errorf("CAPTCHA_SITE_KEY dan CAPTCHA_SECRET_KEY wajib diisi bila CAPTCHA_ENABLED=true di produksi")
 	}
-	if strings.TrimSpace(c.BackupEncryptionKey) == "" {
-		return fmt.Errorf("BACKUP_ENCRYPTION_KEY wajib diisi di produksi")
+	if rec := strings.TrimSpace(c.BackupAgeRecipient); rec == "" || !strings.HasPrefix(rec, "age1") {
+		return fmt.Errorf("BACKUP_AGE_RECIPIENT wajib diisi public key age1... di produksi")
 	}
 	for _, o := range c.AllowedOrigins {
 		if strings.TrimSpace(o) == "*" {
@@ -355,7 +374,7 @@ func (c AppConfig) validateDatabaseURLConsistency() error {
 	return nil
 }
 
-// Catalog mengembalikan daftar spesifikasi 40 variabel environment secara otomatis dari tag struct AppConfig.
+// Catalog mengembalikan daftar spesifikasi 46 variabel environment secara otomatis dari tag struct AppConfig.
 func Catalog() []EnvVarSpec {
 	t := reflect.TypeOf(AppConfig{})
 	specs := make([]EnvVarSpec, 0, t.NumField())
@@ -386,7 +405,7 @@ func RenderEnvReferenceMarkdown() string {
 	var b strings.Builder
 	b.WriteString("# Referensi Variabel Environment — Kopdes Merah Putih\n\n")
 	b.WriteString("> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.\n")
-	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (maksimal 40 variabel).\n\n")
+	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (maksimal 46 variabel).\n\n")
 
 	b.WriteString("## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)\n\n")
 	b.WriteString("| Jenis Pengaturan | Lokasi Penyimpanan | Contoh Parameter |\n")

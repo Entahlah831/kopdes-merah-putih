@@ -31,8 +31,8 @@ func repoRoot(t *testing.T) string {
 func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	root := repoRoot(t)
 	specs := config.Catalog()
-	if len(specs) != 40 {
-		t.Fatalf("Jumlah variabel env harus tepat 40, ditemukan %d", len(specs))
+	if len(specs) != 46 {
+		t.Fatalf("Jumlah variabel env harus tepat 46, ditemukan %d", len(specs))
 	}
 	specMap := make(map[string]config.EnvVarSpec, len(specs))
 	for _, s := range specs {
@@ -75,7 +75,8 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	mustDiffer := []string{
 		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "DB_PORT", "DB_HOST_PORT",
 		"DB_PASSWORD", "POSTGRES_PASSWORD", "AES_MASTER_KEY", "BLIND_INDEX_SECRET",
-		"BACKUP_ENCRYPTION_KEY", "SESSION_IDLE_TTL", "QRIS_UNIQUE_DIGITS", "MFA_REQUIRED_ROLES",
+		"BACKUP_AGE_RECIPIENT", "STORAGE_BUKTI_DIR", "STOCK_HOLD_MINUTES",
+		"ALLOW_BEARER_AUTH", "BUKTI_RETENTION_DAYS", "SESSION_IDLE_TTL", "QRIS_UNIQUE_DIGITS", "MFA_REQUIRED_ROLES",
 	}
 	for _, k := range mustDiffer {
 		if setA[k] == "" || setB[k] == "" {

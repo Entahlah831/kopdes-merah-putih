@@ -141,6 +141,14 @@ type targetResolution struct {
 	allocNominals  map[string]int64
 }
 
+func scopedPaymentIdempotencyKey(userID uuid.UUID, rawKey string) string {
+	k := strings.TrimSpace(rawKey)
+	if k == "" {
+		return ""
+	}
+	return userID.String() + ":" + k
+}
+
 func (s *Service) CreatePembayaran(ctx context.Context, claims *middleware.SessionClaims, in CreatePembayaranInput, idemKey, ip string) (*PembayaranResponse, bool, error) {
 	if !s.cfg.PaymentsEnabled {
 		return nil, false, response.NewDomainError(http.StatusServiceUnavailable, "PAYMENTS_DISABLED", "Fitur pembayaran sedang dinonaktifkan")
@@ -148,9 +156,12 @@ func (s *Service) CreatePembayaran(ctx context.Context, claims *middleware.Sessi
 	if idemKey == "" {
 		idemKey = strings.TrimSpace(in.IdempotencyKey)
 	}
-	if idemKey != "" {
-		existing, err := s.q.GetPembayaranByIdempotencyKey(ctx, response.ToPGText(idemKey))
-		if err == nil && response.FromPGUUID(existing.PembayarUserID) == claims.UserID {
+	scopedKey := scopedPaymentIdempotencyKey(claims.UserID, idemKey)
+	if scopedKey != "" {
+		if existing, err := s.q.GetPembayaranByIdempotencyKey(ctx, response.ToPGText(scopedKey)); err == nil && response.FromPGUUID(existing.PembayarUserID) == claims.UserID {
+			return &PembayaranResponse{Pembayaran: mapCreateRowFromIdem(existing)}, true, nil
+		}
+		if existing, err := s.q.GetPembayaranByIdempotencyKey(ctx, response.ToPGText(idemKey)); err == nil && response.FromPGUUID(existing.PembayarUserID) == claims.UserID {
 			return &PembayaranResponse{Pembayaran: mapCreateRowFromIdem(existing)}, true, nil
 		}
 	}
@@ -162,7 +173,7 @@ func (s *Service) CreatePembayaran(ctx context.Context, claims *middleware.Sessi
 	if metode == "tunai" && claims.Role != "admin" && claims.Role != "bendahara" {
 		return nil, false, response.NewDomainError(http.StatusForbidden, "FORBIDDEN", "Pembayaran tunai hanya boleh dicatat oleh admin atau bendahara")
 	}
-	res, err := s.createPembayaranTx(ctx, claims, jenis, metode, in, idemKey, ip)
+	res, err := s.createPembayaranTx(ctx, claims, jenis, metode, in, scopedKey, ip)
 	return res, false, err
 }
 

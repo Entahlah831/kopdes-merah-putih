@@ -43,6 +43,9 @@ func (s *Service) UploadDokumen(ctx context.Context, claims *middleware.SessionC
 }
 
 func (s *Service) persistKYCDocument(ctx context.Context, pgID pgtype.UUID, idStr, status, tipe string, raw []byte, claims *middleware.SessionClaims, ip string) (map[string]interface{}, error) {
+	if s.store == nil {
+		return nil, response.NewDomainError(http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "Penyimpanan berkas KYC tidak tersedia")
+	}
 	q := db.New(s.pool)
 	var oldKey string
 	if prev, err := q.GetDokumenKYCByPendaftaranAndTipe(ctx, db.GetDokumenKYCByPendaftaranAndTipeParams{PendaftaranID: pgID, TipeDokumen: tipe}); err == nil {

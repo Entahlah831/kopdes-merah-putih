@@ -162,13 +162,26 @@ func validateCheckoutInput(in CheckoutInput) (*validatedCheckout, error) {
 	return out, nil
 }
 
+func scopedOrderIdempotencyKey(userID uuid.UUID, rawKey string) string {
+	k := strings.TrimSpace(rawKey)
+	if k == "" {
+		return ""
+	}
+	return userID.String() + ":" + k
+}
+
 func (s *Service) Checkout(ctx context.Context, claims *middleware.SessionClaims, in CheckoutInput, idemKey, ip string) (*PesananDTO, bool, error) {
 	if idemKey == "" {
 		idemKey = strings.TrimSpace(in.IdempotencyKey)
 	}
-	if idemKey != "" {
-		existing, err := s.q.GetPesananByIdempotencyKey(ctx, response.ToPGText(idemKey))
-		if err == nil && response.FromPGUUID(existing.UserID) == claims.UserID {
+	scopedKey := scopedOrderIdempotencyKey(claims.UserID, idemKey)
+	if scopedKey != "" {
+		if existing, err := s.q.GetPesananByIdempotencyKey(ctx, response.ToPGText(scopedKey)); err == nil && response.FromPGUUID(existing.UserID) == claims.UserID {
+			items, _ := s.q.ListPesananItems(ctx, existing.ID)
+			dto := mapPesananCreated(existing, items)
+			return &dto, true, nil
+		}
+		if existing, err := s.q.GetPesananByIdempotencyKey(ctx, response.ToPGText(idemKey)); err == nil && response.FromPGUUID(existing.UserID) == claims.UserID {
 			items, _ := s.q.ListPesananItems(ctx, existing.ID)
 			dto := mapPesananCreated(existing, items)
 			return &dto, true, nil
@@ -178,7 +191,7 @@ func (s *Service) Checkout(ctx context.Context, claims *middleware.SessionClaims
 	if err != nil {
 		return nil, false, err
 	}
-	dto, err := s.executeCheckoutTx(ctx, claims, in, vc, idemKey, ip)
+	dto, err := s.executeCheckoutTx(ctx, claims, in, vc, scopedKey, ip)
 	return dto, false, err
 }
 

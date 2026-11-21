@@ -93,7 +93,12 @@ func (h *Handler) HandleMFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in MFASetupInput
-	_ = response.DecodeJSON(w, r, &in, 32<<10)
+	if r.ContentLength != 0 {
+		if err := response.DecodeJSON(w, r, &in, 32<<10); err != nil {
+			response.WriteServiceError(w, err)
+			return
+		}
+	}
 	res, err := h.svc.SetupMFA(r.Context(), claims, in, middleware.GetClientIP(r, h.svc.trusted))
 	if err != nil {
 		response.WriteServiceError(w, err)

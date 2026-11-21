@@ -35,9 +35,13 @@ func (h *Handler) HandlePublicRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleUploadDokumen(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, h.svc.store.maxBytes+(64<<10))
+	var maxBytes int64 = 5 << 20
+	if h.svc != nil && h.svc.store != nil && h.svc.store.maxBytes > 0 {
+		maxBytes = h.svc.store.maxBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(64<<10))
 	// #nosec G120 -- ukuran body sudah dibatasi ketat dengan http.MaxBytesReader pada baris sebelumnya
-	if err := r.ParseMultipartForm(h.svc.store.maxBytes); err != nil {
+	if err := r.ParseMultipartForm(maxBytes); err != nil {
 		response.BadRequest(w, "Form multipart tidak valid atau ukuran file melebihi batas")
 		return
 	}
@@ -49,7 +53,7 @@ func (h *Handler) HandleUploadDokumen(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(file, h.svc.store.maxBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		response.BadRequest(w, "Gagal membaca data berkas KYC")
 		return

@@ -54,15 +54,21 @@ func WriteServiceError(w http.ResponseWriter, err error) {
 	InternalServerError(w, "Terjadi kesalahan pada server")
 }
 
-// DecodeJSON mendekode body JSON dengan batas ukuran dan menolak JSON tidak valid.
+// DecodeJSON mendekode body JSON dengan batas ukuran, melarang field tak dikenal (anti-mass-assignment),
+// serta menolak payload trailing di luar satu objek JSON.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}, maxBytes int64) error {
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxBytes))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return NewDomainError(http.StatusBadRequest, "INVALID_JSON", "Format JSON request tidak valid")
+		return NewDomainError(http.StatusBadRequest, "INVALID_JSON", "Format JSON tidak valid atau memuat field tidak dikenal")
+	}
+	var trailing interface{}
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return NewDomainError(http.StatusBadRequest, "INVALID_JSON", "Body JSON hanya boleh berisi satu objek tunggal")
 	}
 	return nil
 }

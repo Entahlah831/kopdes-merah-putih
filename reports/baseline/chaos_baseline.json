@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-11-21T13:32:24Z",
+  "kill_requests_sent": 70,
+  "kill_orders_created": 53,
+  "kill_stock_invariant_ok": true,
+  "kill_money_invariant_ok": true,
+  "kill_negative_stock_rows": 0,
+  "kill_mismatched_paid_rows": 0,
+  "kill_orphan_item_orders": 0,
+  "backup_bytes_plain": 10024399,
+  "backup_bytes_encrypted": 10024433,
+  "backup_tamper_rejected": true,
+  "restore_tables_count": 21,
+  "restore_smoke_member_count": 26,
+  "measured_rto_ms": 5180,
+  "measured_rpo_note": "RPO=0 untuk transaksi komit sebelum snapshot pg_dump; di luar backup harian berbasis jadwal cron VPS, RPO sama dengan interval backup (24 jam default tanpa WAL archiving/PITR)."
+}

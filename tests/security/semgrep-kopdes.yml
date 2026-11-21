@@ -1,0 +1,54 @@
+rules:
+  - id: kopdes-no-raw-sql-in-internal
+    patterns:
+      - pattern-either:
+          - pattern: $POOL.Exec(...)
+          - pattern: $POOL.Query(...)
+          - pattern: $POOL.QueryRow(...)
+    paths:
+      include:
+        - internal/
+      exclude:
+        - internal/db/
+        - internal/**/*_test.go
+    message: "Query database di internal/ wajib menggunakan sqlc, bukan SQL mentah."
+    languages: [go]
+    severity: ERROR
+
+  - id: kopdes-no-float-money
+    patterns:
+      - pattern-either:
+          - pattern: float32
+          - pattern: float64
+    paths:
+      include:
+        - internal/iuran/
+        - internal/katalog/
+        - internal/pesanan/
+        - internal/pembayaran/
+      exclude:
+        - internal/**/*_test.go
+    message: "Perhitungan nominal Rupiah wajib memakai integer int64, dilarang float32/float64."
+    languages: [go]
+    severity: WARNING
+
+  - id: kopdes-json-disallow-unknown-fields
+    pattern: json.NewDecoder($R)
+    paths:
+      include:
+        - internal/
+      exclude:
+        - internal/**/*_test.go
+    message: "Pastikan decoder JSON memakai DisallowUnknownFields() via DecodeStrictJSON untuk anti-mass-assignment."
+    languages: [go]
+    severity: INFO
+
+  - id: kopdes-no-innerhtml-sink
+    pattern: $EL.innerHTML = $VAL
+    paths:
+      include:
+        - frontend-wireframe/src/
+        - frontend-tester/
+    message: "Gunakan textContent atau DOM builder aman untuk mencegah DOM XSS."
+    languages: [ts, js]
+    severity: ERROR

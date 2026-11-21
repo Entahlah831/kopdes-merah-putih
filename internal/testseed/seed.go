@@ -114,11 +114,11 @@ func SeedAll(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, over
 	if err != nil {
 		return "", err
 	}
-	ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
-	kp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys)
+	kpSet, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys)
 	if err != nil {
 		return "", fmt.Errorf("inisialisasi KeyProvider seed: %w", err)
 	}
+	kp := kpSet.DB
 	blindKey := security.DecodeSecretMaterial(cfg.BlindIndexSecret)
 	passHash, err := security.HashPasswordWithCost(pwd, 10)
 	if err != nil {

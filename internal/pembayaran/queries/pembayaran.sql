@@ -99,14 +99,14 @@ RETURNING id, pembayaran_id, tagihan_iuran_id, pesanan_id, nominal_alokasi;
 -- name: GetPembayaranByID :one
 SELECT id, nomor_pembayaran, nomor_kwitansi, pembayar_user_id, anggota_id, rekening_qris_id,
        jenis_transaksi, metode, nominal_pokok, kode_unik, nominal_total, nominal_dibayar,
-       selisih_kode_unik, catatan_akuntansi, status, bukti_url, bukti_hash, catatan_pembayar,
-       alasan_verifikasi, dibuat_oleh, diverifikasi_oleh, verified_at, expires_at, created_at, updated_at
+       selisih_kode_unik, catatan_akuntansi, status, bukti_url, bukti_hash, bukti_key_id, bukti_dek_wrapped,
+       catatan_pembayar, alasan_verifikasi, dibuat_oleh, diverifikasi_oleh, verified_at, expires_at, created_at, updated_at
 FROM pembayaran
 WHERE id = sqlc.arg(id);
 
 -- name: GetPembayaranForUpdate :one
 SELECT id, nomor_pembayaran, pembayar_user_id, anggota_id, jenis_transaksi, metode,
-       nominal_pokok, kode_unik, nominal_total, status, dibuat_oleh, diverifikasi_oleh, expires_at
+       nominal_pokok, kode_unik, nominal_total, nominal_dibayar, status, dibuat_oleh, diverifikasi_oleh, expires_at
 FROM pembayaran
 WHERE id = sqlc.arg(id)
 FOR UPDATE;
@@ -115,6 +115,8 @@ FOR UPDATE;
 UPDATE pembayaran
 SET bukti_url = sqlc.arg(bukti_url),
     bukti_hash = sqlc.arg(bukti_hash),
+    bukti_key_id = sqlc.arg(bukti_key_id),
+    bukti_dek_wrapped = sqlc.arg(bukti_dek_wrapped),
     catatan_pembayar = sqlc.arg(catatan_pembayar),
     status = 'menunggu_verifikasi'
 WHERE id = sqlc.arg(id)
@@ -180,3 +182,29 @@ SELECT EXISTS(
     WHERE pa.tagihan_iuran_id = sqlc.arg(tagihan_iuran_id)
       AND p.status IN ('menunggu_pembayaran', 'menunggu_verifikasi')
 )::bool;
+
+-- name: ListExpiredNonPaidPembayaranWithBukti :many
+SELECT id, bukti_url
+FROM pembayaran
+WHERE status IN ('ditolak', 'kedaluwarsa', 'batal')
+  AND bukti_url <> ''
+  AND updated_at < NOW() - make_interval(days => sqlc.arg(retention_days)::int);
+
+-- name: ClearPembayaranBukti :exec
+UPDATE pembayaran
+SET bukti_url = '',
+    bukti_hash = NULL,
+    bukti_key_id = '',
+    bukti_dek_wrapped = NULL
+WHERE id = sqlc.arg(id);
+
+-- name: ListPembayaranWithBukti :many
+SELECT id, bukti_url, bukti_key_id, bukti_dek_wrapped
+FROM pembayaran
+WHERE bukti_url <> '';
+
+-- name: UpdatePembayaranBuktiEnvelope :exec
+UPDATE pembayaran
+SET bukti_key_id = sqlc.arg(bukti_key_id),
+    bukti_dek_wrapped = sqlc.arg(bukti_dek_wrapped)
+WHERE id = sqlc.arg(id);

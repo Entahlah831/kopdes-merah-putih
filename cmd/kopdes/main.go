@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -65,10 +64,12 @@ func main() {
 
 func printUsage() {
 	fmt.Println("Penggunaan: kopdes [--env-file .env] <domain> <aksi> [flag]")
-	fmt.Println("  admin create   --email <e> --nama <n> --hp <hp> --password <pwd>")
-	fmt.Println("  iuran generate --periode YYYY-MM")
-	fmt.Println("  pdp purge      [--days 30]")
+	fmt.Println("  admin create          --email <e> --nama <n> --hp <hp> --password <pwd>")
+	fmt.Println("  iuran generate        --periode YYYY-MM")
+	fmt.Println("  pdp purge             [--days 30]")
+	fmt.Println("  bukti purge           [--days 365]")
 	fmt.Println("  pesanan expire")
+	fmt.Println("  storage migrate-files")
 }
 
 func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) {
@@ -108,8 +109,12 @@ func dispatchCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConf
 		return runIuranGenerate(ctx, pool, rest)
 	case "pdp purge":
 		return runPDPPurge(ctx, pool, cfg, rest)
+	case "bukti purge":
+		return runBuktiPurge(ctx, pool, cfg, rest)
 	case "pesanan expire":
 		return runPesananExpire(ctx, pool, cfg)
+	case "storage migrate-files":
+		return runStorageMigrateFiles(ctx, pool, cfg)
 	default:
 		printUsage()
 		return fmt.Errorf("perintah tidak dikenal: %s", key)
@@ -130,11 +135,11 @@ func runAdminCreate(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfi
 	if em == "" || len(*password) < 10 {
 		return fmt.Errorf("email dan password (>=10 karakter) wajib diisi")
 	}
-	ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
-	kp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys)
+	kpSet, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys)
 	if err != nil {
 		return err
 	}
+	kp := kpSet.DB
 	blindKey := security.DecodeSecretMaterial(cfg.BlindIndexSecret)
 	passHash, err := security.HashPasswordWithCost(*password, 12)
 	if err != nil {
@@ -188,12 +193,12 @@ func runPDPPurge(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
-	kp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys)
+	kpSet, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys)
 	if err != nil {
 		return err
 	}
-	store, err := pendaftaran.NewKYCFileStore(filepath.Join(cfg.StorageKYCDir, "kyc"), kp, 5<<20)
+	kp := kpSet.DB
+	store, err := pendaftaran.NewKYCFileStore(cfg.StorageKYCDir, kpSet.KYC, 5<<20)
 	if err != nil {
 		return err
 	}
@@ -207,11 +212,11 @@ func runPDPPurge(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, 
 }
 
 func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig) error {
-	ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
-	kp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys)
+	kpSet, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys)
 	if err != nil {
 		return err
 	}
+	kp := kpSet.DB
 	ordCount, err := pesanan.NewService(pool, kp, pesanan.Config{}).ExpireUnpaidOrders(ctx)
 	if err != nil {
 		return err

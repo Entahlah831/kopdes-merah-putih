@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -65,20 +64,21 @@ func TestProofFileEncryptionRoundTrip(t *testing.T) {
 	}
 	svc := &Service{cfg: Config{ProofStorageDir: dir, KeyProvider: kp}}
 	id := uuid.New()
-	if err := svc.saveEncryptedProofFile(id, pngBytes); err != nil {
-		t.Fatalf("saveEncryptedProofFile: %v", err)
+	wrapped, keyID, err := svc.saveEncryptedProofEnvelope(id, pngBytes)
+	if err != nil {
+		t.Fatalf("saveEncryptedProofEnvelope: %v", err)
 	}
 	target := filepath.Join(dir, "bukti_"+id.String()+".enc")
 	enc, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("expected encrypted proof file %s: %v", target, err)
 	}
-	if bytes.HasPrefix(enc, []byte{0x89, 'P', 'N', 'G'}) || !strings.HasPrefix(string(enc), "v1:k1:") {
-		t.Fatal("proof file on disk must be AES-GCM ciphertext, not plaintext PNG")
+	if bytes.HasPrefix(enc, []byte{0x89, 'P', 'N', 'G'}) || keyID != "v1:k1" || len(wrapped) == 0 {
+		t.Fatal("proof file on disk must be AES-GCM envelope ciphertext, not plaintext PNG")
 	}
-	plain, mime, err := svc.readDecryptedProofFile(id)
+	plain, mime, err := svc.readDecryptedProofEnvelope(id, wrapped)
 	if err != nil {
-		t.Fatalf("readDecryptedProofFile: %v", err)
+		t.Fatalf("readDecryptedProofEnvelope: %v", err)
 	}
 	if mime != "image/png" || !bytes.Equal(plain, pngBytes) {
 		t.Fatalf("decrypted proof mismatch: mime=%s len=%d", mime, len(plain))

@@ -246,6 +246,48 @@ func (q *Queries) GetPendaftaranByIDForUpdate(ctx context.Context, id pgtype.UUI
 	return i, err
 }
 
+const listAllDokumenKYC = `-- name: ListAllDokumenKYC :many
+SELECT id, pendaftaran_id, tipe_dokumen, storage_key, key_id, dek_wrapped
+FROM dokumen_kyc
+ORDER BY created_at ASC
+`
+
+type ListAllDokumenKYCRow struct {
+	ID            pgtype.UUID `json:"id"`
+	PendaftaranID pgtype.UUID `json:"pendaftaran_id"`
+	TipeDokumen   string      `json:"tipe_dokumen"`
+	StorageKey    string      `json:"storage_key"`
+	KeyID         string      `json:"key_id"`
+	DekWrapped    []byte      `json:"dek_wrapped"`
+}
+
+func (q *Queries) ListAllDokumenKYC(ctx context.Context) ([]ListAllDokumenKYCRow, error) {
+	rows, err := q.db.Query(ctx, listAllDokumenKYC)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllDokumenKYCRow{}
+	for rows.Next() {
+		var i ListAllDokumenKYCRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PendaftaranID,
+			&i.TipeDokumen,
+			&i.StorageKey,
+			&i.KeyID,
+			&i.DekWrapped,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDokumenKYCByPendaftaran = `-- name: ListDokumenKYCByPendaftaran :many
 SELECT id, pendaftaran_id, tipe_dokumen, storage_key, mime_type, ukuran_bytes, lebar_px, tinggi_px, created_at
 FROM dokumen_kyc
@@ -396,6 +438,24 @@ WHERE id = $1 AND status = 'perlu_perbaikan'
 
 func (q *Queries) ResubmitPendaftaranAfterFix(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, resubmitPendaftaranAfterFix, id)
+	return err
+}
+
+const updateDokumenKYCEnvelope = `-- name: UpdateDokumenKYCEnvelope :exec
+UPDATE dokumen_kyc
+SET key_id = $1,
+    dek_wrapped = $2
+WHERE id = $3
+`
+
+type UpdateDokumenKYCEnvelopeParams struct {
+	KeyID      string      `json:"key_id"`
+	DekWrapped []byte      `json:"dek_wrapped"`
+	ID         pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateDokumenKYCEnvelope(ctx context.Context, arg UpdateDokumenKYCEnvelopeParams) error {
+	_, err := q.db.Exec(ctx, updateDokumenKYCEnvelope, arg.KeyID, arg.DekWrapped, arg.ID)
 	return err
 }
 

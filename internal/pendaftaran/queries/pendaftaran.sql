@@ -103,3 +103,14 @@ WHERE status = 'ditolak'
 -- name: DeletePendaftaranByID :exec
 DELETE FROM pendaftaran
 WHERE id = sqlc.arg(id);
+
+-- name: ListAllDokumenKYC :many
+SELECT id, pendaftaran_id, tipe_dokumen, storage_key, key_id, dek_wrapped
+FROM dokumen_kyc
+ORDER BY created_at ASC;
+
+-- name: UpdateDokumenKYCEnvelope :exec
+UPDATE dokumen_kyc
+SET key_id = sqlc.arg(key_id),
+    dek_wrapped = sqlc.arg(dek_wrapped)
+WHERE id = sqlc.arg(id);

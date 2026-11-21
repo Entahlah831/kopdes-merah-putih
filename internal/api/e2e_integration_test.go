@@ -30,12 +30,13 @@ import (
 )
 
 type e2eEnv struct {
-	appCfg  config.AppConfig
-	pool    *pgxpool.Pool
-	httpSrv *httptest.Server
-	kycDir  string
-	seedPwd string
-	res     testseed.ResourceIDs
+	appCfg   config.AppConfig
+	pool     *pgxpool.Pool
+	httpSrv  *httptest.Server
+	kycDir   string
+	buktiDir string
+	seedPwd  string
+	res      testseed.ResourceIDs
 }
 
 func setupE2EEnv(t *testing.T, relEnvPath string) *e2eEnv {
@@ -67,15 +68,17 @@ func setupE2EEnv(t *testing.T, relEnvPath string) *e2eEnv {
 		t.Fatalf("testseed.SeedAll (%s): %v", relEnvPath, err)
 	}
 	kycDir := t.TempDir()
+	buktiDir := t.TempDir()
 	apiCfg := ConfigFromAppConfig(appCfg)
 	apiCfg.StorageKYCDir = kycDir
+	apiCfg.StorageBuktiDir = buktiDir
 	srv := NewServer(pool, apiCfg)
 	ts := httptest.NewServer(srv.Router())
 	t.Cleanup(ts.Close)
 
 	return &e2eEnv{
 		appCfg: appCfg, pool: pool, httpSrv: ts,
-		kycDir: kycDir, seedPwd: seedPwd, res: testseed.LookupResources(ctx, pool),
+		kycDir: kycDir, buktiDir: buktiDir, seedPwd: seedPwd, res: testseed.LookupResources(ctx, pool),
 	}
 }
 
@@ -309,13 +312,12 @@ func TestE2E_SetA_Pendaftaran_KYC_Activation_And_SuspendRevocation(t *testing.T)
 		t.Fatalf("upload kyc status=%d body=%s", ust, string(uraw))
 	}
 
-	// Verify encrypted .enc on disk inside separate kyc subdir has no raw PNG magic bytes
-	kycSubDir := filepath.Join(e.kycDir, "kyc")
-	entries, err := os.ReadDir(kycSubDir)
+	// Verify encrypted .enc on disk directly inside STORAGE_KYC_DIR (separate from buktiDir) has no raw PNG magic bytes
+	entries, err := os.ReadDir(e.kycDir)
 	if err != nil || len(entries) == 0 {
-		t.Fatalf("expected encrypted KYC file in %s, err=%v count=%d", kycSubDir, err, len(entries))
+		t.Fatalf("expected encrypted KYC file in %s, err=%v count=%d", e.kycDir, err, len(entries))
 	}
-	encBytes, _ := os.ReadFile(filepath.Join(kycSubDir, entries[0].Name()))
+	encBytes, _ := os.ReadFile(filepath.Join(e.kycDir, entries[0].Name()))
 	if bytes.HasPrefix(encBytes, []byte{0x89, 'P', 'N', 'G'}) || bytes.Contains(encBytes, []byte(nik)) {
 		t.Fatal("KYC .enc file leaked plaintext header or NIK")
 	}
@@ -420,10 +422,13 @@ func TestE2E_SetA_Iuran_Keringanan_QRIS_DuplicateProof_DualControl(t *testing.T)
 	if ust != http.StatusOK {
 		t.Fatalf("upload bukti failed: %d %s", ust, string(uraw))
 	}
-	proofEncPath := filepath.Join(e.kycDir, "bukti", "bukti_"+payID+".enc")
+	proofEncPath := filepath.Join(e.buktiDir, "bukti_"+payID+".enc")
 	proofEncBytes, perr := os.ReadFile(proofEncPath)
 	if perr != nil || bytes.HasPrefix(proofEncBytes, []byte{0x89, 'P', 'N', 'G'}) {
 		t.Fatalf("expected encrypted proof file at %s without PNG header, err=%v", proofEncPath, perr)
+	}
+	if kycEntries, _ := os.ReadDir(e.kycDir); len(kycEntries) != 0 {
+		t.Fatalf("expected kycDir to contain 0 proof files, got %d", len(kycEntries))
 	}
 	presp, derr := http.DefaultClient.Do(mustNewReq(t, http.MethodGet, e.httpSrv.URL+"/api/v1/pembayaran?bukti_id="+payID, adminTok))
 	if derr != nil || presp.StatusCode != http.StatusOK {

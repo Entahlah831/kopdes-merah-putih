@@ -31,19 +31,22 @@ import (
 )
 
 type Config struct {
-	PaymentsEnabled    bool
-	AllowPersonalPilot bool
-	PilotMaxPerTx      int64
-	PilotMaxPerDay     int64
-	QRISExpiryHours    int
-	PaymentExpiry      time.Duration
-	MaxPendingPerUser  int
-	MaxPendingGlobal   int
-	Timezone           string
-	UploadMaxBytes     int64
-	ProofStorageDir    string
-	KeyProvider        security.KeyProvider
-	TrustedProxies     []string
+	PaymentsEnabled     bool
+	AllowPersonalPilot  bool
+	PilotMaxPerTx       int64
+	PilotMaxPerDay      int64
+	QRISExpiryHours     int
+	PaymentExpiry       time.Duration
+	MaxPendingPerUser   int
+	MaxPendingGlobal    int
+	Timezone            string
+	UploadMaxBytes      int64
+	ProofStorageDir     string
+	LegacyKYCStorageDir string
+	BuktiRetentionDays  int
+	KeyProvider         security.KeyProvider
+	LegacyKeyProvider   security.KeyProvider
+	TrustedProxies      []string
 }
 
 type Service struct {
@@ -71,6 +74,9 @@ func NewService(pool *pgxpool.Pool, cfg Config) (*Service, error) {
 	}
 	if cfg.UploadMaxBytes <= 0 {
 		cfg.UploadMaxBytes = 5 * 1024 * 1024
+	}
+	if cfg.BuktiRetentionDays <= 0 {
+		cfg.BuktiRetentionDays = 365
 	}
 	if strings.TrimSpace(cfg.ProofStorageDir) != "" {
 		abs, err := filepath.Abs(cfg.ProofStorageDir)

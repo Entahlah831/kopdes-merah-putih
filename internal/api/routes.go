@@ -35,33 +35,46 @@ type domainHandlers struct {
 	dbLimiter    *middleware.DBRateLimiter
 }
 
-func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, kp security.KeyProvider) *domainHandlers {
+func resolveStorageDirs(cfg Config) (string, string) {
+	kycDir := strings.TrimSpace(cfg.StorageKYCDir)
+	if kycDir == "" {
+		kycDir = "./storage/kyc"
+	}
+	buktiDir := strings.TrimSpace(cfg.StorageBuktiDir)
+	if buktiDir == "" {
+		buktiDir = "./storage/bukti"
+	}
+	return kycDir, buktiDir
+}
+
+func extractPurposeProviders(ks *security.PurposeKeySet) (dbKP, kycKP, buktiKP, masterKP security.KeyProvider) {
+	if ks == nil {
+		return nil, nil, nil, nil
+	}
+	return ks.DB, ks.KYC, ks.Bukti, ks.Master
+}
+
+func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, ks *security.PurposeKeySet) *domainHandlers {
+	dbKP, kycKP, buktiKP, masterKP := extractPurposeProviders(ks)
 	blindKey := decodeSecretBytes(cfg.BlindIndexSecret)
 	loginLim := middleware.NewLoginRateLimiter(cfg.LoginMaxAttempts, cfg.LoginLockoutDuration, cfg.MaxRateLimitClients)
 	authSvc := auth.NewService(pool, auth.Config{
-		AppEnv: cfg.AppEnv, BlindIndexSecret: blindKey, KeyProvider: kp,
+		AppEnv: cfg.AppEnv, BlindIndexSecret: blindKey, KeyProvider: dbKP,
 		BcryptCost: cfg.BcryptCost, SessionIdleTTL: cfg.SessionIdleTTL, SessionAbsTTL: cfg.SessionAbsTTL,
 		MFARequiredRoles: cfg.MFARequiredRoles, MFAIssuer: cfg.MFAIssuer, MFAMaxAttempts: cfg.MFAMaxAttempts,
 		LoginMaxAttempts: cfg.LoginMaxAttempts, LoginLockoutDuration: cfg.LoginLockoutDuration,
 		TrustedProxies: cfg.TrustedProxies, CaptchaEnabled: cfg.CaptchaEnabled, CaptchaSecretKey: cfg.CaptchaSecretKey,
 	}, loginLim)
 
-	kycDir := cfg.StorageKYCDir
-	if strings.TrimSpace(kycDir) == "" {
-		kycDir = "./storage/kyc"
-	}
-	kycStore, _ := pendaftaran.NewKYCFileStore(filepath.Join(kycDir, "kyc"), kp, cfg.MaxKYCUploadBytes)
+	kycDir, buktiDir := resolveStorageDirs(cfg)
+	kycStore, _ := pendaftaran.NewKYCFileStore(kycDir, kycKP, cfg.MaxKYCUploadBytes)
 	pendSvc := pendaftaran.NewService(pool, kycStore, pendaftaran.Config{
 		RegistrationEnabled: !cfg.RegistrationDisabled, CaptchaEnabled: cfg.CaptchaEnabled,
-		CaptchaSecretKey: cfg.CaptchaSecretKey, KeyProvider: kp, BlindIndexSecret: blindKey,
+		CaptchaSecretKey: cfg.CaptchaSecretKey, KeyProvider: dbKP, BlindIndexSecret: blindKey,
 		RetentionDays: cfg.PDPRejectedRetentionDays, TrustedProxies: cfg.TrustedProxies,
 	})
-	angSvc := anggota.NewService(pool, anggota.Config{
-		KeyProvider: kp, BlindIndexSecret: blindKey, TrustedProxies: cfg.TrustedProxies,
-	})
-	iurSvc := iuran.NewService(pool, cfg.TrustedProxies)
-	katSvc := katalog.NewService(pool, cfg.TrustedProxies)
-	pesSvc := pesanan.NewService(pool, kp, pesanan.Config{
+	angSvc := anggota.NewService(pool, anggota.Config{KeyProvider: dbKP, BlindIndexSecret: blindKey, TrustedProxies: cfg.TrustedProxies})
+	pesSvc := pesanan.NewService(pool, dbKP, pesanan.Config{
 		OrderExpiryMinutes: maxInt(15, int(cfg.PaymentExpiryDuration.Minutes())),
 		Timezone:           cfg.AppTimezone,
 		TrustedProxies:     cfg.TrustedProxies,
@@ -71,18 +84,16 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, kp security.KeyProvider
 		PilotMaxPerTx: cfg.PilotMaxPerTx, PilotMaxPerDay: cfg.PilotMaxPerDay,
 		PaymentExpiry: cfg.PaymentExpiryDuration, MaxPendingPerUser: cfg.PendingLimitPerMember,
 		MaxPendingGlobal: cfg.PendingLimitGlobal, Timezone: cfg.AppTimezone,
-		UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: filepath.Join(kycDir, "bukti"),
-		KeyProvider: kp, TrustedProxies: cfg.TrustedProxies,
+		UploadMaxBytes: cfg.MaxKYCUploadBytes, ProofStorageDir: buktiDir,
+		LegacyKYCStorageDir: filepath.Join(kycDir, "bukti"), BuktiRetentionDays: cfg.BuktiRetentionDays,
+		KeyProvider: buktiKP, LegacyKeyProvider: masterKP, TrustedProxies: cfg.TrustedProxies,
 	})
-	lapSvc := laporan.NewService(pool, cfg.AppTimezone)
-
 	return &domainHandlers{
-		health: handlers.NewHealthHandler(pool),
-		publicConfig: handlers.NewPublicConfigHandler(buildPublicConfigOpts(pool, cfg)),
+		health: handlers.NewHealthHandler(pool), publicConfig: handlers.NewPublicConfigHandler(buildPublicConfigOpts(pool, cfg)),
 		auth: auth.NewHandler(authSvc), pendaftaran: pendaftaran.NewHandler(pendSvc),
-		anggota: anggota.NewHandler(angSvc), iuran: iuran.NewHandler(iurSvc),
-		katalog: katalog.NewHandler(katSvc), pesanan: pesanan.NewHandler(pesSvc),
-		pembayaran: pembayaran.NewHandler(bayarSvc), laporan: laporan.NewHandler(lapSvc),
+		anggota: anggota.NewHandler(angSvc), iuran: iuran.NewHandler(iuran.NewService(pool, cfg.TrustedProxies)),
+		katalog: katalog.NewHandler(katalog.NewService(pool, cfg.TrustedProxies)), pesanan: pesanan.NewHandler(pesSvc),
+		pembayaran: pembayaran.NewHandler(bayarSvc), laporan: laporan.NewHandler(laporan.NewService(pool, cfg.AppTimezone)),
 		dbLimiter: middleware.NewDBRateLimiter(pool, cfg.TrustedProxies),
 	}
 }

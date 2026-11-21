@@ -15,10 +15,12 @@ const attachPembayaranBukti = `-- name: AttachPembayaranBukti :one
 UPDATE pembayaran
 SET bukti_url = $1,
     bukti_hash = $2,
-    catatan_pembayar = $3,
+    bukti_key_id = $3,
+    bukti_dek_wrapped = $4,
+    catatan_pembayar = $5,
     status = 'menunggu_verifikasi'
-WHERE id = $4
-  AND pembayar_user_id = $5
+WHERE id = $6
+  AND pembayar_user_id = $7
   AND status = 'menunggu_pembayaran'
 RETURNING id, nomor_pembayaran, status, bukti_url, updated_at
 `
@@ -26,6 +28,8 @@ RETURNING id, nomor_pembayaran, status, bukti_url, updated_at
 type AttachPembayaranBuktiParams struct {
 	BuktiUrl        string      `json:"bukti_url"`
 	BuktiHash       pgtype.Text `json:"bukti_hash"`
+	BuktiKeyID      string      `json:"bukti_key_id"`
+	BuktiDekWrapped []byte      `json:"bukti_dek_wrapped"`
 	CatatanPembayar string      `json:"catatan_pembayar"`
 	ID              pgtype.UUID `json:"id"`
 	PembayarUserID  pgtype.UUID `json:"pembayar_user_id"`
@@ -43,6 +47,8 @@ func (q *Queries) AttachPembayaranBukti(ctx context.Context, arg AttachPembayara
 	row := q.db.QueryRow(ctx, attachPembayaranBukti,
 		arg.BuktiUrl,
 		arg.BuktiHash,
+		arg.BuktiKeyID,
+		arg.BuktiDekWrapped,
 		arg.CatatanPembayar,
 		arg.ID,
 		arg.PembayarUserID,
@@ -56,6 +62,20 @@ func (q *Queries) AttachPembayaranBukti(ctx context.Context, arg AttachPembayara
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const clearPembayaranBukti = `-- name: ClearPembayaranBukti :exec
+UPDATE pembayaran
+SET bukti_url = '',
+    bukti_hash = NULL,
+    bukti_key_id = '',
+    bukti_dek_wrapped = NULL
+WHERE id = $1
+`
+
+func (q *Queries) ClearPembayaranBukti(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearPembayaranBukti, id)
+	return err
 }
 
 const countActivePendingQRISByUser = `-- name: CountActivePendingQRISByUser :one
@@ -361,8 +381,8 @@ func (q *Queries) GetPembayaranByBuktiHash(ctx context.Context, buktiHash pgtype
 const getPembayaranByID = `-- name: GetPembayaranByID :one
 SELECT id, nomor_pembayaran, nomor_kwitansi, pembayar_user_id, anggota_id, rekening_qris_id,
        jenis_transaksi, metode, nominal_pokok, kode_unik, nominal_total, nominal_dibayar,
-       selisih_kode_unik, catatan_akuntansi, status, bukti_url, bukti_hash, catatan_pembayar,
-       alasan_verifikasi, dibuat_oleh, diverifikasi_oleh, verified_at, expires_at, created_at, updated_at
+       selisih_kode_unik, catatan_akuntansi, status, bukti_url, bukti_hash, bukti_key_id, bukti_dek_wrapped,
+       catatan_pembayar, alasan_verifikasi, dibuat_oleh, diverifikasi_oleh, verified_at, expires_at, created_at, updated_at
 FROM pembayaran
 WHERE id = $1
 `
@@ -385,6 +405,8 @@ type GetPembayaranByIDRow struct {
 	Status           string             `json:"status"`
 	BuktiUrl         string             `json:"bukti_url"`
 	BuktiHash        pgtype.Text        `json:"bukti_hash"`
+	BuktiKeyID       string             `json:"bukti_key_id"`
+	BuktiDekWrapped  []byte             `json:"bukti_dek_wrapped"`
 	CatatanPembayar  string             `json:"catatan_pembayar"`
 	AlasanVerifikasi string             `json:"alasan_verifikasi"`
 	DibuatOleh       pgtype.UUID        `json:"dibuat_oleh"`
@@ -416,6 +438,8 @@ func (q *Queries) GetPembayaranByID(ctx context.Context, id pgtype.UUID) (GetPem
 		&i.Status,
 		&i.BuktiUrl,
 		&i.BuktiHash,
+		&i.BuktiKeyID,
+		&i.BuktiDekWrapped,
 		&i.CatatanPembayar,
 		&i.AlasanVerifikasi,
 		&i.DibuatOleh,
@@ -492,7 +516,7 @@ func (q *Queries) GetPembayaranByIdempotencyKey(ctx context.Context, idempotency
 
 const getPembayaranForUpdate = `-- name: GetPembayaranForUpdate :one
 SELECT id, nomor_pembayaran, pembayar_user_id, anggota_id, jenis_transaksi, metode,
-       nominal_pokok, kode_unik, nominal_total, status, dibuat_oleh, diverifikasi_oleh, expires_at
+       nominal_pokok, kode_unik, nominal_total, nominal_dibayar, status, dibuat_oleh, diverifikasi_oleh, expires_at
 FROM pembayaran
 WHERE id = $1
 FOR UPDATE
@@ -508,6 +532,7 @@ type GetPembayaranForUpdateRow struct {
 	NominalPokok     int64              `json:"nominal_pokok"`
 	KodeUnik         int32              `json:"kode_unik"`
 	NominalTotal     int64              `json:"nominal_total"`
+	NominalDibayar   int64              `json:"nominal_dibayar"`
 	Status           string             `json:"status"`
 	DibuatOleh       pgtype.UUID        `json:"dibuat_oleh"`
 	DiverifikasiOleh pgtype.UUID        `json:"diverifikasi_oleh"`
@@ -527,6 +552,7 @@ func (q *Queries) GetPembayaranForUpdate(ctx context.Context, id pgtype.UUID) (G
 		&i.NominalPokok,
 		&i.KodeUnik,
 		&i.NominalTotal,
+		&i.NominalDibayar,
 		&i.Status,
 		&i.DibuatOleh,
 		&i.DiverifikasiOleh,
@@ -631,6 +657,39 @@ func (q *Queries) ListAlokasiByPembayaran(ctx context.Context, pembayaranID pgty
 			&i.PesananID,
 			&i.NominalAlokasi,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredNonPaidPembayaranWithBukti = `-- name: ListExpiredNonPaidPembayaranWithBukti :many
+SELECT id, bukti_url
+FROM pembayaran
+WHERE status IN ('ditolak', 'kedaluwarsa', 'batal')
+  AND bukti_url <> ''
+  AND updated_at < NOW() - make_interval(days => $1::int)
+`
+
+type ListExpiredNonPaidPembayaranWithBuktiRow struct {
+	ID       pgtype.UUID `json:"id"`
+	BuktiUrl string      `json:"bukti_url"`
+}
+
+func (q *Queries) ListExpiredNonPaidPembayaranWithBukti(ctx context.Context, retentionDays int32) ([]ListExpiredNonPaidPembayaranWithBuktiRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredNonPaidPembayaranWithBukti, retentionDays)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredNonPaidPembayaranWithBuktiRow{}
+	for rows.Next() {
+		var i ListExpiredNonPaidPembayaranWithBuktiRow
+		if err := rows.Scan(&i.ID, &i.BuktiUrl); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -748,6 +807,44 @@ func (q *Queries) ListPembayaran(ctx context.Context, arg ListPembayaranParams) 
 			&i.VerifiedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPembayaranWithBukti = `-- name: ListPembayaranWithBukti :many
+SELECT id, bukti_url, bukti_key_id, bukti_dek_wrapped
+FROM pembayaran
+WHERE bukti_url <> ''
+`
+
+type ListPembayaranWithBuktiRow struct {
+	ID              pgtype.UUID `json:"id"`
+	BuktiUrl        string      `json:"bukti_url"`
+	BuktiKeyID      string      `json:"bukti_key_id"`
+	BuktiDekWrapped []byte      `json:"bukti_dek_wrapped"`
+}
+
+func (q *Queries) ListPembayaranWithBukti(ctx context.Context) ([]ListPembayaranWithBuktiRow, error) {
+	rows, err := q.db.Query(ctx, listPembayaranWithBukti)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPembayaranWithBuktiRow{}
+	for rows.Next() {
+		var i ListPembayaranWithBuktiRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BuktiUrl,
+			&i.BuktiKeyID,
+			&i.BuktiDekWrapped,
 		); err != nil {
 			return nil, err
 		}
@@ -885,6 +982,24 @@ func (q *Queries) SumPilotDailyAmountByRekening(ctx context.Context, arg SumPilo
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const updatePembayaranBuktiEnvelope = `-- name: UpdatePembayaranBuktiEnvelope :exec
+UPDATE pembayaran
+SET bukti_key_id = $1,
+    bukti_dek_wrapped = $2
+WHERE id = $3
+`
+
+type UpdatePembayaranBuktiEnvelopeParams struct {
+	BuktiKeyID      string      `json:"bukti_key_id"`
+	BuktiDekWrapped []byte      `json:"bukti_dek_wrapped"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdatePembayaranBuktiEnvelope(ctx context.Context, arg UpdatePembayaranBuktiEnvelopeParams) error {
+	_, err := q.db.Exec(ctx, updatePembayaranBuktiEnvelope, arg.BuktiKeyID, arg.BuktiDekWrapped, arg.ID)
+	return err
 }
 
 const verifyPembayaranDecision = `-- name: VerifyPembayaranDecision :one

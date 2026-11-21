@@ -250,16 +250,17 @@ func applyServerDefaults(cfg *Config) {
 func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	applyServerDefaults(&cfg)
 
-	var keyProvider security.KeyProvider
+	var kpSet *security.PurposeKeySet
+	var dbKP security.KeyProvider
 	if strings.TrimSpace(cfg.AESMasterKey) != "" {
-		ver, kid, mat := security.ParseMasterKeySpec(cfg.AESMasterKey)
-		if mkp, err := security.NewMultiKeyProviderFromConfig(ver, kid, mat, cfg.AESPreviousKeys); err == nil {
-			keyProvider = mkp
+		if ks, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys); err == nil {
+			kpSet = ks
+			dbKP = ks.DB
 		}
 	}
 
 	mux := http.NewServeMux()
-	dh := buildDomainHandlers(pool, cfg, keyProvider)
+	dh := buildDomainHandlers(pool, cfg, kpSet)
 	registerAllRoutes(mux, pool, cfg, dh)
 
 	corsCfg := middleware.DefaultCORSConfig()
@@ -278,7 +279,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	return &Server{
 		cfg:         cfg,
 		pool:        pool,
-		keyProvider: keyProvider,
+		keyProvider: dbKP,
 		router:      mux,
 		httpServer: &http.Server{
 			Addr:              fmt.Sprintf(":%d", cfg.Port),

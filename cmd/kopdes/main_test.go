@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,5 +35,44 @@ func TestValidRoleID(t *testing.T) {
 		if validRoleID.MatchString(bad) {
 			t.Fatalf("expected %q to fail role regex", bad)
 		}
+	}
+}
+
+func TestRelocateLegacySubdirs_Idempotent(t *testing.T) {
+	kycDir := filepath.Join(t.TempDir(), "kyc")
+	buktiDir := filepath.Join(t.TempDir(), "bukti")
+	legacyKYC := filepath.Join(kycDir, "kyc")
+	legacyBukti := filepath.Join(kycDir, "bukti")
+	if err := os.MkdirAll(legacyKYC, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(legacyBukti, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(buktiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyKYC, "doc-1.enc"), []byte("enc-kyc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyBukti, "bukti_p1.enc"), []byte("enc-bukti"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	movedK1, movedB1, err := relocateLegacySubdirs(kycDir, buktiDir)
+	if err != nil || movedK1 != 1 || movedB1 != 1 {
+		t.Fatalf("first relocate failed: movedK=%d movedB=%d err=%v", movedK1, movedB1, err)
+	}
+	if _, err := os.Stat(filepath.Join(kycDir, "doc-1.enc")); err != nil {
+		t.Fatalf("expected migrated kyc file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(buktiDir, "bukti_p1.enc")); err != nil {
+		t.Fatalf("expected migrated bukti file: %v", err)
+	}
+
+	// Panggilan kedua wajib idempoten (0 dipindahkan, tidak menimpa)
+	movedK2, movedB2, err := relocateLegacySubdirs(kycDir, buktiDir)
+	if err != nil || movedK2 != 0 || movedB2 != 0 {
+		t.Fatalf("second relocate must be idempotent: movedK=%d movedB=%d err=%v", movedK2, movedB2, err)
 	}
 }

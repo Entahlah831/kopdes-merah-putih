@@ -55,7 +55,7 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	cur, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, buktiHash, rawBytes)
+	cur, wrappedDEK, keyID, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, buktiHash, rawBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +63,8 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	updated, err := qtx.AttachPembayaranBukti(ctx, db.AttachPembayaranBuktiParams{
 		BuktiUrl:        buktiURL,
 		BuktiHash:       response.ToPGText(buktiHash),
+		BuktiKeyID:      keyID,
+		BuktiDekWrapped: wrappedDEK,
 		CatatanPembayar: strings.TrimSpace(catatan),
 		ID:              cur.ID,
 		PembayarUserID:  cur.PembayarUserID,
@@ -71,13 +73,10 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 		return nil, fmt.Errorf("perbarui bukti pembayaran: %w", err)
 	}
 	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "pembayaran.upload_bukti",
-		Entitas:     "pembayaran",
-		EntitasID:   response.FromPGUUID(cur.ID).String(),
-		Ringkasan:   "Unggah bukti pembayaran " + cur.NomorPembayaran,
-		IpAddress:   ip,
+		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
+		Aksi: "pembayaran.upload_bukti", Entitas: "pembayaran",
+		EntitasID: response.FromPGUUID(cur.ID).String(),
+		Ringkasan: "Unggah bukti pembayaran " + cur.NomorPembayaran, IpAddress: ip,
 	})
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -85,65 +84,92 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	return &updated, nil
 }
 
-func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, buktiHash string, rawBytes []byte) (db.GetPembayaranForUpdateRow, error) {
+func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, buktiHash string, rawBytes []byte) (db.GetPembayaranForUpdateRow, []byte, string, error) {
 	cur, err := qtx.GetPembayaranForUpdate(ctx, idPG)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cur, response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
+		return cur, nil, "", response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
 	}
 	if err != nil {
-		return cur, err
+		return cur, nil, "", err
 	}
 	if err := validateBuktiAttachEligibility(claims, cur); err != nil {
-		return cur, err
+		return cur, nil, "", err
 	}
 	if _, err := qtx.GetPembayaranByBuktiHash(ctx, response.ToPGText(buktiHash)); err == nil {
-		return cur, response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti transfer yang sama sudah pernah digunakan")
+		return cur, nil, "", response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti transfer yang sama sudah pernah digunakan")
 	}
-	bayarUUID := response.FromPGUUID(cur.ID)
-	if err := s.saveEncryptedProofFile(bayarUUID, rawBytes); err != nil {
-		return cur, err
-	}
-	return cur, nil
-}
-
-func (s *Service) saveEncryptedProofFile(bayarUUID uuid.UUID, rawBytes []byte) error {
-	target, err := s.proofTargetPath(bayarUUID)
+	wrapped, keyID, err := s.saveEncryptedProofEnvelope(response.FromPGUUID(cur.ID), rawBytes)
 	if err != nil {
-		return err
+		return cur, nil, "", err
 	}
-	dataToWrite := rawBytes
-	if s.cfg.KeyProvider != nil {
-		aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
-		cipherBytes, encErr := s.cfg.KeyProvider.EncryptWithAAD(rawBytes, aad)
-		if encErr != nil {
-			return fmt.Errorf("enkripsi berkas bukti: %w", encErr)
-		}
-		dataToWrite = cipherBytes
-	}
-	// #nosec G304 -- target dibangun dari UUID tervalidasi dan prefix direktori terkontrol
-	if err := os.WriteFile(target, dataToWrite, 0o600); err != nil {
-		return fmt.Errorf("simpan berkas bukti: %w", err)
-	}
-	return nil
+	return cur, wrapped, keyID, nil
 }
 
-func (s *Service) readDecryptedProofFile(bayarUUID uuid.UUID) ([]byte, string, error) {
+func (s *Service) saveEncryptedProofEnvelope(bayarUUID uuid.UUID, rawBytes []byte) ([]byte, string, error) {
 	target, err := s.proofTargetPath(bayarUUID)
 	if err != nil {
 		return nil, "", err
 	}
-	// #nosec G304 -- target diverifikasi proofTargetPath dari UUID
-	raw, err := os.ReadFile(target)
-	if err != nil {
-		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
+	if s.cfg.KeyProvider == nil {
+		return nil, "", fmt.Errorf("key provider wajib tersedia untuk enkripsi bukti bayar")
 	}
-	if s.cfg.KeyProvider != nil {
-		aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
-		plain, decErr := s.cfg.KeyProvider.DecryptWithAAD(raw, aad)
-		if decErr != nil {
-			return nil, "", fmt.Errorf("dekripsi berkas bukti: %w", decErr)
+	aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
+	cipherBytes, wrappedDEK, keyID, err := security.EncryptEnvelopeFile(s.cfg.KeyProvider, rawBytes, aad)
+	if err != nil {
+		return nil, "", fmt.Errorf("enkripsi amplop bukti: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return nil, "", fmt.Errorf("buat direktori bukti: %w", err)
+	}
+	// #nosec G304,G703 -- target dibangun dari UUID tervalidasi dan prefix direktori ProofStorageDir
+	if err := os.WriteFile(target, cipherBytes, 0o600); err != nil {
+		return nil, "", fmt.Errorf("simpan berkas bukti: %w", err)
+	}
+	return wrappedDEK, keyID, nil
+}
+
+func (s *Service) readRawProofBytes(bayarUUID uuid.UUID) ([]byte, error) {
+	target, err := s.proofTargetPath(bayarUUID)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G304,G703 -- target diverifikasi proofTargetPath dari UUID
+	if raw, rErr := os.ReadFile(target); rErr == nil {
+		return raw, nil
+	}
+	if strings.TrimSpace(s.cfg.LegacyKYCStorageDir) != "" {
+		legacyTarget := filepath.Join(filepath.Clean(s.cfg.LegacyKYCStorageDir), "bukti_"+bayarUUID.String()+".enc")
+		// #nosec G304,G703 -- membaca fallback lokasi lama berdasar UUID tervalidasi sebelum migrasi
+		if raw, lErr := os.ReadFile(legacyTarget); lErr == nil {
+			return raw, nil
 		}
-		raw = plain
+	}
+	return nil, response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
+}
+
+func (s *Service) readDecryptedProofEnvelope(bayarUUID uuid.UUID, wrappedDEK []byte) ([]byte, string, error) {
+	raw, err := s.readRawProofBytes(bayarUUID)
+	if err != nil {
+		return nil, "", err
+	}
+	aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
+	if len(wrappedDEK) > 0 {
+		plain, decErr := security.DecryptEnvelopeFile(s.cfg.KeyProvider, raw, wrappedDEK, aad)
+		if decErr != nil {
+			return nil, "", fmt.Errorf("dekripsi amplop bukti: %w", decErr)
+		}
+		return plain, http.DetectContentType(plain), nil
+	}
+	legacyKP := s.cfg.LegacyKeyProvider
+	if legacyKP == nil {
+		legacyKP = s.cfg.KeyProvider
+	}
+	if legacyKP != nil {
+		plain, decErr := legacyKP.DecryptWithAAD(raw, aad)
+		if decErr != nil {
+			return nil, "", fmt.Errorf("dekripsi berkas bukti legacy: %w", decErr)
+		}
+		return plain, http.DetectContentType(plain), nil
 	}
 	return raw, http.DetectContentType(raw), nil
 }
@@ -179,7 +205,41 @@ func (s *Service) ReadBukti(ctx context.Context, claims *middleware.SessionClaim
 	if row.BuktiUrl == "" {
 		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_NOT_FOUND", "Bukti belum diunggah")
 	}
-	return s.readDecryptedProofFile(response.FromPGUUID(row.ID))
+	return s.readDecryptedProofEnvelope(response.FromPGUUID(row.ID), row.BuktiDekWrapped)
+}
+
+// PurgeExpiredBukti menghapus berkas bukti pembayaran non-lunas yang melewati masa retensi (PERLU VERIFIKASI HUKUM).
+func (s *Service) PurgeExpiredBukti(ctx context.Context, retentionDays int) (int, error) {
+	if retentionDays <= 0 {
+		retentionDays = s.cfg.BuktiRetentionDays
+	}
+	if retentionDays <= 0 {
+		retentionDays = 365
+	}
+	rows, err := s.q.ListExpiredNonPaidPembayaranWithBukti(ctx, int32(retentionDays)) // #nosec G115 -- hari retensi bernilai wajar
+	if err != nil {
+		return 0, fmt.Errorf("ambil bukti kedaluwarsa: %w", err)
+	}
+	purged := 0
+	for _, r := range rows {
+		bid := response.FromPGUUID(r.ID)
+		if target, pErr := s.proofTargetPath(bid); pErr == nil {
+			_ = os.Remove(target)
+		}
+		if err := s.q.ClearPembayaranBukti(ctx, r.ID); err == nil {
+			purged++
+		}
+	}
+	if purged > 0 {
+		_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
+			ActorPeran: "system",
+			Aksi:       "pembayaran.bukti_purge",
+			Entitas:    "pembayaran",
+			Ringkasan:  fmt.Sprintf("Pembersihan %d berkas bukti non-lunas > %d hari", purged, retentionDays),
+			IpAddress:  "127.0.0.1",
+		})
+	}
+	return purged, nil
 }
 
 func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.SessionClaims, bayarIDStr string, in VerifyInput, ip string) (*db.VerifyPembayaranDecisionRow, error) {

@@ -3,8 +3,8 @@
   "x-source": "openapi.json",
   "info": {
     "title": "API Kopdes Merah Putih (Backend Ramping)",
-    "version": "2.0.0-lean",
-    "description": "Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih (1 koperasi tunggal, 19 tabel PostgreSQL 16, 35 endpoint HTTP).\nAutentikasi menggunakan opaque session token (Authorization: Bearer atau cookie kopdes_session) + MFA TOTP wajib untuk admin & bendahara.\nCatatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak ditandai PERLU VERIFIKASI HUKUM; klasifikasi iuran ditandai KEPUTUSAN AKUNTAN.\n"
+    "version": "2.1.0-lean",
+    "description": "Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 46 variabel env).\nAutentikasi utama memakai cookie HttpOnly (__Host-kopdes_session / kopdes_session) dengan CSRFGuard (Origin + X-Requested-With) dan Bearer opsional bila ALLOW_BEARER_AUTH=true + MFA TOTP wajib untuk admin & bendahara.\nCatatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak & 365 hari bukti non-lunas ditandai PERLU VERIFIKASI HUKUM; klasifikasi iuran & koreksi refund ditandai KEPUTUSAN AKUNTAN.\n"
   },
   "servers": [
     {
@@ -18,10 +18,16 @@
   ],
   "components": {
     "securitySchemes": {
+      "cookieSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-kopdes_session",
+        "description": "Cookie HttpOnly utama dari POST /api/v1/auth/login (wajib X-Requested-With pada mutasi)"
+      },
       "bearerSession": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Opaque session token dari POST /api/v1/auth/login"
+        "description": "Opaque session token opsional (aktif bila ALLOW_BEARER_AUTH=true)"
       }
     },
     "schemas": {
@@ -55,15 +61,15 @@
       "get": {
         "tags": ["Publik & Kesehatan"],
         "operationId": "getReadyz",
-        "summary": "Readiness probe + ping PostgreSQL",
-        "responses": { "200": { "description": "Siap" }, "503": { "description": "DB tidak siap" } }
+        "summary": "Readiness probe + ping PostgreSQL + telemetri worker_runs",
+        "responses": { "200": { "description": "Siap (memuat worker_jobs & worker_degraded)" }, "503": { "description": "DB tidak siap" } }
       }
     },
     "/api/v1/public/config": {
       "get": {
         "tags": ["Publik & Kesehatan"],
         "operationId": "getPublicConfig",
-        "summary": "Konfigurasi publik koperasi, batas unggahan, feature flags, dan QRIS aktif",
+        "summary": "Konfigurasi publik koperasi, batas unggahan, feature flags, auth, stock_hold_minutes, dan QRIS aktif",
         "responses": { "200": { "description": "Konfigurasi non-rahasia" } }
       }
     },
@@ -71,14 +77,14 @@
       "post": {
         "tags": ["Pendaftaran Publik & KYC"],
         "operationId": "postPublicPendaftaran",
-        "summary": "Ajukan pendaftaran calon anggota baru + token unggah KYC",
+        "summary": "Ajukan pendaftaran calon anggota baru + token unggah KYC (tanggal_lahir opsional)",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["nama_lengkap", "email", "nik", "no_hp", "tanggal_lahir", "alamat", "pekerjaan"],
+                "required": ["nama_lengkap", "email", "nik", "no_hp", "alamat", "pekerjaan"],
                 "properties": {
                   "nama_lengkap": { "type": "string" },
                   "email": { "type": "string", "format": "email" },
@@ -562,6 +568,7 @@
                   "harga_umum": { "type": "integer" },
                   "harga_anggota": { "type": "integer" },
                   "stok": { "type": "integer" },
+                  "foto_url": { "type": "string", "description": "Path relatif '/...' atau https:// (maks 512 karakter)" },
                   "status": { "type": "string" }
                 }
               }
@@ -598,7 +605,7 @@
                       }
                     }
                   },
-                  "metode_pengiriman": { "type": "string", "enum": ["ambil_di_koperasi", "diantar"] },
+                  "metode_pengiriman": { "type": "string", "enum": ["ambil_sendiri", "diantar"] },
                   "metode_pembayaran": { "type": "string", "enum": ["qris", "tunai"] },
                   "nama_penerima": { "type": "string" },
                   "hp_penerima": { "type": "string" },
@@ -674,12 +681,13 @@
       "get": {
         "tags": ["Pembayaran QRIS/Tunai & Dual Control"],
         "operationId": "getPembayaran",
-        "summary": "Daftar pembayaran, detail (?id=), daftar rekening QRIS (?rekening=true), atau unduh bukti (?bukti_id=)",
-        "security": [{ "bearerSession": [] }],
+        "summary": "Daftar pembayaran, detail (?id=), daftar rekening QRIS (?rekening=true), unduh bukti (?bukti_id= atau ?refund_bukti_id=)",
+        "security": [{ "cookieSession": [] }, { "bearerSession": [] }],
         "parameters": [
           { "name": "rekening", "in": "query", "schema": { "type": "boolean" } },
           { "name": "id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
           { "name": "bukti_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "refund_bukti_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
           { "name": "status", "in": "query", "schema": { "type": "string" } }
         ],
         "responses": { "200": { "description": "Data pembayaran / rekening / berkas bukti" } }
@@ -744,13 +752,47 @@
                   "keputusan": { "type": "string", "enum": ["setuju", "tolak"] },
                   "nominal_dibayar": { "type": "integer" },
                   "alasan": { "type": "string" },
-                  "selesaikan_tindak_lanjut": { "type": "boolean" }
+                  "selesaikan_tindak_lanjut": { "type": "boolean" },
+                  "breakglass": { "type": "boolean" },
+                  "mfa_code": { "type": "string" }
                 }
               }
             }
           }
         },
-        "responses": { "200": { "description": "Pembayaran diverifikasi" }, "403": { "description": "Pelanggaran dual-control atau bukan admin/bendahara" } }
+        "responses": { "200": { "description": "Pembayaran diverifikasi (atau perlu_tindak_lanjut)" }, "403": { "description": "Pelanggaran dual-control atau bukan admin/bendahara" } }
+      }
+    },
+    "/api/v1/pembayaran/{id}/refund": {
+      "post": {
+        "tags": ["Pembayaran QRIS/Tunai & Dual Control"],
+        "operationId": "postRefundPembayaran",
+        "summary": "Ajukan, setujui, atau tolak pengembalian dana manual dual-control (+ bukti opsional)",
+        "security": [{ "cookieSession": [] }, { "bearerSession": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["aksi"],
+                "properties": {
+                  "aksi": { "type": "string", "enum": ["ajukan", "setujui", "tolak"] },
+                  "metode": { "type": "string", "enum": ["tunai", "transfer"] },
+                  "nominal": { "type": "integer" },
+                  "alasan": { "type": "string" },
+                  "catatan_pelaksana": { "type": "string" },
+                  "breakglass": { "type": "boolean" },
+                  "mfa_code": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Pengajuan refund dibuat" }, "200": { "description": "Keputusan refund selesai" }, "403": { "description": "Pelanggaran dual-control / RBAC" } }
       }
     },
     "/api/v1/laporan": {

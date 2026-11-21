@@ -8,21 +8,23 @@ Repositori ini adalah backend API **lingkup satu koperasi di satu lokasi** berba
 
 | Dokumen | Target Pembaca | Isi |
 | :--- | :--- | :--- |
-| [../README.md](../README.md) | Semua Tim | Pintu masuk repositori, peta direktori, quickstart lokal & VPS, dan daftar perintah verifikasi harian. |
-| [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) | Pemilik, Ops, Backend, Frontend, QA | Panduan end-to-end terbaru: setup lokal & VPS (Docker + Caddy HTTPS), pemasangan tiap fitur, integrasi frontend, alur lengkap 5 peran, skema 19 tabel database & enkripsi `.enc`. |
-| [BACKEND_GUIDE.md](BACKEND_GUIDE.md) | Developer Backend & Ops | Arsitektur 8 domain (`internal/<domain>/`), 19 tabel PostgreSQL (`000001_init_kopdes_schema.up.sql`), `sqlc`, worker CLI (`cmd/kopdes`), enkripsi PII/KYC & bukti bayar, backup/restore. |
-| [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) | Developer Frontend & QA | Kontrak 35 endpoint, sesi opaque (`Authorization: Bearer` / cookie `kopdes_session`), alur 2-langkah MFA TOTP, `GET /api/v1/public/config`, QRIS kode unik, idempotensi, dan daftar klaim tester. |
-| [frontend/README.md](frontend/README.md) | Frontend Engineer | Pintu masuk integrasi frontend & tautan ke Frontend Tester polos. |
-| [openapi.yaml](openapi.yaml) | Backend, Frontend, QA | Spesifikasi OpenAPI 3.0.3 untuk seluruh 35 endpoint HTTP aktual. |
-| [roles_matrix.json](roles_matrix.json) | Security & QA | Matriks otorisasi aktual untuk 4 peran inti (`admin`, `bendahara`, `petugas_toko`, `anggota`) dan publik. |
-| [ENV_REFERENCE.md](ENV_REFERENCE.md) | Ops & Dev | Daftar tepat 40 variabel lingkungan yang diakui `cmd/envcheck`. |
+| [../README.md](../README.md) | Semua Tim | Pintu masuk repositori, peta direktori, quickstart lokal & VPS (`worker` bawaan + `age` backup), dan daftar perintah verifikasi. |
+| [DECISION_AUDIT.md](DECISION_AUDIT.md) | Pemilik, Arsitek, Tech Lead | Laporan Audit Keputusan Desain D1–D10 (`DIPERTAHANKAN`/`DIUBAH`), bukti pengukuran nyata, dan daftar `KEPUTUSAN PEMILIK`. |
+| [adr/](adr/) | Arsitek & Developer | 10 Architecture Decision Records (`ADR-001` s.d. `ADR-010`) lengkap dengan opsi alternatif, matriks skor berbobot, & risiko sisa. |
+| [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) | Pemilik, Ops, Backend, Frontend, QA | Panduan end-to-end terbaru: setup lokal & VPS (Docker + `worker` + Caddy HTTPS + `age`), fitur, integrasi frontend, 5 peran, skema 21 tabel DB & HKDF `.enc`. |
+| [BACKEND_GUIDE.md](BACKEND_GUIDE.md) | Developer Backend & Ops | Arsitektur 8 domain + `internal/worker`, 21 tabel PostgreSQL (`000001` & `000002`), `sqlc`, HKDF 4 subkunci, `HybridRateLimiter`, CLI pemulihan. |
+| [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) | Developer Frontend & QA | Kontrak 36 endpoint, cookie `HttpOnly` utama (`__Host-kopdes_session`) + `CSRFGuard` (`X-Requested-With`), MFA 2-langkah, reservasi stok, & refund manual. |
+| [frontend/README.md](frontend/README.md) | Frontend Engineer | Pintu masuk integrasi frontend & pemetaan klaim ke skenario tester. |
+| [openapi.yaml](openapi.yaml) | Backend, Frontend, QA | Spesifikasi OpenAPI 3.0.3 (`v2.1.0-lean`) untuk seluruh 36 endpoint HTTP aktual. |
+| [roles_matrix.json](roles_matrix.json) | Security & QA | Katalog 36 rute + matriks otorisasi aktual 4 peran inti & publik (diuji otomatis terhadap router nyata). |
+| [ENV_REFERENCE.md](ENV_REFERENCE.md) | Ops & Dev | Daftar tepat 46 variabel lingkungan yang diakui `cmd/envcheck`. |
 | [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md) | Semua Tim | Catatan ketidaksesuaian yang ditemukan oleh doc-test maupun verifikasi live browser beserta perbaikannya. |
-| [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) | Pemilik Koperasi | Daftar periksa keputusan manual hukum, akuntansi, penyedia DNS/TLS/SMTP, dan verifikasi lapangan. |
+| [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) | Pemilik Koperasi | Kewajiban pemilik (46 var `.env`, **private key `age` off-server**, pemulihan CLI admin, hukum, & akuntansi). |
 | [SKILLS.md](SKILLS.md) | AI Coding Agent | Daftar 3 skill lokal aktif (`.agents/skills/`). |
-| [PROGRESS.md](PROGRESS.md) | Audit Trail Teknis | Riwayat pengerjaan per fase lengkap beserta hasil perintah verifikasi. |
-| [REVAMP_REPORT.md](REVAMP_REPORT.md) | Audit & Manajemen | Laporan ringkas hasil pemangkasan arsitektur, verifikasi langsung, dan penyempurnaan keamanan. |
-| [REVAMP_PLAN.md](REVAMP_PLAN.md) | Arsitektur | Rencana & target batas pemangkasan (`<= 20` tabel, `<= 35` endpoint, `<= 40` env, `<= 400` baris/handler, `<= 60` baris/fungsi). |
-| [AUDIT_REPORT.md](AUDIT_REPORT.md) | Arsip Pra-Revamp | Catatan audit historis sebelum pemangkasan arsitektur ramping satu koperasi. |
+| [PROGRESS.md](PROGRESS.md) | Audit Trail Teknis | Riwayat pengerjaan per fase & hasil perintah verifikasi asli. |
+| [REVAMP_REPORT.md](REVAMP_REPORT.md) | Audit & Manajemen | Laporan hasil pemangkasan arsitektur pra-audit keputusan. |
+| [REVAMP_PLAN.md](REVAMP_PLAN.md) | Arsitektur | Rencana & anggaran awal pemangkasan (`lean-revamp`). |
+| [AUDIT_REPORT.md](AUDIT_REPORT.md) | Arsip Pra-Revamp | Catatan audit historis sebelum pemangkasan arsitektur ramping. |
 
 ## Menjalankan & Memverifikasi Secara Cepat
 

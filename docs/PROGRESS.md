@@ -1353,3 +1353,72 @@ Seluruh perubahan pemangkasan lingkup koperasi tunggal dijalankan bertahap di br
    - Memindahkan pemotongan stok atomik dari tahap checkout ke tahap persetujuan pembayaran (`setuju`) atau pesanan tunai masuk status `dibayar`/`diproses`, dengan pengembalian stok bersyarat hanya bila stok sudah terpotong.
 8. **Fase 11 — Dokumentasi Akhir Lengkap (Root `README.md` & `PANDUAN_SISTEM_LENGKAP.md`)**:
    - Menambahkan [../README.md](../README.md) dan [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) mencakup setup lokal & VPS (Docker + Caddy HTTPS), konfigurasi fitur, integrasi frontend, alur lengkap 5 peran, dan skema 19 tabel PostgreSQL, serta menyelaraskan [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), dan [REVAMP_REPORT.md](REVAMP_REPORT.md).
+
+---
+
+## Audit Keputusan (Prompt v9A — Branch `decision-audit`, Tag Dasar `pre-decision-audit`)
+
+Audit menyeluruh 10 keputusan desain (D1–D10) beserta implementasi *fail-first*, migrasi `000002`, 10 ADR berbobot di [adr/](adr/), dan ringkasan keputusan di [DECISION_AUDIT.md](DECISION_AUDIT.md):
+
+1. **Migrasi `000002` & 46 Variabel Env (`61761de`)**: Menambah `produk.stok_tertahan`, `pesanan.stok_status`/`stok_hold_expires_at`, status pembayaran `dikembalikan`, tabel #20 `pengembalian_dana`, tabel #21 `worker_runs`, metadata amplop `pembayaran.bukti_key_id`/`bukti_dek_wrapped`, `tanggal_lahir_enc` nullable; menyinkronkan 46 env var across `AppConfig`, `.env.*`, `cmd/envcheck`, dan `ENV_REFERENCE.md`.
+2. **D4 — HKDF 4 Subkunci & Storage Bukti Terpisah (`c7425fc`)**: Derivasi HKDF-SHA256 (`db-columns`, `kyc-files`, `bukti-files`, `backup`) di `internal/security/kdf.go`, amplop DEK seragam di `STORAGE_KYC_DIR` & `STORAGE_BUKTI_DIR`, retensi `BUKTI_RETENTION_DAYS`, dan CLI `kopdes storage migrate-files` / `bukti purge`.
+3. **D1 — Reservasi Stok Tertahan (`13bc298`)**: Checkout menahan `stok_tertahan` atomik selama `STOCK_HOLD_MINUTES`; verifikasi `setuju` mengonversi tahanan ke pengurangan `stok` nyata dengan savepoint fallback `perlu_tindak_lanjut` bila hold habis & stok kosong. Terbukti `TestDecisionAudit_D1_StockReservationConcurrency50Buyers` (50 pembeli -> 5 sukses, 45 `409`).
+4. **D2 & D7 — Refund Manual Dual-Control & Break-Glass Admin (`5d1c4dd`)**: Endpoint #36 `POST /api/v1/pembayaran/{id}/refund` (`ajukan|setujui|tolak`, bukti `.enc` opsional, laporan `total_dikembalikan`) serta `DUAL_CONTROL_BREAKGLASS_ENABLED` khusus `admin` (TOTP anti-replay + alasan >= 10 karakter + `audit_log` `pembayaran.verify_breakglass`).
+5. **D3 & D9 — Cookie `HttpOnly` Utama, `CSRFGuard`, Throttle Sesi, & CLI Recovery (`11cb960`)**: `__Host-kopdes_session` otomatis di balik proxy tepercaya (`COOKIE_SECURE`), `ALLOW_BEARER_AUTH=false` di produksi/Set B, `CSRFGuard` (`Origin`/`Referer` + `X-Requested-With`), `Vary: Origin`, `TouchSessionActivity` <= 1x/60s (**20 request `29.8834ms`, `0` tulis DB** + cabut instan `401`), dan `kopdes admin reset-mfa` / `reset-password`.
+6. **D6 — Hybrid Rate Limiter & Cleanup Goroutine (`676c507`)**: `HybridRateLimiter` (LRU L1 + persistensi DB L2 saat tembus batas), hapus goroutine ticker liar di `IPRateLimiter`, & `CleanupExpiredRateLimits`. Terbukti **500 IP palsu = `500 row DB (196.4832ms)` vs `0 row DB (1.9949ms)`**.
+7. **D8 — Worker Terjadwal Compose (`2240a80`)**: `internal/worker` (single `*pgxpool.Conn` `pg_try_advisory_lock`), `kopdes worker [--tick 60s] [--once]`, `/readyz` telemetry (`worker_jobs`, `worker_degraded`), dan service `worker` + volume `bukti_storage` di `docker-compose*.yml`.
+8. **D5 — Backup Terautentikasi `age` & CI DB Penuh (`fe5ead3`)**: Mengganti total `openssl aes-256-cbc` pada `scripts/backup.sh`, `restore_drill.sh`, `restore_test.sh` dengan `age` kunci publik (`BACKUP_AGE_RECIPIENT`, private key wajib off-server) + uji tolak tamper 1 byte + `.github/workflows/ci.yml` penuh (21 tabel, Set A & Set B).
+9. **D10 — Sinkronisasi RBAC, `foto_url`, `tanggal_lahir` Opsional, & CI `internal/db` (`aee1cda`)**: Memblokir `bendahara` di `PATCH /api/v1/pesanan/{id}/status` (`403`) & `petugas_toko` di tunai `POST /api/v1/pembayaran` (`403`), menambah `validateFotoURL`, menjadikan `tanggal_lahir` opsional, menambah `-short` skip di `internal/db/role_guard_test.go`, serta memverifikasi paritas 36 rute + 95 tes live peran via `TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries`.
+
+### Output Verifikasi Nyata Pasca-Perubahan Terakhir
+
+```text
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 46 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test
+
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 46 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test
+
+$ go run ./cmd/envcheck --compare .env.test .env.test.alt
+envcheck COMPARE PASS: skema kunci 100% identik (46 kunci).
+
+$ go build ./... && go vet ./... && staticcheck ./... && gosec -quiet ./... && govulncheck ./...
+# Seluruhnya exit code 0; govulncheck: 0 vulnerabilities found.
+
+$ go test -short -count=1 ./...
+# Seluruh 22 paket PASS (0.363s - 3.369s).
+
+$ go test -count=1 -race -p 1 ./...
+ok  github.com/kopdes/merah-putih/cmd/envcheck              1.552s
+ok  github.com/kopdes/merah-putih/cmd/kopdes                15.932s
+ok  github.com/kopdes/merah-putih/cmd/seed_test_accounts    1.765s
+ok  github.com/kopdes/merah-putih/cmd/server                1.951s
+ok  github.com/kopdes/merah-putih/cmd/uitester              2.757s
+ok  github.com/kopdes/merah-putih/internal/anggota          2.069s
+ok  github.com/kopdes/merah-putih/internal/api              72.809s
+ok  github.com/kopdes/merah-putih/internal/api/handlers     1.925s
+ok  github.com/kopdes/merah-putih/internal/api/middleware   1.529s
+ok  github.com/kopdes/merah-putih/internal/api/response     1.949s
+ok  github.com/kopdes/merah-putih/internal/auth             1.764s
+ok  github.com/kopdes/merah-putih/internal/config           1.660s
+ok  github.com/kopdes/merah-putih/internal/db               2.925s
+ok  github.com/kopdes/merah-putih/internal/iuran            1.999s
+ok  github.com/kopdes/merah-putih/internal/katalog          1.771s
+ok  github.com/kopdes/merah-putih/internal/laporan          2.086s
+ok  github.com/kopdes/merah-putih/internal/pembayaran       2.461s
+ok  github.com/kopdes/merah-putih/internal/pendaftaran      2.418s
+ok  github.com/kopdes/merah-putih/internal/pesanan          1.751s
+ok  github.com/kopdes/merah-putih/internal/security         1.573s
+ok  github.com/kopdes/merah-putih/internal/testseed         1.736s
+ok  github.com/kopdes/merah-putih/internal/worker           5.091s
+
+$ go run ./cmd/kopdes --env-file .env.test worker --once
+# EXIT:0
+$ go run ./cmd/kopdes --env-file .env.test storage migrate-files
+Migrasi storage selesai: kyc_moved=0 kyc_reencrypted=0 bukti_moved=0 bukti_reencrypted=0
+$ go run ./cmd/kopdes --env-file .env.test bukti purge
+Bukti purge selesai: 0 berkas bukti non-lunas kedaluwarsa dihapus
+```
+

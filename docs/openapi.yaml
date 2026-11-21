@@ -2,15 +2,18 @@ openapi: 3.0.3
 x-source: openapi.json
 info:
   title: API Kopdes Merah Putih (Backend Ramping)
-  version: 2.0.0-lean
+  version: 2.1.0-lean
   description: 'Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih
-    (1 koperasi tunggal, 19 tabel PostgreSQL 16, 35 endpoint HTTP).
+    (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 46 variabel env).
 
-    Autentikasi menggunakan opaque session token (Authorization: Bearer atau cookie
-    kopdes_session) + MFA TOTP wajib untuk admin & bendahara.
+    Autentikasi utama menggunakan cookie HttpOnly (__Host-kopdes_session / kopdes_session)
+    dilengkapi CSRFGuard (Origin/Referer + header X-Requested-With pada mutasi) serta
+    Authorization: Bearer opsional bila ALLOW_BEARER_AUTH=true + MFA TOTP wajib untuk
+    admin & bendahara.
 
-    Catatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak ditandai
-    PERLU VERIFIKASI HUKUM; klasifikasi iuran ditandai KEPUTUSAN AKUNTAN.
+    Catatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak dan 365 hari
+    bukti non-lunas ditandai PERLU VERIFIKASI HUKUM; klasifikasi iuran & koreksi selisih/refund
+    ditandai KEPUTUSAN AKUNTAN; kebijakan stok & breakglass ditandai KEPUTUSAN PEMILIK.
 
     '
 servers:
@@ -24,10 +27,15 @@ servers:
       default: '{API_PORT}'
 components:
   securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: __Host-kopdes_session
+      description: Cookie HttpOnly utama dari POST /api/v1/auth/login (wajib X-Requested-With pada POST/PUT/PATCH/DELETE)
     bearerSession:
       type: http
       scheme: bearer
-      description: Opaque session token dari POST /api/v1/auth/login
+      description: Opaque session token opsional (hanya aktif bila ALLOW_BEARER_AUTH=true)
   schemas:
     Envelope:
       type: object
@@ -59,10 +67,10 @@ paths:
       tags:
       - Publik & Kesehatan
       operationId: getReadyz
-      summary: Readiness probe + ping PostgreSQL
+      summary: Readiness probe + ping PostgreSQL + telemetri worker_runs
       responses:
         '200':
-          description: Siap
+          description: Siap (berisi status, database, worker_degraded, worker_jobs)
         '503':
           description: DB tidak siap
   /api/v1/public/config:
@@ -70,8 +78,7 @@ paths:
       tags:
       - Publik & Kesehatan
       operationId: getPublicConfig
-      summary: Konfigurasi publik koperasi, batas unggahan, feature flags, dan QRIS
-        aktif
+      summary: Konfigurasi publik koperasi, batas unggahan, feature flags, auth, stock_hold_minutes, dan QRIS aktif
       responses:
         '200':
           description: Konfigurasi non-rahasia
@@ -80,7 +87,7 @@ paths:
       tags:
       - Pendaftaran Publik & KYC
       operationId: postPublicPendaftaran
-      summary: Ajukan pendaftaran calon anggota baru + token unggah KYC
+      summary: Ajukan pendaftaran calon anggota baru + token unggah KYC (tanggal_lahir opsional)
       requestBody:
         required: true
         content:
@@ -92,7 +99,6 @@ paths:
               - email
               - nik
               - no_hp
-              - tanggal_lahir
               - alamat
               - pekerjaan
               properties:
@@ -774,6 +780,9 @@ paths:
                   type: integer
                 stok:
                   type: integer
+                foto_url:
+                  type: string
+                  description: Path relatif '/...' atau URL https:// valid (maks 512 karakter; dianjurkan WebP/JPEG <= 500 KB)
                 status:
                   type: string
       responses:
@@ -820,7 +829,7 @@ paths:
                 metode_pengiriman:
                   type: string
                   enum:
-                  - ambil_di_koperasi
+                  - ambil_sendiri
                   - diantar
                 metode_pembayaran:
                   type: string
@@ -938,8 +947,9 @@ paths:
       - Pembayaran QRIS/Tunai & Dual Control
       operationId: getPembayaran
       summary: Daftar pembayaran, detail (?id=), daftar rekening QRIS (?rekening=true),
-        atau unduh bukti (?bukti_id=)
+        unduh bukti bayar (?bukti_id=), atau bukti refund (?refund_bukti_id=)
       security:
+      - cookieSession: []
       - bearerSession: []
       parameters:
       - name: rekening
@@ -952,6 +962,11 @@ paths:
           type: string
           format: uuid
       - name: bukti_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: refund_bukti_id
         in: query
         schema:
           type: string
@@ -1060,9 +1075,89 @@ paths:
                   type: string
                 selesaikan_tindak_lanjut:
                   type: boolean
+                breakglass:
+                  type: boolean
+                  description: Jalur darurat khusus admin bila DUAL_CONTROL_BREAKGLASS_ENABLED=true (wajib mfa_code segar & alasan >= 10 karakter)
+                mfa_code:
+                  type: string
+                  description: Kode TOTP 6 digit terbaru untuk audit breakglass admin
       responses:
         '200':
-          description: Pembayaran diverifikasi
+          description: Pembayaran diverifikasi (atau status perlu_tindak_lanjut jika tahanan stok sudah habis & stok tidak cukup)
+        '403':
+          description: Pelanggaran dual-control atau bukan admin/bendahara
+  /api/v1/pembayaran/{id}/refund:
+    post:
+      tags:
+      - Pembayaran QRIS/Tunai & Dual Control
+      operationId: postRefundPembayaran
+      summary: Pengajuan, persetujuan, atau penolakan pengembalian dana manual dual-control (+ bukti terenkripsi opsional)
+      security:
+      - cookieSession: []
+      - bearerSession: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - aksi
+              properties:
+                aksi:
+                  type: string
+                  enum:
+                  - ajukan
+                  - setujui
+                  - tolak
+                metode:
+                  type: string
+                  enum:
+                  - tunai
+                  - transfer
+                nominal:
+                  type: integer
+                alasan:
+                  type: string
+                catatan_pelaksana:
+                  type: string
+                breakglass:
+                  type: boolean
+                mfa_code:
+                  type: string
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - aksi
+              properties:
+                aksi:
+                  type: string
+                  enum:
+                  - ajukan
+                  - setujui
+                  - tolak
+                catatan_pelaksana:
+                  type: string
+                breakglass:
+                  type: string
+                mfa_code:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Pengajuan refund dibuat
+        '200':
+          description: Keputusan persetujuan/penolakan refund disimpan
         '403':
           description: Pelanggaran dual-control atau bukan admin/bendahara
   /api/v1/laporan:

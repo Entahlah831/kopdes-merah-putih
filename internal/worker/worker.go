@@ -39,7 +39,6 @@ type Worker struct {
 	paySvc  *pembayaran.Service
 	iurSvc  *iuran.Service
 	pendSvc *pendaftaran.Service
-	mu      sync.Mutex
 	jobs    []jobSpec
 }
 

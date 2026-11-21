@@ -5,6 +5,7 @@ networks:
 volumes:
   pg_test_data:
   kyc_test_storage:
+  bukti_test_storage:
 
 services:
   postgres:
@@ -47,7 +48,7 @@ services:
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
@@ -62,6 +63,8 @@ services:
       BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
       SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-30m}
       SESSION_ABS_TTL: ${SESSION_ABS_TTL:-12h}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      ALLOW_BEARER_AUTH: ${ALLOW_BEARER_AUTH:-true}
       MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-admin,bendahara}
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCKOUT_DURATION: ${LOGIN_LOCKOUT_DURATION:-15m}
@@ -70,22 +73,27 @@ services:
       CAPTCHA_SECRET_KEY: ${CAPTCHA_SECRET_KEY:-}
       PAYMENTS_ENABLED: ${PAYMENTS_ENABLED:-true}
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
-      ALLOW_PERSONAL_PAYMENT_PILOT: ${ALLOW_PERSONAL_PAYMENT_PILOT:-true}
+      ALLOW_PERSONAL_PAYMENT_PILOT: ${ALLOW_PERSONAL_PAYMENT_PILOT:-false}
       PILOT_MAX_PER_TX: ${PILOT_MAX_PER_TX:-500000}
       PILOT_MAX_PER_DAY: ${PILOT_MAX_PER_DAY:-2000000}
       QRIS_UNIQUE_DIGITS: ${QRIS_UNIQUE_DIGITS:-3}
-      PAYMENT_EXPIRY_DURATION: ${PAYMENT_EXPIRY_DURATION:-24h}
-      PENDING_LIMIT_PER_MEMBER: ${PENDING_LIMIT_PER_MEMBER:-3}
-      PENDING_LIMIT_GLOBAL: ${PENDING_LIMIT_GLOBAL:-200}
+      PAYMENT_EXPIRY_DURATION: ${PAYMENT_EXPIRY_DURATION:-15m}
+      STOCK_HOLD_MINUTES: ${STOCK_HOLD_MINUTES:-60}
+      PENDING_LIMIT_PER_MEMBER: ${PENDING_LIMIT_PER_MEMBER:-2}
+      PENDING_LIMIT_GLOBAL: ${PENDING_LIMIT_GLOBAL:-50}
+      DUAL_CONTROL_BREAKGLASS_ENABLED: ${DUAL_CONTROL_BREAKGLASS_ENABLED:-false}
       PDP_REJECTED_RETENTION_DAYS: ${PDP_REJECTED_RETENTION_DAYS:-30}
       STORAGE_KYC_DIR: /app/storage/kyc
+      STORAGE_BUKTI_DIR: /app/storage/bukti
+      BUKTI_RETENTION_DAYS: ${BUKTI_RETENTION_DAYS:-365}
       BACKUP_DIR: ${BACKUP_DIR:-./backups}
-      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
     ports:
       - "127.0.0.1:${API_HOST_PORT:?API_HOST_PORT wajib disetel}:${API_PORT:?API_PORT wajib disetel}"
     volumes:
       - kyc_test_storage:/app/storage/kyc
+      - bukti_test_storage:/app/storage/bukti
     networks:
       - kopdes_test_internal
     healthcheck:
@@ -93,6 +101,72 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/app/kopdes"]
+    command: ["worker", "--tick", "60s"]
+    healthcheck:
+      disable: true
+    environment:
+      APP_ENV: ${APP_ENV:-test}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+      API_PORT: ${API_PORT:?API_PORT wajib disetel}
+      API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
+      UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
+      DB_HOST_PORT: ${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}
+      DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
+      DB_USER: ${DB_USER:-kopdes_app}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
+      AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
+      SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-30m}
+      SESSION_ABS_TTL: ${SESSION_ABS_TTL:-12h}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      ALLOW_BEARER_AUTH: ${ALLOW_BEARER_AUTH:-true}
+      MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-admin,bendahara}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_DURATION: ${LOGIN_LOCKOUT_DURATION:-15m}
+      CAPTCHA_ENABLED: ${CAPTCHA_ENABLED:-false}
+      CAPTCHA_SITE_KEY: ${CAPTCHA_SITE_KEY:-}
+      CAPTCHA_SECRET_KEY: ${CAPTCHA_SECRET_KEY:-}
+      PAYMENTS_ENABLED: ${PAYMENTS_ENABLED:-true}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      ALLOW_PERSONAL_PAYMENT_PILOT: ${ALLOW_PERSONAL_PAYMENT_PILOT:-false}
+      PILOT_MAX_PER_TX: ${PILOT_MAX_PER_TX:-500000}
+      PILOT_MAX_PER_DAY: ${PILOT_MAX_PER_DAY:-2000000}
+      QRIS_UNIQUE_DIGITS: ${QRIS_UNIQUE_DIGITS:-3}
+      PAYMENT_EXPIRY_DURATION: ${PAYMENT_EXPIRY_DURATION:-15m}
+      STOCK_HOLD_MINUTES: ${STOCK_HOLD_MINUTES:-60}
+      PENDING_LIMIT_PER_MEMBER: ${PENDING_LIMIT_PER_MEMBER:-2}
+      PENDING_LIMIT_GLOBAL: ${PENDING_LIMIT_GLOBAL:-50}
+      DUAL_CONTROL_BREAKGLASS_ENABLED: ${DUAL_CONTROL_BREAKGLASS_ENABLED:-false}
+      PDP_REJECTED_RETENTION_DAYS: ${PDP_REJECTED_RETENTION_DAYS:-30}
+      STORAGE_KYC_DIR: /app/storage/kyc
+      STORAGE_BUKTI_DIR: /app/storage/bukti
+      BUKTI_RETENTION_DAYS: ${BUKTI_RETENTION_DAYS:-365}
+      BACKUP_DIR: ${BACKUP_DIR:-./backups}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - kyc_test_storage:/app/storage/kyc
+      - bukti_test_storage:/app/storage/bukti
+    networks:
+      - kopdes_test_internal
 
   uitester:
     build:

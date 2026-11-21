@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +24,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/pendaftaran"
 	"github.com/kopdes/merah-putih/internal/pesanan"
 	"github.com/kopdes/merah-putih/internal/security"
+	"github.com/kopdes/merah-putih/internal/worker"
 )
 
 var validRoleID = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -39,7 +42,7 @@ func main() {
 	} else if v := strings.TrimSpace(os.Getenv("ENV_FILE")); v != "" {
 		envFlag = v
 	}
-	if len(args) < 2 {
+	if len(args) < 1 || (args[0] != "worker" && len(args) < 2) {
 		printUsage()
 		os.Exit(2)
 	}
@@ -48,6 +51,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("gagal memuat env %s: %v", strings.NewReplacer("\r", "", "\n", "").Replace(envFlag), err) // #nosec G706 -- sanitized
 	}
+
+	if args[0] == "worker" {
+		sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		pool, pErr := openPool(sigCtx, cfg)
+		if pErr != nil {
+			log.Fatalf("koneksi database gagal: %v", pErr)
+		}
+		defer pool.Close()
+		if err := runWorkerCommand(sigCtx, pool, cfg, args[1:]); err != nil {
+			log.Fatalf("worker gagal: %v", err)
+		}
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -72,6 +90,7 @@ func printUsage() {
 	fmt.Println("  bukti purge           [--days 365]")
 	fmt.Println("  pesanan expire")
 	fmt.Println("  storage migrate-files")
+	fmt.Println("  worker                [--tick 60s] [--once]")
 }
 
 func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) {
@@ -102,6 +121,12 @@ func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) 
 }
 
 func dispatchCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
+	if len(args) >= 1 && args[0] == "worker" {
+		return runWorkerCommand(ctx, pool, cfg, args[1:])
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("argumen perintah tidak lengkap")
+	}
 	key := args[0] + " " + args[1]
 	rest := args[2:]
 	switch key {
@@ -241,5 +266,24 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 		return err
 	}
 	fmt.Printf("Kedaluwarsa selesai: pesanan=%d, tahanan_stok=%d, pembayaran=%d\n", ordCount, holdCount, payCount)
+	return nil
+}
+
+func runWorkerCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
+	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	tick := fs.Duration("tick", 60*time.Second, "Interval penjadwalan tugas worker")
+	once := fs.Bool("once", false, "Jalankan satu kali lalu keluar")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	w, err := worker.New(pool, cfg)
+	if err != nil {
+		return err
+	}
+	if *once {
+		return w.RunOnce(ctx)
+	}
+	log.Printf("[worker] berjalan dengan interval tick=%s", *tick)
+	w.Run(ctx, *tick)
 	return nil
 }

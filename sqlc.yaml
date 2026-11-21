@@ -10,6 +10,7 @@ sql:
       - "internal/pesanan/queries"
       - "internal/pembayaran/queries"
       - "internal/laporan/queries"
+      - "internal/worker/queries"
     schema:
       - "db/migrations/000001_init_kopdes_schema.up.sql"
       - "db/migrations/000002_decision_audit_enhancements.up.sql"

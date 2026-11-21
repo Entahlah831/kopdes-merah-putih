@@ -214,6 +214,7 @@ SELECT s.id AS session_id,
        s.mfa_verified,
        s.scope,
        s.mfa_attempts,
+       s.last_active_at,
        s.idle_expires_at,
        s.abs_expires_at,
        u.peran,
@@ -236,6 +237,7 @@ type GetActiveSessionByDigestRow struct {
 	MfaVerified   bool               `json:"mfa_verified"`
 	Scope         string             `json:"scope"`
 	MfaAttempts   int32              `json:"mfa_attempts"`
+	LastActiveAt  pgtype.Timestamptz `json:"last_active_at"`
 	IdleExpiresAt pgtype.Timestamptz `json:"idle_expires_at"`
 	AbsExpiresAt  pgtype.Timestamptz `json:"abs_expires_at"`
 	Peran         string             `json:"peran"`
@@ -254,6 +256,7 @@ func (q *Queries) GetActiveSessionByDigest(ctx context.Context, tokenHash string
 		&i.MfaVerified,
 		&i.Scope,
 		&i.MfaAttempts,
+		&i.LastActiveAt,
 		&i.IdleExpiresAt,
 		&i.AbsExpiresAt,
 		&i.Peran,
@@ -667,6 +670,21 @@ func (q *Queries) ResetFailedLogin(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const resetUserMFAByID = `-- name: ResetUserMFAByID :exec
+UPDATE users
+SET mfa_enabled = FALSE,
+    mfa_secret_enc = NULL,
+    mfa_recovery_hashes = '{}',
+    mfa_last_step = 0,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) ResetUserMFAByID(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, resetUserMFAByID, id)
+	return err
+}
+
 const revokeAllUserSessions = `-- name: RevokeAllUserSessions :exec
 UPDATE sesi
 SET revoked_at = NOW()
@@ -719,7 +737,9 @@ const touchSessionActivity = `-- name: TouchSessionActivity :exec
 UPDATE sesi
 SET last_active_at = NOW(),
     idle_expires_at = LEAST(abs_expires_at, NOW() + make_interval(secs => $1::int))
-WHERE id = $2 AND revoked_at IS NULL
+WHERE id = $2
+  AND revoked_at IS NULL
+  AND (last_active_at IS NULL OR last_active_at <= NOW() - INTERVAL '60 seconds')
 `
 
 type TouchSessionActivityParams struct {

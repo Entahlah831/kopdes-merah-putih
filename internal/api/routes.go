@@ -61,6 +61,7 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, ks *security.PurposeKey
 	authSvc := auth.NewService(pool, auth.Config{
 		AppEnv: cfg.AppEnv, BlindIndexSecret: blindKey, KeyProvider: dbKP,
 		BcryptCost: cfg.BcryptCost, SessionIdleTTL: cfg.SessionIdleTTL, SessionAbsTTL: cfg.SessionAbsTTL,
+		CookieSecure: cfg.CookieSecure, AllowBearerAuth: cfg.AllowBearerAuth,
 		MFARequiredRoles: cfg.MFARequiredRoles, MFAIssuer: cfg.MFAIssuer, MFAMaxAttempts: cfg.MFAMaxAttempts,
 		LoginMaxAttempts: cfg.LoginMaxAttempts, LoginLockoutDuration: cfg.LoginLockoutDuration,
 		TrustedProxies: cfg.TrustedProxies, CaptchaEnabled: cfg.CaptchaEnabled, CaptchaSecretKey: cfg.CaptchaSecretKey,
@@ -105,6 +106,7 @@ func buildPublicConfigOpts(pool *pgxpool.Pool, cfg Config) handlers.PublicConfig
 		MaxBodyBytes: cfg.MaxBodyBytes, MaxKYCUploadBytes: cfg.MaxKYCUploadBytes,
 		PaymentExpirySeconds: int64(cfg.PaymentExpiryDuration.Seconds()),
 		PollingIntervalMS: cfg.PollingIntervalMS, AccessTokenTTLSeconds: int64(cfg.SessionIdleTTL.Seconds()),
+		CookieSecure: cfg.CookieSecure, AllowBearerAuth: cfg.AllowBearerAuth, StockHoldMinutes: cfg.StockHoldMinutes,
 		PaymentsEnabled: !cfg.PaymentsDisabled, RegistrationEnabled: !cfg.RegistrationDisabled,
 		LoginEnabled: true, ReadOnlyMode: cfg.ReadOnlyMode,
 		PersonalPaymentPilotEnabled: cfg.AllowPersonalPaymentPilot, CaptchaEnabled: cfg.CaptchaEnabled,
@@ -121,9 +123,10 @@ func registerAllRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config, dh *d
 }
 
 func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config, dh *domainHandlers) {
-	limSes := middleware.RequireSession(pool, cfg.SessionIdleTTL, true)
-	optSes := middleware.OptionalSession(pool, cfg.SessionIdleTTL)
-	fullSes := middleware.RequireSession(pool, cfg.SessionIdleTTL, false)
+	sesOpts := middleware.SessionAuthOptions{IdleTTL: cfg.SessionIdleTTL, AllowBearer: cfg.AllowBearerAuth}
+	limSes := middleware.RequireSessionWithOptions(pool, sesOpts, true)
+	optSes := middleware.OptionalSessionWithOptions(pool, sesOpts)
+	fullSes := middleware.RequireSessionWithOptions(pool, sesOpts, false)
 	staffRoles := middleware.RequireRoles("admin", "bendahara")
 	adminOnly := middleware.RequireRoles("admin")
 
@@ -145,7 +148,8 @@ func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config
 }
 
 func registerMemberAdminRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config, dh *domainHandlers) {
-	fullSes := middleware.RequireSession(pool, cfg.SessionIdleTTL, false)
+	sesOpts := middleware.SessionAuthOptions{IdleTTL: cfg.SessionIdleTTL, AllowBearer: cfg.AllowBearerAuth}
+	fullSes := middleware.RequireSessionWithOptions(pool, sesOpts, false)
 	adminOnly := middleware.RequireRoles("admin")
 	staffMember := middleware.RequireRoles("admin", "bendahara", "petugas_toko")
 	iuranRoles := middleware.RequireRoles("admin", "bendahara")
@@ -163,8 +167,9 @@ func registerMemberAdminRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Confi
 }
 
 func registerCommerceFinanceRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config, dh *domainHandlers) {
-	optSes := middleware.OptionalSession(pool, cfg.SessionIdleTTL)
-	fullSes := middleware.RequireSession(pool, cfg.SessionIdleTTL, false)
+	sesOpts := middleware.SessionAuthOptions{IdleTTL: cfg.SessionIdleTTL, AllowBearer: cfg.AllowBearerAuth}
+	optSes := middleware.OptionalSessionWithOptions(pool, sesOpts)
+	fullSes := middleware.RequireSessionWithOptions(pool, sesOpts, false)
 	tokoRoles := middleware.RequireRoles("admin", "petugas_toko")
 	bayarRoles := middleware.RequireRoles("admin", "bendahara")
 	laporanRoles := middleware.RequireRoles("admin", "bendahara", "petugas_toko")

@@ -18,7 +18,18 @@ type contextKey string
 
 const ContextKeySession contextKey = "kopdes_session_claims"
 
-const SessionCookieName = "kopdes_session"
+const (
+	SessionCookieHostName  = "__Host-kopdes_session"
+	SessionCookiePlainName = "kopdes_session"
+	SessionCookieName      = SessionCookiePlainName
+	SessionTouchInterval   = time.Minute
+)
+
+// SessionAuthOptions mengatur perilaku autentikasi sesi cookie-utama dan Bearer opsional.
+type SessionAuthOptions struct {
+	IdleTTL     time.Duration
+	AllowBearer bool
+}
 
 // SessionClaims merepresentasikan sesi pengguna terautentikasi di server.
 type SessionClaims struct {
@@ -28,22 +39,43 @@ type SessionClaims struct {
 	Role        string
 	Scope       string
 	MFAVerified bool
+	ViaCookie   bool
 }
 
-// ExtractRawSessionToken mengambil token sesi opaque dari header Bearer atau cookie.
+// HasSessionCookie memeriksa apakah permintaan membawa cookie sesi kopdes.
+func HasSessionCookie(r *http.Request) bool {
+	for _, name := range []string{SessionCookieHostName, SessionCookiePlainName} {
+		if c, err := r.Cookie(name); err == nil && strings.TrimSpace(c.Value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractSessionToken mengambil token sesi dari cookie HttpOnly terlebih dahulu, lalu Bearer bila diizinkan.
+func ExtractSessionToken(r *http.Request, allowBearer bool) (string, bool) {
+	for _, name := range []string{SessionCookieHostName, SessionCookiePlainName} {
+		if c, err := r.Cookie(name); err == nil {
+			if tok := strings.TrimSpace(c.Value); tok != "" {
+				return tok, true
+			}
+		}
+	}
+	if allowBearer {
+		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+		if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
+			if tok := strings.TrimSpace(authHeader[7:]); tok != "" {
+				return tok, false
+			}
+		}
+	}
+	return "", false
+}
+
+// ExtractRawSessionToken mempertahankan kompatibilitas pemanggil yang mengizinkan Bearer.
 func ExtractRawSessionToken(r *http.Request) string {
-	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-	if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
-		if tok := strings.TrimSpace(authHeader[7:]); tok != "" {
-			return tok
-		}
-	}
-	if c, err := r.Cookie(SessionCookieName); err == nil {
-		if tok := strings.TrimSpace(c.Value); tok != "" {
-			return tok
-		}
-	}
-	return ""
+	tok, _ := ExtractSessionToken(r, true)
+	return tok
 }
 
 func pgUUIDToPtr(u pgtype.UUID) *uuid.UUID {
@@ -54,7 +86,7 @@ func pgUUIDToPtr(u pgtype.UUID) *uuid.UUID {
 	return &val
 }
 
-func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken string, idleTTL time.Duration) (*SessionClaims, bool) {
+func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken string, idleTTL time.Duration, viaCookie bool) (*SessionClaims, bool) {
 	if pool == nil || rawToken == "" {
 		return nil, false
 	}
@@ -66,6 +98,22 @@ func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken stri
 	if row.AnggotaID.Valid && row.AnggotaStatus != "" && row.AnggotaStatus != "aktif" {
 		return nil, false
 	}
+	maybeTouchSessionActivity(ctx, q, row, idleTTL)
+	return &SessionClaims{
+		SessionID:   uuid.UUID(row.SessionID.Bytes),
+		UserID:      uuid.UUID(row.UserID.Bytes),
+		AnggotaID:   pgUUIDToPtr(row.AnggotaID),
+		Role:        row.Peran,
+		Scope:       row.Scope,
+		MFAVerified: row.MfaVerified,
+		ViaCookie:   viaCookie,
+	}, true
+}
+
+func maybeTouchSessionActivity(ctx context.Context, q *db.Queries, row db.GetActiveSessionByDigestRow, idleTTL time.Duration) {
+	if row.LastActiveAt.Valid && time.Since(row.LastActiveAt.Time) < SessionTouchInterval {
+		return
+	}
 	idleSecs := int32(idleTTL.Seconds())
 	if idleSecs <= 0 {
 		idleSecs = 1800
@@ -74,22 +122,19 @@ func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken stri
 		ID:       row.SessionID,
 		IdleSecs: idleSecs,
 	})
-	return &SessionClaims{
-		SessionID:   uuid.UUID(row.SessionID.Bytes),
-		UserID:      uuid.UUID(row.UserID.Bytes),
-		AnggotaID:   pgUUIDToPtr(row.AnggotaID),
-		Role:        row.Peran,
-		Scope:       row.Scope,
-		MFAVerified: row.MfaVerified,
-	}, true
 }
 
-// OptionalSession menyematkan SessionClaims ke context bila token sesi valid tersedia.
+// OptionalSession menyematkan SessionClaims ke context dengan mengizinkan Bearer (kompatibel).
 func OptionalSession(pool *pgxpool.Pool, idleTTL time.Duration) func(http.Handler) http.Handler {
+	return OptionalSessionWithOptions(pool, SessionAuthOptions{IdleTTL: idleTTL, AllowBearer: true})
+}
+
+// OptionalSessionWithOptions menyematkan SessionClaims sesuai pengaturan transport sesi.
+func OptionalSessionWithOptions(pool *pgxpool.Pool, opts SessionAuthOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if tok := ExtractRawSessionToken(r); tok != "" {
-				if claims, ok := resolveSessionFromDB(r.Context(), pool, tok, idleTTL); ok {
+			if tok, viaCookie := ExtractSessionToken(r, opts.AllowBearer); tok != "" {
+				if claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts.IdleTTL, viaCookie); ok {
 					ctx := context.WithValue(r.Context(), ContextKeySession, claims)
 					r = r.WithContext(ctx)
 				}
@@ -99,12 +144,17 @@ func OptionalSession(pool *pgxpool.Pool, idleTTL time.Duration) func(http.Handle
 	}
 }
 
-// RequireSession mewajibkan sesi opaque aktif di database.
+// RequireSession mewajibkan sesi aktif di database (mode kompatibel AllowBearer=true).
 func RequireSession(pool *pgxpool.Pool, idleTTL time.Duration, allowLimitedScope bool) func(http.Handler) http.Handler {
+	return RequireSessionWithOptions(pool, SessionAuthOptions{IdleTTL: idleTTL, AllowBearer: true}, allowLimitedScope)
+}
+
+// RequireSessionWithOptions mewajibkan sesi aktif menggunakan cookie HttpOnly (atau Bearer bila diaktifkan).
+func RequireSessionWithOptions(pool *pgxpool.Pool, opts SessionAuthOptions, allowLimitedScope bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tok := ExtractRawSessionToken(r)
-			claims, ok := resolveSessionFromDB(r.Context(), pool, tok, idleTTL)
+			tok, viaCookie := ExtractSessionToken(r, opts.AllowBearer)
+			claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts.IdleTTL, viaCookie)
 			if !ok {
 				response.Unauthorized(w, "Sesi tidak valid atau telah kedaluwarsa")
 				return

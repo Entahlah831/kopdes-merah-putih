@@ -154,6 +154,15 @@ UPDATE users
 SET mfa_recovery_hashes = sqlc.arg(mfa_recovery_hashes)
 WHERE id = sqlc.arg(id);
 
+-- name: ResetUserMFAByID :exec
+UPDATE users
+SET mfa_enabled = FALSE,
+    mfa_secret_enc = NULL,
+    mfa_recovery_hashes = '{}',
+    mfa_last_step = 0,
+    updated_at = NOW()
+WHERE id = sqlc.arg(id);
+
 -- name: UpdateUserByAdmin :one
 UPDATE users
 SET peran = COALESCE(NULLIF(sqlc.arg(peran)::text, ''), peran),
@@ -190,6 +199,7 @@ SELECT s.id AS session_id,
        s.mfa_verified,
        s.scope,
        s.mfa_attempts,
+       s.last_active_at,
        s.idle_expires_at,
        s.abs_expires_at,
        u.peran,
@@ -209,7 +219,9 @@ WHERE s.token_hash = sqlc.arg(token_hash)
 UPDATE sesi
 SET last_active_at = NOW(),
     idle_expires_at = LEAST(abs_expires_at, NOW() + make_interval(secs => sqlc.arg(idle_secs)::int))
-WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+WHERE id = sqlc.arg(id)
+  AND revoked_at IS NULL
+  AND (last_active_at IS NULL OR last_active_at <= NOW() - INTERVAL '60 seconds');
 
 -- name: IncrementSessionMFAAttempts :one
 UPDATE sesi

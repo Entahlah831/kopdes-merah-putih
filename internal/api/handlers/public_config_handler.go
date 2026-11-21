@@ -20,6 +20,9 @@ type PublicConfigOptions struct {
 	PaymentExpirySeconds        int64
 	PollingIntervalMS           int
 	AccessTokenTTLSeconds       int64
+	CookieSecure                string
+	AllowBearerAuth             bool
+	StockHoldMinutes            int
 	PaymentsEnabled             bool
 	RegistrationEnabled         bool
 	LoginEnabled                bool
@@ -61,6 +64,9 @@ func NewPublicConfigHandler(opts PublicConfigOptions) *PublicConfigHandler {
 	}
 	if opts.AccessTokenTTLSeconds <= 0 {
 		opts.AccessTokenTTLSeconds = 900
+	}
+	if opts.StockHoldMinutes <= 0 {
+		opts.StockHoldMinutes = 60
 	}
 	if strings.TrimSpace(opts.CaptchaProvider) == "" {
 		opts.CaptchaProvider = "turnstile"
@@ -130,6 +136,12 @@ func (h *PublicConfigHandler) buildPublicPayload(r *http.Request) map[string]int
 		"mfa_mandatory_roles":      h.opts.MFAMandatoryRoles,
 		"access_token_ttl_seconds": h.opts.AccessTokenTTLSeconds,
 		"session_idle_ttl_seconds": h.opts.AccessTokenTTLSeconds,
+		"stock_hold_minutes":       h.opts.StockHoldMinutes,
+		"auth": map[string]interface{}{
+			"cookie_primary": true,
+			"bearer_enabled": h.opts.AllowBearerAuth,
+			"csrf_header":    "X-Requested-With",
+		},
 		"pagination": map[string]interface{}{
 			"default_limit": h.opts.PaginationDefaultLimit,
 			"max_limit":     h.opts.PaginationMaxLimit,

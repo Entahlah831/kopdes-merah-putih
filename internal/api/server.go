@@ -269,6 +269,7 @@ func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
 	}
 	ipLim := middleware.NewIPRateLimiterWithConfig(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies, cfg.MaxRateLimitClients)
 	var handler http.Handler = mux
+	handler = middleware.CSRFGuard(cfg.AllowedOrigins, cfg.TrustedProxies)(handler)
 	handler = readOnlyGuard(cfg.ReadOnlyMode)(handler)
 	handler = middleware.RateLimit(ipLim)(handler)
 	handler = middleware.BodyLimit(cfg.MaxBodyBytes)(handler)

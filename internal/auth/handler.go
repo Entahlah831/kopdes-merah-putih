@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
@@ -15,17 +16,54 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+func (h *Handler) resolveCookieSecure(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(h.svc.cfg.CookieSecure)) {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return middleware.RequestScheme(r, h.svc.trusted) == "https"
+	}
+}
+
 func (h *Handler) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAgeSecs int) {
-	// #nosec G124 -- atribut Secure aktif otomatis saat koneksi TLS (r.TLS != nil); bernilai false hanya pada loopback HTTP pengujian lokal
+	isSecure := h.resolveCookieSecure(r)
+	name := middleware.SessionCookiePlainName
+	if isSecure {
+		name = middleware.SessionCookieHostName
+	}
+	// #nosec G124 -- Secure dikontrol oleh COOKIE_SECURE dan proxy terpercaya (X-Forwarded-Proto HTTPS memakai prefix __Host-)
 	http.SetCookie(w, &http.Cookie{
-		Name:     middleware.SessionCookieName,
+		Name:     name,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   isSecure,
 		MaxAge:   maxAgeSecs,
 	})
+}
+
+func clearSessionCookies(w http.ResponseWriter) {
+	for _, item := range []struct {
+		name   string
+		secure bool
+	}{
+		{middleware.SessionCookieHostName, true},
+		{middleware.SessionCookiePlainName, false},
+	} {
+		// #nosec G124 -- membersihkan kedua variasi cookie sesi (__Host- HTTPS dan HTTP dev)
+		http.SetCookie(w, &http.Cookie{
+			Name:     item.name,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   item.secure,
+			MaxAge:   -1,
+		})
+	}
 }
 
 func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +80,9 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setSessionCookie(w, r, res.SessionToken, int(h.svc.cfg.SessionAbsTTL.Seconds()))
+	if !h.svc.cfg.AllowBearerAuth {
+		res.SessionToken = ""
+	}
 	response.JSON(w, http.StatusOK, res)
 }
 
@@ -90,7 +131,7 @@ func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		response.WriteServiceError(w, err)
 		return
 	}
-	h.setSessionCookie(w, r, "", -1)
+	clearSessionCookies(w)
 	response.JSON(w, http.StatusOK, map[string]bool{"logged_out": true})
 }
 

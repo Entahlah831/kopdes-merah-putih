@@ -108,6 +108,10 @@
     const o = opts || {};
     const url = getApiBase() + path;
     const headers = Object.assign({}, o.headers || {});
+    const upperMethod = String(method || "GET").toUpperCase();
+    if (upperMethod !== "GET" && upperMethod !== "HEAD" && upperMethod !== "OPTIONS") {
+      headers["X-Requested-With"] = "kopdes-tester";
+    }
     if (o.token) {
       headers["Authorization"] = "Bearer " + o.token;
     }
@@ -116,10 +120,11 @@
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(o.json);
     }
-    let resp = await fetch(url, { method: method, headers: headers, body: body });
+    const fetchOpts = { method: upperMethod, headers: headers, body: body, credentials: "include" };
+    let resp = await fetch(url, fetchOpts);
     if (resp.status === 429 && !o.allow429) {
       await new Promise(function (resolve) { setTimeout(resolve, 600); });
-      resp = await fetch(url, { method: method, headers: headers, body: body });
+      resp = await fetch(url, fetchOpts);
     }
     const contentType = resp.headers.get("content-type") || "";
     const rawText = contentType.indexOf("image/") === 0 ? "[binary image " + contentType + "]" : await resp.text();
@@ -180,7 +185,7 @@
       throw new Error("Login " + identifier + " gagal HTTP " + res.status + ": " + res.text);
     }
     const d = res.json.data;
-    const token = d.session_token;
+    const token = d.session_token || "";
     if (d.scope === "mfa_pending") {
       if (opts.explicitCode) {
         const mv = await apiRequest("POST", "/api/v1/auth/mfa/verify", {
@@ -260,9 +265,10 @@
       return;
     }
     const s = state.activeSession;
+    const modeLabel = s.session_token ? ("token_len=" + s.session_token.length) : "auth=cookie-httponly";
     target.textContent = "peran=" + s.role + " | email=" + s.email + " | user_id=" + s.user_id +
       (s.anggota_id ? (" | anggota_id=" + s.anggota_id) : "") +
-      " | token_len=" + s.session_token.length;
+      " | " + modeLabel;
   }
 
   function populateAccountSelect() {
@@ -373,6 +379,28 @@
       " | Koperasi=" + (kop.nama_koperasi || "-") +
       " | QRIS Digits=" + (kop.qris_unique_digits || "-") +
       " | Ongkir=" + (kop.ongkir_tetap !== undefined ? kop.ongkir_tetap : "-");
+    await restoreSessionFromCookie();
+  }
+
+  async function restoreSessionFromCookie() {
+    if (state.activeSession) return;
+    try {
+      const me = await apiRequest("GET", "/api/v1/auth/me");
+      if (me.status === 200 && me.json && me.json.data) {
+        const d = me.json.data;
+        state.activeSession = {
+          session_token: "",
+          role: d.peran || "",
+          email: d.email || "",
+          user_id: d.user_id || "",
+          anggota_id: d.anggota_id || "",
+          scope: d.scope || "full"
+        };
+        updateSessionBanner();
+      }
+    } catch (_) {
+      // Abaikan jika belum ada cookie sesi aktif
+    }
   }
 
   async function sendExplorerRequest(overrideMethod, overridePath, overrideQuery) {
@@ -460,16 +488,14 @@
     });
     el("btnLogout").addEventListener("click", async function () {
       try {
-        const tok = state.activeSession ? state.activeSession.session_token : "";
-        if (tok) {
-          await apiRequest("POST", "/api/v1/auth/logout", { token: tok, json: {} });
-          Object.keys(state.roleCache).forEach(function (k) {
-            if (state.roleCache[k] === tok) delete state.roleCache[k];
-          });
-        }
+        const tok = state.activeSession ? (state.activeSession.session_token || "") : "";
+        await apiRequest("POST", "/api/v1/auth/logout", { token: tok, json: {} });
+        Object.keys(state.roleCache).forEach(function (k) {
+          if (state.roleCache[k] === tok) delete state.roleCache[k];
+        });
         state.activeSession = null;
         updateSessionBanner();
-        el("explorerResponseOutput").textContent = "Logout selesai; token sesi memori dibersihkan.";
+        el("explorerResponseOutput").textContent = "Logout selesai; sesi server dicabut dan cookie dibersihkan.";
       } catch (e) {
         el("explorerResponseOutput").textContent = "Logout Error: " + e.message;
       }

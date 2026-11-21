@@ -558,14 +558,16 @@ func TestE2E_SetA_Katalog_Checkout_DaftarAntar_And_SetB_Isolation(t *testing.T) 
 		t.Fatalf("laporan penjualan CSV status=%d", repSt)
 	}
 
-	// Set B Isolation (port 15433, payment expiry 20m = 1200s, pilot false, different AES keys)
+	// Set B Isolation (port 15433, payment expiry 20m = 1200s, pilot false, ALLOW_BEARER_AUTH=false, different AES keys)
 	eB := setupE2EEnv(t, ".env.test.alt")
 	_, cfgB, _ := doJSONReq(t, http.MethodGet, eB.httpSrv.URL+"/api/v1/public/config", "", nil, nil)
 	dataB := cfgB["data"].(map[string]interface{})
 	featsB := dataB["features"].(map[string]interface{})
-	if int64(dataB["payment_expiry_seconds"].(float64)) != 1200 || featsB["personal_payment_pilot_enabled"] != false {
+	authB := dataB["auth"].(map[string]interface{})
+	if int64(dataB["payment_expiry_seconds"].(float64)) != 1200 || featsB["personal_payment_pilot_enabled"] != false || authB["bearer_enabled"] != false {
 		t.Fatalf("Set B config isolation mismatch: %v", dataB)
 	}
+	verifySetBCookieAndCSRF(t, eB)
 	vA, kA, mA := security.ParseMasterKeySpec(eA.appCfg.AESMasterKey)
 	kpA, _ := security.NewMultiKeyProviderFromConfig(vA, kA, mA, "")
 	vB, kB, mB := security.ParseMasterKeySpec(eB.appCfg.AESMasterKey)
@@ -639,5 +641,45 @@ func verifyQRISOrderStockDeduction(t *testing.T, e *e2eEnv, memTok, prodID, sku 
 	}
 	if got := lookupProdukStock(t, e, sku); got != curStock-3 {
 		t.Fatalf("expected stock %d after admin setuju, got %d", curStock-3, got)
+	}
+}
+
+func verifySetBCookieAndCSRF(t *testing.T, eB *e2eEnv) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]string{"identifier": "anggota1@kopdes-test.local", "password": eB.seedPwd})
+	req, _ := http.NewRequest(http.MethodPost, eB.httpSrv.URL+"/api/v1/auth/login", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(raw), "session_token") {
+		t.Fatalf("Set B cookie-only login mismatch: status=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var sessCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "kopdes_session" || c.Name == "__Host-kopdes_session" {
+			sessCookie = c
+		}
+	}
+	if sessCookie == nil || !sessCookie.HttpOnly {
+		t.Fatalf("Set B expected HttpOnly cookie, got %+v", resp.Cookies())
+	}
+	if bearerSt, _, _ := doJSONReq(t, http.MethodGet, eB.httpSrv.URL+"/api/v1/auth/me", sessCookie.Value, nil, nil); bearerSt != http.StatusUnauthorized {
+		t.Fatalf("Set B must reject Bearer token when ALLOW_BEARER_AUTH=false, got %d", bearerSt)
+	}
+	csrfReq, _ := http.NewRequest(http.MethodPost, eB.httpSrv.URL+"/api/v1/auth/logout", strings.NewReader(`{}`))
+	csrfReq.AddCookie(sessCookie)
+	csrfReq.Header.Set("Origin", "https://attacker.invalid")
+	csrfReq.Header.Set("X-Requested-With", "kopdes")
+	csrfResp, err := http.DefaultClient.Do(csrfReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = csrfResp.Body.Close()
+	if csrfResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Set B must block cross-origin cookie CSRF with 403, got %d", csrfResp.StatusCode)
 	}
 }

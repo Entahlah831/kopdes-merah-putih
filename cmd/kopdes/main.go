@@ -65,6 +65,8 @@ func main() {
 func printUsage() {
 	fmt.Println("Penggunaan: kopdes [--env-file .env] <domain> <aksi> [flag]")
 	fmt.Println("  admin create          --email <e> --nama <n> --hp <hp> --password <pwd>")
+	fmt.Println("  admin reset-mfa       --email <e>")
+	fmt.Println("  admin reset-password  --email <e> (--password <pwd> | --password-stdin)")
 	fmt.Println("  iuran generate        --periode YYYY-MM")
 	fmt.Println("  pdp purge             [--days 30]")
 	fmt.Println("  bukti purge           [--days 365]")
@@ -105,6 +107,10 @@ func dispatchCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConf
 	switch key {
 	case "admin create":
 		return runAdminCreate(ctx, pool, cfg, rest)
+	case "admin reset-mfa":
+		return runAdminResetMFA(ctx, pool, cfg, rest)
+	case "admin reset-password":
+		return runAdminResetPassword(ctx, pool, cfg, rest)
 	case "iuran generate":
 		return runIuranGenerate(ctx, pool, rest)
 	case "pdp purge":

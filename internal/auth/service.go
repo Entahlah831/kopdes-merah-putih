@@ -28,6 +28,8 @@ type Config struct {
 	BcryptCost           int
 	SessionIdleTTL       time.Duration
 	SessionAbsTTL        time.Duration
+	CookieSecure         string
+	AllowBearerAuth      bool
 	MFARequiredRoles     []string
 	MFAIssuer            string
 	MFAMaxAttempts       int
@@ -86,7 +88,7 @@ type LoginInput struct {
 }
 
 type LoginResult struct {
-	SessionToken     string     `json:"session_token"`
+	SessionToken     string     `json:"session_token,omitempty"`
 	Scope            string     `json:"scope"`
 	MFARequired      bool       `json:"mfa_required"`
 	MFASetupRequired bool       `json:"mfa_setup_required"`

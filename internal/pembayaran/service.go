@@ -159,8 +159,8 @@ func (s *Service) CreatePembayaran(ctx context.Context, claims *middleware.Sessi
 	if (jenis != "iuran" && jenis != "pesanan") || (metode != "qris" && metode != "tunai") {
 		return nil, false, response.NewDomainError(http.StatusBadRequest, "INVALID_PAYMENT_INPUT", "jenis_transaksi (iuran|pesanan) dan metode (qris|tunai) wajib valid")
 	}
-	if metode == "tunai" && claims.Role == "anggota" {
-		return nil, false, response.NewDomainError(http.StatusForbidden, "FORBIDDEN", "Pembayaran tunai dicatat oleh petugas")
+	if metode == "tunai" && claims.Role != "admin" && claims.Role != "bendahara" {
+		return nil, false, response.NewDomainError(http.StatusForbidden, "FORBIDDEN", "Pembayaran tunai hanya boleh dicatat oleh admin atau bendahara")
 	}
 	res, err := s.createPembayaranTx(ctx, claims, jenis, metode, in, idemKey, ip)
 	return res, false, err

@@ -35,6 +35,9 @@ func getDBPool(t *testing.T, user, password string) *pgxpool.Pool {
 }
 
 func TestSuperuserRejectedOnStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("melewati uji role PostgreSQL pada mode -short; dijalankan penuh di CI")
+	}
 	ctx := context.Background()
 
 	poolSuper := getDBPool(t, "postgres", internaldb.GetTestEnv("POSTGRES_PASSWORD"))

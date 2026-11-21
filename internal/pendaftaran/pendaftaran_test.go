@@ -78,3 +78,25 @@ func TestKYCValidationAndTurnstile(t *testing.T) {
 		t.Fatal("expected error when captcha token missing")
 	}
 }
+
+func TestValidateRegisterInput_OptionalTanggalLahir(t *testing.T) {
+	base := RegisterInput{
+		NamaLengkap: "Budi Santoso",
+		NIK:         "3201010101900001",
+		NoHP:        "081234567890",
+		Alamat:      "Dusun Makmur RT 01",
+	}
+	if _, _, err := validateRegisterInput(base); err != nil {
+		t.Fatalf("expected registration without tanggal_lahir to pass (data minimization), got %v", err)
+	}
+	withDOB := base
+	withDOB.TanggalLahir = "1990-01-01"
+	if _, _, err := validateRegisterInput(withDOB); err != nil {
+		t.Fatalf("expected valid YYYY-MM-DD tanggal_lahir to pass, got %v", err)
+	}
+	badDOB := base
+	badDOB.TanggalLahir = "01-01-1990"
+	if _, _, err := validateRegisterInput(badDOB); err == nil {
+		t.Fatal("expected malformed tanggal_lahir to return error")
+	}
+}

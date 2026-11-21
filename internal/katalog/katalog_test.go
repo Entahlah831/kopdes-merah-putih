@@ -3,6 +3,7 @@ package katalog
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -43,6 +44,28 @@ func TestAssignActivePriceAndPromoWindow(t *testing.T) {
 		var de *response.DomainError
 		if !errors.As(err, &de) || de.Status != http.StatusBadRequest {
 			t.Fatalf("expected 400 error, got %v", err)
+		}
+	}
+}
+
+func TestValidateFotoURL(t *testing.T) {
+	valid := []string{"", "https://cdn.example.id/beras.webp", "/assets/produk/beras.jpg"}
+	for _, u := range valid {
+		if _, err := validateFotoURL(u); err != nil {
+			t.Fatalf("expected valid foto_url %q, got %v", u, err)
+		}
+	}
+	invalid := []string{
+		"javascript:alert(1)",
+		"data:image/png;base64,iVBORw0=",
+		"http://insecure.example/beras.jpg",
+		"//evil.example/beras.jpg",
+		"/assets/beras with space.jpg",
+		"https://cdn.example/" + strings.Repeat("a", 500),
+	}
+	for _, u := range invalid {
+		if _, err := validateFotoURL(u); err == nil {
+			t.Fatalf("expected error for unsafe/invalid foto_url %q", u)
 		}
 	}
 }

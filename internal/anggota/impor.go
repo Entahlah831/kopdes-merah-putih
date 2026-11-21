@@ -37,13 +37,13 @@ func parseCSVRows(csvData string) ([]parsedCSVRow, []string) {
 	r.TrimLeadingSpace = true
 	header, err := r.Read()
 	if err != nil {
-		return nil, []string{"Header CSV wajib tersedia (nama_lengkap,nik,no_hp,tanggal_lahir,alamat)"}
+		return nil, []string{"Header CSV wajib tersedia (nama_lengkap,nik,no_hp,alamat)"}
 	}
 	colIdx := map[string]int{}
 	for i, h := range header {
 		colIdx[strings.ToLower(strings.TrimSpace(h))] = i
 	}
-	for _, req := range []string{"nama_lengkap", "nik", "no_hp", "tanggal_lahir", "alamat"} {
+	for _, req := range []string{"nama_lengkap", "nik", "no_hp", "alamat"} {
 		if _, ok := colIdx[req]; !ok {
 			return nil, []string{"Kolom CSV wajib hilang: " + req}
 		}
@@ -96,8 +96,10 @@ func parseSingleCSVRow(rec []string, colIdx map[string]int, line int, seenNIK ma
 	if nama == "" || !nikImportRe.MatchString(nik) || len(hp) < 9 || alamat == "" {
 		return parsedCSVRow{}, fmt.Sprintf("baris %d: nama/NIK(16 digit)/no_hp/alamat tidak valid", line)
 	}
-	if _, err := time.Parse("2006-01-02", dob); err != nil {
-		return parsedCSVRow{}, fmt.Sprintf("baris %d: tanggal_lahir harus YYYY-MM-DD", line)
+	if dob != "" {
+		if _, err := time.Parse("2006-01-02", dob); err != nil {
+			return parsedCSVRow{}, fmt.Sprintf("baris %d: tanggal_lahir harus YYYY-MM-DD", line)
+		}
 	}
 	if seenNIK[nik] {
 		return parsedCSVRow{}, fmt.Sprintf("baris %d: NIK duplikat di dalam CSV", line)
@@ -203,7 +205,10 @@ func (s *Service) insertImportedMemberTx(ctx context.Context, tx pgx.Tx, qt *db.
 	nomor := fmt.Sprintf("KMP-%s-%04d-%s", time.Now().Format("200601"), seq, strings.ToUpper(aid.String()[:4]))
 	nikEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.NIK), security.FormatAAD("anggota", "nik", aid.String()))
 	hpEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.NoHP), security.FormatAAD("anggota", "hp", aid.String()))
-	dobEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.TanggalLahir), security.FormatAAD("anggota", "tanggal_lahir", aid.String()))
+	var dobEnc []byte
+	if row.TanggalLahir != "" {
+		dobEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(row.TanggalLahir), security.FormatAAD("anggota", "tanggal_lahir", aid.String()))
+	}
 	addrEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.Alamat), security.FormatAAD("anggota", "alamat", aid.String()))
 
 	ang, err := qt.CreateAnggota(ctx, db.CreateAnggotaParams{

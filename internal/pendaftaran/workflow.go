@@ -31,12 +31,9 @@ func (s *Service) UploadDokumen(ctx context.Context, claims *middleware.SessionC
 	if err != nil {
 		return nil, err
 	}
-	isStaff := claims != nil && (claims.Role == "admin" || claims.Role == "bendahara")
-	if !isStaff {
-		tokHash := security.HashOpaqueToken(uploadTok)
-		if strings.TrimSpace(uploadTok) == "" || !security.ConstantTimeEqualHex(row.UploadTokenHash, tokHash) {
-			return nil, response.NewDomainError(http.StatusUnauthorized, "INVALID_UPLOAD_TOKEN", "X-Upload-Token tidak valid untuk pendaftaran ini")
-		}
+	tokHash := security.HashOpaqueToken(uploadTok)
+	if strings.TrimSpace(uploadTok) == "" || !security.ConstantTimeEqualHex(row.UploadTokenHash, tokHash) {
+		return nil, response.NewDomainError(http.StatusUnauthorized, "INVALID_UPLOAD_TOKEN", "X-Upload-Token tidak valid untuk pendaftaran ini")
 	}
 	if row.Status != "diajukan" && row.Status != "perlu_perbaikan" {
 		return nil, response.NewDomainError(http.StatusConflict, "REGISTRATION_LOCKED", "Dokumen tidak dapat diubah karena pendaftaran sudah diputuskan")
@@ -199,7 +196,6 @@ func (s *Service) createApprovedUserTx(ctx context.Context, qt *db.Queries, row 
 
 func (s *Service) createApprovedAnggotaTx(ctx context.Context, qt *db.Queries, row db.GetPendaftaranByIDForUpdateRow, userID pgtype.UUID, regID string, hpPlain []byte) (db.CreateAnggotaRow, uuid.UUID, error) {
 	nikPlain, _ := s.cfg.KeyProvider.DecryptWithAAD(row.NikEnc, security.FormatAAD("pendaftaran", "nik", regID))
-	dobPlain, _ := s.cfg.KeyProvider.DecryptWithAAD(row.TanggalLahirEnc, security.FormatAAD("pendaftaran", "tanggal_lahir", regID))
 	addrPlain, _ := s.cfg.KeyProvider.DecryptWithAAD(row.AlamatEnc, security.FormatAAD("pendaftaran", "alamat", regID))
 
 	anggotaID := newUUIDv7()
@@ -207,7 +203,12 @@ func (s *Service) createApprovedAnggotaTx(ctx context.Context, qt *db.Queries, r
 	nomorAnggota := fmt.Sprintf("KMP-%s-%04d-%s", time.Now().Format("200601"), total+1, strings.ToUpper(anggotaID.String()[:4]))
 	angNikEnc, _ := s.cfg.KeyProvider.EncryptWithAAD(nikPlain, security.FormatAAD("anggota", "nik", anggotaID.String()))
 	angHPEnc, _ := s.cfg.KeyProvider.EncryptWithAAD(hpPlain, security.FormatAAD("anggota", "hp", anggotaID.String()))
-	angDobEnc, _ := s.cfg.KeyProvider.EncryptWithAAD(dobPlain, security.FormatAAD("anggota", "tanggal_lahir", anggotaID.String()))
+	var angDobEnc []byte
+	if len(row.TanggalLahirEnc) > 0 {
+		if dobPlain, err := s.cfg.KeyProvider.DecryptWithAAD(row.TanggalLahirEnc, security.FormatAAD("pendaftaran", "tanggal_lahir", regID)); err == nil && len(dobPlain) > 0 {
+			angDobEnc, _ = s.cfg.KeyProvider.EncryptWithAAD(dobPlain, security.FormatAAD("anggota", "tanggal_lahir", anggotaID.String()))
+		}
+	}
 	angAddrEnc, _ := s.cfg.KeyProvider.EncryptWithAAD(addrPlain, security.FormatAAD("anggota", "alamat", anggotaID.String()))
 
 	ang, err := qt.CreateAnggota(ctx, db.CreateAnggotaParams{

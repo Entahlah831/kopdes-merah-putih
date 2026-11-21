@@ -372,9 +372,12 @@ func TestE2E_SetA_Iuran_Keringanan_QRIS_DuplicateProof_DualControl(t *testing.T)
 	bendTok := loginSession(t, e, "bendahara@kopdes-test.local", e.seedPwd, testseed.DeterministicTOTPSecret(e.appCfg, "bendahara@kopdes-test.local"))
 	memTok := loginSession(t, e, "anggota1@kopdes-test.local", e.seedPwd, "")
 
-	nRand, _ := rand.Int(rand.Reader, big.NewInt(60))
+	// Generate iuran period using unique unused future year/month (2032..2096) and find its unpaid tagihan for anggota1
+	nRand, _ := rand.Int(rand.Reader, big.NewInt(65))
 	mRand, _ := rand.Int(rand.Reader, big.NewInt(12))
-	periode := fmt.Sprintf("%04d-%02d", 2032+nRand.Int64(), 1+mRand.Int64())
+	yr := 2032 + int(nRand.Int64())
+	mo := 1 + int(mRand.Int64())
+	periode := fmt.Sprintf("%04d-%02d", yr, mo)
 
 	gst, _, graw := doJSONReq(t, http.MethodPost, e.httpSrv.URL+"/api/v1/iuran/jenis", bendTok, map[string]string{
 		"action": "generate", "periode": periode,
@@ -383,15 +386,22 @@ func TestE2E_SetA_Iuran_Keringanan_QRIS_DuplicateProof_DualControl(t *testing.T)
 		t.Fatalf("iuran generate failed: %d %s", gst, string(graw))
 	}
 
-	lst, lbody, _ := doJSONReq(t, http.MethodGet, e.httpSrv.URL+"/api/v1/iuran/tagihan?status=belum_bayar&limit=10", memTok, nil, nil)
+	lst, lbody, _ := doJSONReq(t, http.MethodGet, e.httpSrv.URL+"/api/v1/iuran/tagihan?status=belum_bayar&limit=100", memTok, nil, nil)
 	if lst != http.StatusOK {
 		t.Fatalf("list tagihan member status=%d", lst)
 	}
 	tags := lbody["data"].([]interface{})
-	if len(tags) < 1 {
-		t.Fatal("expected at least 1 unpaid tagihan for anggota1")
+	tagID := ""
+	for _, rawTag := range tags {
+		tm := rawTag.(map[string]interface{})
+		if int(tm["periode_tahun"].(float64)) == yr && int(tm["periode_bulan"].(float64)) == mo {
+			tagID = tm["id"].(string)
+			break
+		}
 	}
-	tagID := tags[0].(map[string]interface{})["id"].(string)
+	if tagID == "" {
+		t.Fatalf("expected unpaid tagihan for anggota1 period %s, got %d items", periode, len(tags))
+	}
 
 	kst, _, kraw := doJSONReq(t, http.MethodPatch, e.httpSrv.URL+"/api/v1/iuran/tagihan/"+tagID+"/keringanan", bendTok, map[string]interface{}{
 		"nominal_keringanan": 5000, "alasan": "Keringanan E2E",

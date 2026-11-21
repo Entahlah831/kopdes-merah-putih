@@ -1,8 +1,46 @@
 {
   "file": "roles_matrix.json",
-  "version": "2.0.0-lean",
-  "description": "Matriks RBAC aktual untuk 4 peran inti (+ publik tanpa login) Kopdes Merah Putih. Pengujian memakai session token opaque per peran; untuk endpoint mutasi memakai body minimal agar membedakan penolakan middleware RBAC (401/403) dari validasi domain (400/404/409).",
+  "version": "2.1.0-lean",
+  "description": "Matriks RBAC aktual untuk 4 peran inti (+ publik tanpa login) Kopdes Merah Putih yang disinkronkan 100% dengan 36 endpoint di internal/api/routes.go.",
   "roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"],
+  "route_catalog": [
+    { "pattern": "GET /healthz", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Liveness probe" },
+    { "pattern": "GET /readyz", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Readiness PostgreSQL & telemetri worker" },
+    { "pattern": "GET /api/v1/public/config", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Konfigurasi publik non-rahasia" },
+    { "pattern": "POST /api/v1/public/pendaftaran", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Pendaftaran calon anggota" },
+    { "pattern": "POST /api/v1/public/pendaftaran/{id}/dokumen", "allowed_roles": ["unauthenticated"], "note": "Unggah KYC dengan X-Upload-Token" },
+    { "pattern": "POST /api/v1/auth/login", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Login cookie HttpOnly + Bearer opsional" },
+    { "pattern": "POST /api/v1/auth/mfa/setup", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Setup MFA TOTP (termasuk scope mfa_setup)" },
+    { "pattern": "POST /api/v1/auth/mfa/verify", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Verifikasi MFA TOTP/recovery code" },
+    { "pattern": "POST /api/v1/auth/logout", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Cabut sesi & bersihkan cookie" },
+    { "pattern": "POST /api/v1/auth/password", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Aktivasi/ganti sandi" },
+    { "pattern": "GET /api/v1/auth/me", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Profil sesi aktif" },
+    { "pattern": "PUT /api/v1/pengaturan", "allowed_roles": ["bendahara", "admin"], "note": "Ubah pengaturan & rekening QRIS koperasi" },
+    { "pattern": "GET /api/v1/users", "allowed_roles": ["admin"], "note": "Daftar user sistem" },
+    { "pattern": "POST /api/v1/users", "allowed_roles": ["admin"], "note": "Buat akun staf/admin" },
+    { "pattern": "PATCH /api/v1/users/{id}", "allowed_roles": ["admin"], "note": "Perbarui peran/status/reset MFA user" },
+    { "pattern": "GET /api/v1/pendaftaran", "allowed_roles": ["admin"], "note": "Antrean verifikasi pendaftaran" },
+    { "pattern": "POST /api/v1/pendaftaran/{id}/verifikasi", "allowed_roles": ["admin"], "note": "Setuju/perbaiki/tolak pendaftaran" },
+    { "pattern": "GET /api/v1/pendaftaran/{id}/dokumen/{tipe}", "allowed_roles": ["admin"], "note": "Dekripsi berkas KYC" },
+    { "pattern": "GET /api/v1/anggota", "allowed_roles": ["petugas_toko", "bendahara", "admin"], "note": "Daftar anggota tersamar" },
+    { "pattern": "GET /api/v1/anggota/{id}", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Detail anggota (unmask hanya admin)" },
+    { "pattern": "PATCH /api/v1/anggota/{id}/status", "allowed_roles": ["admin"], "note": "Aktif/nonaktifkan/keluarkan anggota" },
+    { "pattern": "POST /api/v1/anggota/impor", "allowed_roles": ["admin"], "note": "Impor massal anggota CSV" },
+    { "pattern": "POST /api/v1/iuran/jenis", "allowed_roles": ["bendahara", "admin"], "note": "Buat jenis/generate tagihan bulanan" },
+    { "pattern": "GET /api/v1/iuran/tagihan", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Lihat tagihan iuran" },
+    { "pattern": "PATCH /api/v1/iuran/tagihan/{id}/keringanan", "allowed_roles": ["bendahara", "admin"], "note": "Keringanan/pembebasan tagihan" },
+    { "pattern": "GET /api/v1/katalog/produk", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Katalog produk & promo publik/anggota" },
+    { "pattern": "POST /api/v1/katalog/produk", "allowed_roles": ["petugas_toko", "admin"], "note": "Tambah/ubah produk, kategori, promo" },
+    { "pattern": "POST /api/v1/toko/checkout", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Checkout langsung & reservasi stok" },
+    { "pattern": "GET /api/v1/pesanan", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Daftar/detail pesanan" },
+    { "pattern": "PATCH /api/v1/pesanan/{id}/status", "allowed_roles": ["anggota", "petugas_toko", "admin"], "note": "Ubah status pemenuhan (bendahara dilarang; anggota hanya batal milik sendiri)" },
+    { "pattern": "GET /api/v1/pesanan/daftar-antar", "allowed_roles": ["petugas_toko", "admin"], "note": "Daftar antaran & label CSV/JSON" },
+    { "pattern": "GET /api/v1/pembayaran", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Daftar/detail/unduh bukti pembayaran & refund" },
+    { "pattern": "POST /api/v1/pembayaran", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "QRIS (semua), tunai (HANYA admin & bendahara)" },
+    { "pattern": "POST /api/v1/pembayaran/{id}/verifikasi", "allowed_roles": ["bendahara", "admin"], "note": "Verifikasi dual-control + breakglass admin" },
+    { "pattern": "POST /api/v1/pembayaran/{id}/refund", "allowed_roles": ["bendahara", "admin"], "note": "Pengembalian dana manual dual-control" },
+    { "pattern": "GET /api/v1/laporan", "allowed_roles": ["petugas_toko", "bendahara", "admin"], "note": "Laporan iuran, penjualan, pembayaran (JSON/CSV)" }
+  ],
   "endpoints": [
     {
       "id": "RBAC-01",
@@ -101,13 +139,29 @@
     },
     {
       "id": "RBAC-14",
+      "method": "PATCH",
+      "path": "/api/v1/pesanan/00000000-0000-0000-0000-000000000000/status",
+      "note": "Ubah status pemenuhan pesanan (hanya admin & petugas_toko; bendahara & anggota ke diproses ditolak 403)",
+      "body": { "status": "diproses" },
+      "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 404, "bendahara": 403, "admin": 404 }
+    },
+    {
+      "id": "RBAC-15",
       "method": "GET",
       "path": "/api/v1/pembayaran?rekening=true",
       "note": "Daftar rekening QRIS koperasi (semua peran login)",
       "expected_status": { "unauthenticated": 401, "anggota": 200, "petugas_toko": 200, "bendahara": 200, "admin": 200 }
     },
     {
-      "id": "RBAC-15",
+      "id": "RBAC-16",
+      "method": "POST",
+      "path": "/api/v1/pembayaran",
+      "note": "Catat pembayaran tunai (HANYA admin & bendahara; petugas_toko & anggota ditolak 403)",
+      "body": { "jenis_transaksi": "iuran", "metode": "tunai" },
+      "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 403, "bendahara": 400, "admin": 400 }
+    },
+    {
+      "id": "RBAC-17",
       "method": "POST",
       "path": "/api/v1/pembayaran/00000000-0000-0000-0000-000000000000/verifikasi",
       "note": "Verifikasi pembayaran QRIS/tunai (admin & bendahara)",
@@ -115,7 +169,15 @@
       "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 403, "bendahara": 400, "admin": 400 }
     },
     {
-      "id": "RBAC-16",
+      "id": "RBAC-18",
+      "method": "POST",
+      "path": "/api/v1/pembayaran/00000000-0000-0000-0000-000000000000/refund",
+      "note": "Pengembalian dana manual dual-control (admin & bendahara)",
+      "body": {},
+      "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 403, "bendahara": 400, "admin": 400 }
+    },
+    {
+      "id": "RBAC-19",
       "method": "GET",
       "path": "/api/v1/laporan?jenis=anggota",
       "note": "Laporan operasional & kas (admin, bendahara, petugas_toko)",

@@ -155,12 +155,31 @@ func (s *Service) GetDetail(ctx context.Context, claims *middleware.SessionClaim
 	return &dto, nil
 }
 
+func authorizeOrderRoleBeforeLookup(claims *middleware.SessionClaims, st string) error {
+	if claims == nil {
+		return response.NewDomainError(http.StatusUnauthorized, "UNAUTHORIZED", "Autentikasi diperlukan")
+	}
+	if claims.Role == "anggota" {
+		if st != "batal" {
+			return response.NewDomainError(http.StatusForbidden, "FORBIDDEN", "Anggota hanya boleh membatalkan pesanan yang belum dibayar")
+		}
+		return nil
+	}
+	if claims.Role != "admin" && claims.Role != "petugas_toko" {
+		return response.NewDomainError(http.StatusForbidden, "FORBIDDEN", "Hanya admin atau petugas toko yang dapat mengubah status pemenuhan pesanan")
+	}
+	return nil
+}
+
 func (s *Service) UpdateStatus(ctx context.Context, claims *middleware.SessionClaims, idStr, newStatus, catatan, ip string) (*db.UpdatePesananStatusRow, error) {
+	st := strings.TrimSpace(newStatus)
+	if err := authorizeOrderRoleBeforeLookup(claims, st); err != nil {
+		return nil, err
+	}
 	idPG, err := response.ParsePGUUID(idStr)
 	if err != nil {
 		return nil, err
 	}
-	st := strings.TrimSpace(newStatus)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err

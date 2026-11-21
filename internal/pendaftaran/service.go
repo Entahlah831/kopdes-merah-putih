@@ -113,8 +113,10 @@ func validateRegisterInput(in RegisterInput) (nik, normHP string, err error) {
 	if strings.TrimSpace(in.NamaLengkap) == "" || !nikRegex.MatchString(nik) || len(normHP) < 9 {
 		return "", "", response.NewDomainError(http.StatusBadRequest, "INVALID_REGISTRATION_DATA", "Nama lengkap, NIK 16 digit, dan nomor HP valid wajib diisi")
 	}
-	if _, err := time.Parse("2006-01-02", strings.TrimSpace(in.TanggalLahir)); err != nil {
-		return "", "", response.NewDomainError(http.StatusBadRequest, "INVALID_BIRTH_DATE", "tanggal_lahir harus berformat YYYY-MM-DD")
+	if dob := strings.TrimSpace(in.TanggalLahir); dob != "" {
+		if _, err := time.Parse("2006-01-02", dob); err != nil {
+			return "", "", response.NewDomainError(http.StatusBadRequest, "INVALID_BIRTH_DATE", "tanggal_lahir harus berformat YYYY-MM-DD")
+		}
 	}
 	if strings.TrimSpace(in.Alamat) == "" {
 		return "", "", response.NewDomainError(http.StatusBadRequest, "INVALID_ADDRESS", "Alamat wajib diisi")
@@ -162,7 +164,9 @@ func (s *Service) encryptRegistrationPII(idStr string, in RegisterInput, nik, no
 		return out, err
 	}
 	out.hpEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(normHP), security.FormatAAD("pendaftaran", "hp", idStr))
-	out.dobEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.TanggalLahir)), security.FormatAAD("pendaftaran", "tanggal_lahir", idStr))
+	if dob := strings.TrimSpace(in.TanggalLahir); dob != "" {
+		out.dobEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(dob), security.FormatAAD("pendaftaran", "tanggal_lahir", idStr))
+	}
 	out.addrEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(strings.TrimSpace(in.Alamat)), security.FormatAAD("pendaftaran", "alamat", idStr))
 	if em := strings.ToLower(strings.TrimSpace(in.Email)); em != "" {
 		out.emailHash = pgtype.Text{String: security.HashBlindIndex(em, s.cfg.BlindIndexSecret), Valid: true}

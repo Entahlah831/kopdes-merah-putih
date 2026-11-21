@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -266,6 +267,10 @@ func (s *Service) createProduk(ctx context.Context, claims *middleware.SessionCl
 	if err != nil {
 		return nil, err
 	}
+	fotoURL, err := validateFotoURL(in.FotoURL)
+	if err != nil {
+		return nil, err
+	}
 	var katPG pgtype.UUID
 	if strings.TrimSpace(in.KategoriID) != "" {
 		katPG, err = response.ParsePGUUID(in.KategoriID)
@@ -282,7 +287,7 @@ func (s *Service) createProduk(ctx context.Context, claims *middleware.SessionCl
 		HargaUmum:    response.ToPGInt8(in.HargaUmum),
 		HargaAnggota: response.ToPGInt8(in.HargaAnggota),
 		Stok:         in.Stok,
-		FotoUrl:      strings.TrimSpace(in.FotoURL),
+		FotoUrl:      fotoURL,
 		Status:       st,
 	})
 	if err != nil {
@@ -325,6 +330,10 @@ func (s *Service) updateProduk(ctx context.Context, claims *middleware.SessionCl
 	if in.Stok < existing.StokTertahan {
 		return nil, response.NewDomainError(http.StatusConflict, "STOK_RESERVED_CONFLICT", fmt.Sprintf("Stok tidak boleh lebih kecil dari stok tertahan (%d)", existing.StokTertahan))
 	}
+	fotoURL, err := validateFotoURL(in.FotoURL)
+	if err != nil {
+		return nil, err
+	}
 	katPG := existing.KategoriID
 	if strings.TrimSpace(in.KategoriID) != "" {
 		katPG, err = response.ParsePGUUID(in.KategoriID)
@@ -340,7 +349,7 @@ func (s *Service) updateProduk(ctx context.Context, claims *middleware.SessionCl
 		HargaUmum:    response.ToPGInt8(in.HargaUmum),
 		HargaAnggota: response.ToPGInt8(in.HargaAnggota),
 		Stok:         in.Stok,
-		FotoUrl:      strings.TrimSpace(in.FotoURL),
+		FotoUrl:      fotoURL,
 		Status:       st,
 		ID:           idPG,
 	})
@@ -432,4 +441,25 @@ func pickNonEmpty(v, fallback string) string {
 		return strings.TrimSpace(v)
 	}
 	return fallback
+}
+
+func validateFotoURL(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", nil
+	}
+	if len(u) > 512 || strings.ContainsAny(u, " \t\r\n") {
+		return "", response.NewDomainError(http.StatusBadRequest, "INVALID_FOTO_URL", "foto_url maksimal 512 karakter tanpa spasi")
+	}
+	if strings.HasPrefix(u, "/") {
+		if strings.HasPrefix(u, "//") {
+			return "", response.NewDomainError(http.StatusBadRequest, "INVALID_FOTO_URL", "foto_url relatif tidak boleh diawali '//'")
+		}
+		return u, nil
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || strings.TrimSpace(parsed.Host) == "" {
+		return "", response.NewDomainError(http.StatusBadRequest, "INVALID_FOTO_URL", "foto_url wajib berupa path relatif '/...' atau URL https:// yang valid")
+	}
+	return u, nil
 }

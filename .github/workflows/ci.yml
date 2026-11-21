@@ -2,16 +2,16 @@ name: CI Kopdes Merah Putih (Lean Backend)
 
 on:
   push:
-    branches: [main, lean-revamp]
+    branches: [main, lean-revamp, decision-audit]
   pull_request:
-    branches: [main, lean-revamp]
+    branches: [main, lean-revamp, decision-audit]
 
 permissions:
   contents: read
 
 jobs:
   env-sqlc-and-secrets:
-    name: Validasi Env (40 Var), sqlc, & Secret Scan
+    name: Validasi Env (46 Var), sqlc, & Secret Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -44,7 +44,7 @@ jobs:
         run: gitleaks git --config .gitleaks.toml --verbose --redact
 
   test-build-and-security:
-    name: Build, Vet, Race Test (Set A & Set B), & SAST
+    name: Build, Vet, Race Test (Set A & Set B), Backup Age Drill, & SAST
     runs-on: ubuntu-latest
     services:
       postgres_set_a:
@@ -81,14 +81,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install PostgreSQL client & Go security linters
+      - name: Install PostgreSQL client, age, & Go security linters
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client age
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Inisialisasi Skema 19 Tabel & Role Non-Superuser kopdes_app (Set A & Set B)
+      - name: Inisialisasi Seluruh Migrasi (21 Tabel) & Role Non-Superuser kopdes_app (Set A & Set B)
         run: |
           set -euo pipefail
           for envfile in .env.test .env.test.alt; do
@@ -96,7 +96,9 @@ jobs:
             source "$envfile"
             set +a
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/migrations/000001_init_kopdes_schema.up.sql
+            for mf in $(ls db/migrations/*_*.up.sql | sort); do
+              PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
+            done
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
           done
 
@@ -105,15 +107,30 @@ jobs:
           go build ./...
           go vet ./...
 
-      - name: Jalankan Full Race Test Suite (22 Paket)
+      - name: Jalankan Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
         run: go test -count=1 -race -p 1 ./...
 
-      - name: Smoke Test Seeder & CLI Worker Kopdes
+      - name: Smoke Test Seeder, CLI Admin/Storage, & Worker Kopdes
         run: |
           go run ./cmd/seed_test_accounts --env-file .env.test
-          go run ./cmd/kopdes --env-file .env.test iuran generate --periode 2099-01
-          go run ./cmd/kopdes --env-file .env.test pesanan expire
+          go run ./cmd/kopdes --env-file .env.test worker --once
+          go run ./cmd/kopdes --env-file .env.test storage migrate-files
           go run ./cmd/kopdes --env-file .env.test pdp purge
+          go run ./cmd/kopdes --env-file .env.test bukti purge
+
+      - name: Uji Backup Terautentikasi (age) + Tamper Rejection + Restore Drill
+        run: |
+          set -euo pipefail
+          KEYFILE=$(mktemp)
+          age-keygen -o "$KEYFILE" 2>/dev/null
+          PUB=$(grep '^# public key: ' "$KEYFILE" | awk '{print $4}')
+          mkdir -p ./storage/kyc_test_setA ./storage/bukti_test_setA
+          echo "dummy-enc-kyc" > ./storage/kyc_test_setA/ci-sample.enc
+          echo "dummy-enc-bukti" > ./storage/bukti_test_setA/ci-sample.enc
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh
+          rm -rf "$KEYFILE" ./backups ./storage/kyc_test_setA ./storage/bukti_test_setA
 
       - name: SAST & Vulnerability Check
         run: |

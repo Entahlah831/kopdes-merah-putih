@@ -217,7 +217,12 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 		return err
 	}
 	kp := kpSet.DB
-	ordCount, err := pesanan.NewService(pool, kp, pesanan.Config{}).ExpireUnpaidOrders(ctx)
+	pesSvc := pesanan.NewService(pool, kp, pesanan.Config{StockHoldMinutes: cfg.StockHoldMinutes, Timezone: cfg.AppTimezone})
+	ordCount, err := pesSvc.ExpireUnpaidOrders(ctx)
+	if err != nil {
+		return err
+	}
+	holdCount, err := pesSvc.ReleaseExpiredStockHolds(ctx)
 	if err != nil {
 		return err
 	}
@@ -229,6 +234,6 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Kedaluwarsa selesai: pesanan=%d, pembayaran=%d\n", ordCount, payCount)
+	fmt.Printf("Kedaluwarsa selesai: pesanan=%d, tahanan_stok=%d, pembayaran=%d\n", ordCount, holdCount, payCount)
 	return nil
 }

@@ -17,7 +17,7 @@ INSERT INTO produk (
     sqlc.arg(satuan), sqlc.narg(harga_umum), sqlc.narg(harga_anggota),
     sqlc.arg(stok), sqlc.arg(foto_url), sqlc.arg(status)
 )
-RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, foto_url, status, created_at;
+RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, stok_tertahan, foto_url, status, created_at;
 
 -- name: UpdateProduk :one
 UPDATE produk
@@ -31,18 +31,18 @@ SET kategori_id = sqlc.narg(kategori_id),
     foto_url = sqlc.arg(foto_url),
     status = sqlc.arg(status)
 WHERE id = sqlc.arg(id)
-RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, foto_url, status, updated_at;
+RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, stok_tertahan, foto_url, status, updated_at;
 
 -- name: GetProdukByID :one
 SELECT p.id, p.kategori_id, COALESCE(k.nama, '')::text AS nama_kategori,
        p.sku, p.nama, p.deskripsi, p.satuan, p.harga_umum, p.harga_anggota,
-       p.stok, p.foto_url, p.status, p.created_at, p.updated_at
+       p.stok, p.stok_tertahan, p.foto_url, p.status, p.created_at, p.updated_at
 FROM produk p
 LEFT JOIN kategori k ON k.id = p.kategori_id
 WHERE p.id = sqlc.arg(id);
 
 -- name: GetProdukForUpdate :one
-SELECT id, sku, nama, harga_umum, harga_anggota, stok, status
+SELECT id, sku, nama, harga_umum, harga_anggota, stok, stok_tertahan, status
 FROM produk
 WHERE id = sqlc.arg(id)
 FOR UPDATE;
@@ -50,7 +50,7 @@ FOR UPDATE;
 -- name: ListProduk :many
 SELECT p.id, p.kategori_id, COALESCE(k.nama, '')::text AS nama_kategori,
        p.sku, p.nama, p.deskripsi, p.satuan, p.harga_umum, p.harga_anggota,
-       p.stok, p.foto_url, p.status, p.created_at
+       p.stok, p.stok_tertahan, p.foto_url, p.status, p.created_at
 FROM produk p
 LEFT JOIN kategori k ON k.id = p.kategori_id
 WHERE (sqlc.arg(include_nonaktif)::bool = TRUE OR p.status = 'aktif')

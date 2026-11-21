@@ -527,12 +527,15 @@ func TestE2E_SetA_Katalog_Checkout_DaftarAntar_And_SetB_Isolation(t *testing.T) 
 		t.Fatalf("idempotent checkout replay failed: %d %v", o2St, o2Body)
 	}
 
-	// Verify stock is NOT deducted at checkout (still 10), then deducts to 8 when processed, and QRIS order deducts to 5 only after payment approval
+	// Verify physical stock stays 10 after checkout while stok_tertahan increases to 2 (tersedia=8)
 	if got := lookupProdukStock(t, eA, sku); got != 10 {
-		t.Fatalf("expected stock unchanged (10) right after checkout, got %d", got)
+		t.Fatalf("expected physical stock unchanged (10) right after checkout, got %d", got)
+	}
+	if snap := lookupProdukSnapshot(t, eA, sku); int(snap["stok_tertahan"].(float64)) != 2 || int(snap["stok_tersedia"].(float64)) != 8 {
+		t.Fatalf("expected stok_tertahan=2 stok_tersedia=8 after checkout, got %v", snap)
 	}
 
-	// Transition cash order to diproses -> deducts stock (10 -> 8), then check daftar-antar CSV neutralization + laporan penjualan
+	// Transition cash order to diproses -> deducts physical stock (10 -> 8) & clears hold (tertahan=0)
 	ordID := o1Body["data"].(map[string]interface{})["id"].(string)
 	pst, _, praw := doJSONReq(t, http.MethodPatch, eA.httpSrv.URL+"/api/v1/pesanan/"+ordID+"/status", petugasTok, map[string]string{
 		"status": "diproses", "catatan": "Siap diantar E2E",
@@ -542,6 +545,9 @@ func TestE2E_SetA_Katalog_Checkout_DaftarAntar_And_SetB_Isolation(t *testing.T) 
 	}
 	if got := lookupProdukStock(t, eA, sku); got != 8 {
 		t.Fatalf("expected stock 8 after cash order diproses, got %d", got)
+	}
+	if snap := lookupProdukSnapshot(t, eA, sku); int(snap["stok_tertahan"].(float64)) != 0 || int(snap["stok_tersedia"].(float64)) != 8 {
+		t.Fatalf("expected stok_tertahan=0 stok_tersedia=8 after diproses, got %v", snap)
 	}
 	verifyQRISOrderStockDeduction(t, eA, memTok, prodID, sku, 8)
 	_, _, csvRaw := doJSONReq(t, http.MethodGet, eA.httpSrv.URL+"/api/v1/pesanan/daftar-antar?format=csv", petugasTok, nil, nil)

@@ -24,6 +24,7 @@ import (
 
 type Config struct {
 	OrderExpiryMinutes int
+	StockHoldMinutes   int
 	Timezone           string
 	TrustedProxies     []string
 }
@@ -39,6 +40,9 @@ type Service struct {
 func NewService(pool *pgxpool.Pool, kp security.KeyProvider, cfg Config) *Service {
 	if cfg.OrderExpiryMinutes <= 0 {
 		cfg.OrderExpiryMinutes = 60
+	}
+	if cfg.StockHoldMinutes <= 0 {
+		cfg.StockHoldMinutes = 60
 	}
 	return &Service{
 		pool:    pool,
@@ -84,6 +88,8 @@ type PesananDTO struct {
 	MetodePengiriman  string           `json:"metode_pengiriman"`
 	MetodePembayaran  string           `json:"metode_pembayaran"`
 	Status            string           `json:"status"`
+	StokStatus        string           `json:"stok_status,omitempty"`
+	StokHoldExpiresAt *time.Time       `json:"stok_hold_expires_at,omitempty"`
 	Subtotal          int64            `json:"subtotal"`
 	Diskon            int64            `json:"diskon"`
 	Ongkir            int64            `json:"ongkir"`
@@ -243,8 +249,14 @@ func lockAndComputeItems(ctx context.Context, qtx *db.Queries, vc *validatedChec
 		if !unitPrice.Valid {
 			return nil, 0, response.NewDomainError(http.StatusConflict, "MISSING_ACTIVE_PRICE", "Produk "+prod.Nama+" belum memiliki harga aktif untuk tier Anda")
 		}
-		if prod.Stok < it.qty {
+		if prod.Stok-prod.StokTertahan < it.qty {
 			return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
+		}
+		if _, rErr := qtx.ReserveProdukStock(ctx, db.ReserveProdukStockParams{ID: pid, Qty: it.qty}); rErr != nil {
+			if errors.Is(rErr, pgx.ErrNoRows) {
+				return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
+			}
+			return nil, 0, rErr
 		}
 		lineSub := unitPrice.Int64 * int64(it.qty)
 		subtotal += lineSub
@@ -333,27 +345,15 @@ func (s *Service) persistOrderTx(
 		status = "menunggu_pembayaran"
 		expiresPG = response.ToPGTimestamptz(time.Now().UTC().Add(time.Duration(s.cfg.OrderExpiryMinutes) * time.Minute))
 	}
+	holdExp := response.ToPGTimestamptz(time.Now().UTC().Add(time.Duration(s.cfg.StockHoldMinutes) * time.Minute))
 	row, err := qtx.CreatePesanan(ctx, db.CreatePesananParams{
-		ID:                   response.ToPGUUID(orderID),
-		NomorPesanan:         generateOrderNumber(),
-		UserID:               response.ToPGUUID(claims.UserID),
-		AnggotaID:            anggotaPG,
-		PromoID:              promoID,
-		IdempotencyKey:       response.ToPGText(idemKey),
-		MetodePengiriman:     vc.metodeKirim,
-		MetodePembayaran:     vc.metodeBayar,
-		Status:               status,
-		Subtotal:             subtotal,
-		Diskon:               diskon,
-		Ongkir:               ongkir,
-		TotalBayar:           totalBayar,
-		NamaPenerima:         vc.nama,
-		HpPenerimaEnc:        hpEnc,
-		HpPenerimaMasked:     security.MaskPhone(vc.hpNorm),
-		AlamatPengantaranEnc: alamatEnc,
-		Catatan:              strings.TrimSpace(catatan),
-		TanggalAntar:         vc.tglAntar,
-		ExpiresAt:            expiresPG,
+		ID: response.ToPGUUID(orderID), NomorPesanan: generateOrderNumber(), UserID: response.ToPGUUID(claims.UserID),
+		AnggotaID: anggotaPG, PromoID: promoID, IdempotencyKey: response.ToPGText(idemKey),
+		MetodePengiriman: vc.metodeKirim, MetodePembayaran: vc.metodeBayar, Status: status,
+		StokStatus: "reserved", StokHoldExpiresAt: holdExp,
+		Subtotal: subtotal, Diskon: diskon, Ongkir: ongkir, TotalBayar: totalBayar,
+		NamaPenerima: vc.nama, HpPenerimaEnc: hpEnc, HpPenerimaMasked: security.MaskPhone(vc.hpNorm),
+		AlamatPengantaranEnc: alamatEnc, Catatan: strings.TrimSpace(catatan), TanggalAntar: vc.tglAntar, ExpiresAt: expiresPG,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("simpan pesanan: %w", err)

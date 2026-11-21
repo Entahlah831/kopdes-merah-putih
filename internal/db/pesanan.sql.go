@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const confirmReservedProdukStock = `-- name: ConfirmReservedProdukStock :one
+UPDATE produk
+SET stok = stok - $1::int,
+    stok_tertahan = stok_tertahan - $1::int
+WHERE id = $2
+  AND stok >= $1::int
+  AND stok_tertahan >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type ConfirmReservedProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type ConfirmReservedProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) ConfirmReservedProdukStock(ctx context.Context, arg ConfirmReservedProdukStockParams) (ConfirmReservedProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, confirmReservedProdukStock, arg.Qty, arg.ID)
+	var i ConfirmReservedProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
+}
+
 const countPromoUsageByAnggota = `-- name: CountPromoUsageByAnggota :one
 SELECT COUNT(*)::int
 FROM pesanan
@@ -38,21 +66,21 @@ func (q *Queries) CountPromoUsageByAnggota(ctx context.Context, arg CountPromoUs
 const createPesanan = `-- name: CreatePesanan :one
 INSERT INTO pesanan (
     id, nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
-    metode_pengiriman, metode_pembayaran, status,
+    metode_pengiriman, metode_pembayaran, status, stok_status, stok_hold_expires_at,
     subtotal, diskon, ongkir, total_bayar,
     nama_penerima, hp_penerima_enc, hp_penerima_masked, alamat_pengantaran_enc,
     catatan, tanggal_antar, expires_at
 ) VALUES (
     COALESCE($1, uuid_generate_v7()),
     $2, $3, $4, $5, $6,
-    $7, $8, $9,
-    $10, $11, $12, $13,
-    $14, $15, $16, $17,
-    $18, $19, $20
+    $7, $8, $9, $10, $11,
+    $12, $13, $14, $15,
+    $16, $17, $18, $19,
+    $20, $21, $22
 )
 RETURNING id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
-          status, subtotal, diskon, ongkir, total_bayar, nama_penerima, hp_penerima_masked,
-          catatan, tanggal_antar, expires_at, created_at
+          status, stok_status, stok_hold_expires_at, subtotal, diskon, ongkir, total_bayar,
+          nama_penerima, hp_penerima_masked, catatan, tanggal_antar, expires_at, created_at
 `
 
 type CreatePesananParams struct {
@@ -65,6 +93,8 @@ type CreatePesananParams struct {
 	MetodePengiriman     string             `json:"metode_pengiriman"`
 	MetodePembayaran     string             `json:"metode_pembayaran"`
 	Status               string             `json:"status"`
+	StokStatus           string             `json:"stok_status"`
+	StokHoldExpiresAt    pgtype.Timestamptz `json:"stok_hold_expires_at"`
 	Subtotal             int64              `json:"subtotal"`
 	Diskon               int64              `json:"diskon"`
 	Ongkir               int64              `json:"ongkir"`
@@ -79,24 +109,26 @@ type CreatePesananParams struct {
 }
 
 type CreatePesananRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	NomorPesanan     string             `json:"nomor_pesanan"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	AnggotaID        pgtype.UUID        `json:"anggota_id"`
-	PromoID          pgtype.UUID        `json:"promo_id"`
-	MetodePengiriman string             `json:"metode_pengiriman"`
-	MetodePembayaran string             `json:"metode_pembayaran"`
-	Status           string             `json:"status"`
-	Subtotal         int64              `json:"subtotal"`
-	Diskon           int64              `json:"diskon"`
-	Ongkir           int64              `json:"ongkir"`
-	TotalBayar       int64              `json:"total_bayar"`
-	NamaPenerima     string             `json:"nama_penerima"`
-	HpPenerimaMasked string             `json:"hp_penerima_masked"`
-	Catatan          string             `json:"catatan"`
-	TanggalAntar     pgtype.Date        `json:"tanggal_antar"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ID                pgtype.UUID        `json:"id"`
+	NomorPesanan      string             `json:"nomor_pesanan"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	AnggotaID         pgtype.UUID        `json:"anggota_id"`
+	PromoID           pgtype.UUID        `json:"promo_id"`
+	MetodePengiriman  string             `json:"metode_pengiriman"`
+	MetodePembayaran  string             `json:"metode_pembayaran"`
+	Status            string             `json:"status"`
+	StokStatus        string             `json:"stok_status"`
+	StokHoldExpiresAt pgtype.Timestamptz `json:"stok_hold_expires_at"`
+	Subtotal          int64              `json:"subtotal"`
+	Diskon            int64              `json:"diskon"`
+	Ongkir            int64              `json:"ongkir"`
+	TotalBayar        int64              `json:"total_bayar"`
+	NamaPenerima      string             `json:"nama_penerima"`
+	HpPenerimaMasked  string             `json:"hp_penerima_masked"`
+	Catatan           string             `json:"catatan"`
+	TanggalAntar      pgtype.Date        `json:"tanggal_antar"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) CreatePesanan(ctx context.Context, arg CreatePesananParams) (CreatePesananRow, error) {
@@ -110,6 +142,8 @@ func (q *Queries) CreatePesanan(ctx context.Context, arg CreatePesananParams) (C
 		arg.MetodePengiriman,
 		arg.MetodePembayaran,
 		arg.Status,
+		arg.StokStatus,
+		arg.StokHoldExpiresAt,
 		arg.Subtotal,
 		arg.Diskon,
 		arg.Ongkir,
@@ -132,6 +166,8 @@ func (q *Queries) CreatePesanan(ctx context.Context, arg CreatePesananParams) (C
 		&i.MetodePengiriman,
 		&i.MetodePembayaran,
 		&i.Status,
+		&i.StokStatus,
+		&i.StokHoldExpiresAt,
 		&i.Subtotal,
 		&i.Diskon,
 		&i.Ongkir,
@@ -186,6 +222,33 @@ func (q *Queries) CreatePesananItem(ctx context.Context, arg CreatePesananItemPa
 	return i, err
 }
 
+const decrementAvailableProdukStock = `-- name: DecrementAvailableProdukStock :one
+UPDATE produk
+SET stok = stok - $1::int
+WHERE id = $2
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type DecrementAvailableProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type DecrementAvailableProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) DecrementAvailableProdukStock(ctx context.Context, arg DecrementAvailableProdukStockParams) (DecrementAvailableProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, decrementAvailableProdukStock, arg.Qty, arg.ID)
+	var i DecrementAvailableProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
+}
+
 const decrementProdukStock = `-- name: DecrementProdukStock :one
 UPDATE produk
 SET stok = stok - $1::int
@@ -212,8 +275,9 @@ func (q *Queries) DecrementProdukStock(ctx context.Context, arg DecrementProdukS
 
 const getPesananByID = `-- name: GetPesananByID :one
 SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
-       status, subtotal, diskon, ongkir, total_bayar, nama_penerima, hp_penerima_enc,
-       hp_penerima_masked, alamat_pengantaran_enc, catatan, tanggal_antar, expires_at, created_at, updated_at
+       status, stok_status, stok_hold_expires_at, subtotal, diskon, ongkir, total_bayar,
+       nama_penerima, hp_penerima_enc, hp_penerima_masked, alamat_pengantaran_enc,
+       catatan, tanggal_antar, expires_at, created_at, updated_at
 FROM pesanan
 WHERE id = $1
 `
@@ -227,6 +291,8 @@ type GetPesananByIDRow struct {
 	MetodePengiriman     string             `json:"metode_pengiriman"`
 	MetodePembayaran     string             `json:"metode_pembayaran"`
 	Status               string             `json:"status"`
+	StokStatus           string             `json:"stok_status"`
+	StokHoldExpiresAt    pgtype.Timestamptz `json:"stok_hold_expires_at"`
 	Subtotal             int64              `json:"subtotal"`
 	Diskon               int64              `json:"diskon"`
 	Ongkir               int64              `json:"ongkir"`
@@ -254,6 +320,8 @@ func (q *Queries) GetPesananByID(ctx context.Context, id pgtype.UUID) (GetPesana
 		&i.MetodePengiriman,
 		&i.MetodePembayaran,
 		&i.Status,
+		&i.StokStatus,
+		&i.StokHoldExpiresAt,
 		&i.Subtotal,
 		&i.Diskon,
 		&i.Ongkir,
@@ -273,31 +341,33 @@ func (q *Queries) GetPesananByID(ctx context.Context, id pgtype.UUID) (GetPesana
 
 const getPesananByIdempotencyKey = `-- name: GetPesananByIdempotencyKey :one
 SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
-       status, subtotal, diskon, ongkir, total_bayar, nama_penerima, hp_penerima_masked,
-       catatan, tanggal_antar, expires_at, created_at
+       status, stok_status, stok_hold_expires_at, subtotal, diskon, ongkir, total_bayar,
+       nama_penerima, hp_penerima_masked, catatan, tanggal_antar, expires_at, created_at
 FROM pesanan
 WHERE idempotency_key = $1
 `
 
 type GetPesananByIdempotencyKeyRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	NomorPesanan     string             `json:"nomor_pesanan"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	AnggotaID        pgtype.UUID        `json:"anggota_id"`
-	PromoID          pgtype.UUID        `json:"promo_id"`
-	MetodePengiriman string             `json:"metode_pengiriman"`
-	MetodePembayaran string             `json:"metode_pembayaran"`
-	Status           string             `json:"status"`
-	Subtotal         int64              `json:"subtotal"`
-	Diskon           int64              `json:"diskon"`
-	Ongkir           int64              `json:"ongkir"`
-	TotalBayar       int64              `json:"total_bayar"`
-	NamaPenerima     string             `json:"nama_penerima"`
-	HpPenerimaMasked string             `json:"hp_penerima_masked"`
-	Catatan          string             `json:"catatan"`
-	TanggalAntar     pgtype.Date        `json:"tanggal_antar"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ID                pgtype.UUID        `json:"id"`
+	NomorPesanan      string             `json:"nomor_pesanan"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	AnggotaID         pgtype.UUID        `json:"anggota_id"`
+	PromoID           pgtype.UUID        `json:"promo_id"`
+	MetodePengiriman  string             `json:"metode_pengiriman"`
+	MetodePembayaran  string             `json:"metode_pembayaran"`
+	Status            string             `json:"status"`
+	StokStatus        string             `json:"stok_status"`
+	StokHoldExpiresAt pgtype.Timestamptz `json:"stok_hold_expires_at"`
+	Subtotal          int64              `json:"subtotal"`
+	Diskon            int64              `json:"diskon"`
+	Ongkir            int64              `json:"ongkir"`
+	TotalBayar        int64              `json:"total_bayar"`
+	NamaPenerima      string             `json:"nama_penerima"`
+	HpPenerimaMasked  string             `json:"hp_penerima_masked"`
+	Catatan           string             `json:"catatan"`
+	TanggalAntar      pgtype.Date        `json:"tanggal_antar"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) GetPesananByIdempotencyKey(ctx context.Context, idempotencyKey pgtype.Text) (GetPesananByIdempotencyKeyRow, error) {
@@ -312,6 +382,8 @@ func (q *Queries) GetPesananByIdempotencyKey(ctx context.Context, idempotencyKey
 		&i.MetodePengiriman,
 		&i.MetodePembayaran,
 		&i.Status,
+		&i.StokStatus,
+		&i.StokHoldExpiresAt,
 		&i.Subtotal,
 		&i.Diskon,
 		&i.Ongkir,
@@ -327,23 +399,26 @@ func (q *Queries) GetPesananByIdempotencyKey(ctx context.Context, idempotencyKey
 }
 
 const getPesananForUpdate = `-- name: GetPesananForUpdate :one
-SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran, status, total_bayar, expires_at
+SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
+       status, stok_status, stok_hold_expires_at, total_bayar, expires_at
 FROM pesanan
 WHERE id = $1
 FOR UPDATE
 `
 
 type GetPesananForUpdateRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	NomorPesanan     string             `json:"nomor_pesanan"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	AnggotaID        pgtype.UUID        `json:"anggota_id"`
-	PromoID          pgtype.UUID        `json:"promo_id"`
-	MetodePengiriman string             `json:"metode_pengiriman"`
-	MetodePembayaran string             `json:"metode_pembayaran"`
-	Status           string             `json:"status"`
-	TotalBayar       int64              `json:"total_bayar"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	ID                pgtype.UUID        `json:"id"`
+	NomorPesanan      string             `json:"nomor_pesanan"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	AnggotaID         pgtype.UUID        `json:"anggota_id"`
+	PromoID           pgtype.UUID        `json:"promo_id"`
+	MetodePengiriman  string             `json:"metode_pengiriman"`
+	MetodePembayaran  string             `json:"metode_pembayaran"`
+	Status            string             `json:"status"`
+	StokStatus        string             `json:"stok_status"`
+	StokHoldExpiresAt pgtype.Timestamptz `json:"stok_hold_expires_at"`
+	TotalBayar        int64              `json:"total_bayar"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) GetPesananForUpdate(ctx context.Context, id pgtype.UUID) (GetPesananForUpdateRow, error) {
@@ -358,6 +433,8 @@ func (q *Queries) GetPesananForUpdate(ctx context.Context, id pgtype.UUID) (GetP
 		&i.MetodePengiriman,
 		&i.MetodePembayaran,
 		&i.Status,
+		&i.StokStatus,
+		&i.StokHoldExpiresAt,
 		&i.TotalBayar,
 		&i.ExpiresAt,
 	)
@@ -420,18 +497,60 @@ func (q *Queries) ListDaftarAntar(ctx context.Context, tanggal pgtype.Date) ([]L
 	return items, nil
 }
 
-const listExpiredUnpaidPesanan = `-- name: ListExpiredUnpaidPesanan :many
-SELECT id, promo_id
+const listExpiredStockHoldPesanan = `-- name: ListExpiredStockHoldPesanan :many
+SELECT id, status
 FROM pesanan
-WHERE status IN ('baru', 'menunggu_pembayaran')
-  AND expires_at IS NOT NULL
-  AND expires_at < NOW()
+WHERE stok_status = 'reserved'
+  AND stok_hold_expires_at IS NOT NULL
+  AND stok_hold_expires_at < NOW()
 FOR UPDATE
 `
 
+type ListExpiredStockHoldPesananRow struct {
+	ID     pgtype.UUID `json:"id"`
+	Status string      `json:"status"`
+}
+
+func (q *Queries) ListExpiredStockHoldPesanan(ctx context.Context) ([]ListExpiredStockHoldPesananRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredStockHoldPesanan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredStockHoldPesananRow{}
+	for rows.Next() {
+		var i ListExpiredStockHoldPesananRow
+		if err := rows.Scan(&i.ID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredUnpaidPesanan = `-- name: ListExpiredUnpaidPesanan :many
+SELECT p.id, p.promo_id, p.stok_status
+FROM pesanan p
+WHERE p.status IN ('baru', 'menunggu_pembayaran')
+  AND p.expires_at IS NOT NULL
+  AND p.expires_at < NOW()
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pembayaran_alokasi pa
+      JOIN pembayaran bay ON bay.id = pa.pembayaran_id
+      WHERE pa.pesanan_id = p.id
+        AND bay.status IN ('menunggu_verifikasi', 'lunas')
+  )
+FOR UPDATE OF p
+`
+
 type ListExpiredUnpaidPesananRow struct {
-	ID      pgtype.UUID `json:"id"`
-	PromoID pgtype.UUID `json:"promo_id"`
+	ID         pgtype.UUID `json:"id"`
+	PromoID    pgtype.UUID `json:"promo_id"`
+	StokStatus string      `json:"stok_status"`
 }
 
 func (q *Queries) ListExpiredUnpaidPesanan(ctx context.Context) ([]ListExpiredUnpaidPesananRow, error) {
@@ -443,7 +562,7 @@ func (q *Queries) ListExpiredUnpaidPesanan(ctx context.Context) ([]ListExpiredUn
 	items := []ListExpiredUnpaidPesananRow{}
 	for rows.Next() {
 		var i ListExpiredUnpaidPesananRow
-		if err := rows.Scan(&i.ID, &i.PromoID); err != nil {
+		if err := rows.Scan(&i.ID, &i.PromoID, &i.StokStatus); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -456,8 +575,8 @@ func (q *Queries) ListExpiredUnpaidPesanan(ctx context.Context) ([]ListExpiredUn
 
 const listPesanan = `-- name: ListPesanan :many
 SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
-       status, subtotal, diskon, ongkir, total_bayar, nama_penerima, hp_penerima_masked,
-       tanggal_antar, expires_at, created_at
+       status, stok_status, stok_hold_expires_at, subtotal, diskon, ongkir, total_bayar,
+       nama_penerima, hp_penerima_masked, tanggal_antar, expires_at, created_at
 FROM pesanan
 WHERE ($1::uuid IS NULL OR user_id = $1::uuid)
   AND ($2::text = '' OR status = $2::text)
@@ -473,23 +592,25 @@ type ListPesananParams struct {
 }
 
 type ListPesananRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	NomorPesanan     string             `json:"nomor_pesanan"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	AnggotaID        pgtype.UUID        `json:"anggota_id"`
-	PromoID          pgtype.UUID        `json:"promo_id"`
-	MetodePengiriman string             `json:"metode_pengiriman"`
-	MetodePembayaran string             `json:"metode_pembayaran"`
-	Status           string             `json:"status"`
-	Subtotal         int64              `json:"subtotal"`
-	Diskon           int64              `json:"diskon"`
-	Ongkir           int64              `json:"ongkir"`
-	TotalBayar       int64              `json:"total_bayar"`
-	NamaPenerima     string             `json:"nama_penerima"`
-	HpPenerimaMasked string             `json:"hp_penerima_masked"`
-	TanggalAntar     pgtype.Date        `json:"tanggal_antar"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ID                pgtype.UUID        `json:"id"`
+	NomorPesanan      string             `json:"nomor_pesanan"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	AnggotaID         pgtype.UUID        `json:"anggota_id"`
+	PromoID           pgtype.UUID        `json:"promo_id"`
+	MetodePengiriman  string             `json:"metode_pengiriman"`
+	MetodePembayaran  string             `json:"metode_pembayaran"`
+	Status            string             `json:"status"`
+	StokStatus        string             `json:"stok_status"`
+	StokHoldExpiresAt pgtype.Timestamptz `json:"stok_hold_expires_at"`
+	Subtotal          int64              `json:"subtotal"`
+	Diskon            int64              `json:"diskon"`
+	Ongkir            int64              `json:"ongkir"`
+	TotalBayar        int64              `json:"total_bayar"`
+	NamaPenerima      string             `json:"nama_penerima"`
+	HpPenerimaMasked  string             `json:"hp_penerima_masked"`
+	TanggalAntar      pgtype.Date        `json:"tanggal_antar"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) ListPesanan(ctx context.Context, arg ListPesananParams) ([]ListPesananRow, error) {
@@ -515,6 +636,8 @@ func (q *Queries) ListPesanan(ctx context.Context, arg ListPesananParams) ([]Lis
 			&i.MetodePengiriman,
 			&i.MetodePembayaran,
 			&i.Status,
+			&i.StokStatus,
+			&i.StokHoldExpiresAt,
 			&i.Subtotal,
 			&i.Diskon,
 			&i.Ongkir,
@@ -539,7 +662,7 @@ const listPesananItems = `-- name: ListPesananItems :many
 SELECT id, pesanan_id, produk_id, nama_produk, kuantitas, harga_satuan, subtotal
 FROM pesanan_item
 WHERE pesanan_id = $1
-ORDER BY id ASC
+ORDER BY produk_id ASC, id ASC
 `
 
 func (q *Queries) ListPesananItems(ctx context.Context, pesananID pgtype.UUID) ([]PesananItem, error) {
@@ -568,6 +691,49 @@ func (q *Queries) ListPesananItems(ctx context.Context, pesananID pgtype.UUID) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseProdukStockHold = `-- name: ReleaseProdukStockHold :exec
+UPDATE produk
+SET stok_tertahan = GREATEST(0, stok_tertahan - $1::int)
+WHERE id = $2
+`
+
+type ReleaseProdukStockHoldParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ReleaseProdukStockHold(ctx context.Context, arg ReleaseProdukStockHoldParams) error {
+	_, err := q.db.Exec(ctx, releaseProdukStockHold, arg.Qty, arg.ID)
+	return err
+}
+
+const reserveProdukStock = `-- name: ReserveProdukStock :one
+UPDATE produk
+SET stok_tertahan = stok_tertahan + $1::int
+WHERE id = $2
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type ReserveProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type ReserveProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) ReserveProdukStock(ctx context.Context, arg ReserveProdukStockParams) (ReserveProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, reserveProdukStock, arg.Qty, arg.ID)
+	var i ReserveProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
 }
 
 const restoreProdukStock = `-- name: RestoreProdukStock :exec
@@ -617,4 +783,22 @@ func (q *Queries) UpdatePesananStatus(ctx context.Context, arg UpdatePesananStat
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const updatePesananStokStatus = `-- name: UpdatePesananStokStatus :exec
+UPDATE pesanan
+SET stok_status = $1,
+    stok_hold_expires_at = $2
+WHERE id = $3
+`
+
+type UpdatePesananStokStatusParams struct {
+	StokStatus        string             `json:"stok_status"`
+	StokHoldExpiresAt pgtype.Timestamptz `json:"stok_hold_expires_at"`
+	ID                pgtype.UUID        `json:"id"`
+}
+
+func (q *Queries) UpdatePesananStokStatus(ctx context.Context, arg UpdatePesananStokStatusParams) error {
+	_, err := q.db.Exec(ctx, updatePesananStokStatus, arg.StokStatus, arg.StokHoldExpiresAt, arg.ID)
+	return err
 }

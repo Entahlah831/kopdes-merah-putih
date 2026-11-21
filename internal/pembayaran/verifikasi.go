@@ -271,7 +271,7 @@ func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.Session
 	if cur.Status != "menunggu_verifikasi" && cur.Status != "perlu_tindak_lanjut" {
 		return nil, response.NewDomainError(http.StatusConflict, "INVALID_PAYMENT_STATUS", "Pembayaran tidak dalam status siap verifikasi")
 	}
-	updated, err := applyVerificationDecisionTx(ctx, qtx, claims, cur, keputusan, in, ip)
+	updated, err := applyVerificationDecisionTx(ctx, tx, qtx, claims, cur, keputusan, in, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +307,17 @@ func evaluateApprovalTx(
 	return "lunas", alasan, kwtPG, nil
 }
 
+type stockRunoutAfterHoldError struct {
+	ProductName string
+}
+
+func (e *stockRunoutAfterHoldError) Error() string {
+	return "stok tidak mencukupi setelah masa reservasi berakhir: " + e.ProductName
+}
+
 func applyVerificationDecisionTx(
 	ctx context.Context,
+	tx pgx.Tx,
 	qtx *db.Queries,
 	claims *middleware.SessionClaims,
 	cur db.GetPembayaranForUpdateRow,
@@ -330,30 +339,42 @@ func applyVerificationDecisionTx(
 			return nil, err
 		}
 	}
+	if finalStatus == "lunas" {
+		sp, spErr := tx.Begin(ctx)
+		if spErr != nil {
+			return nil, spErr
+		}
+		spErr = markAllocatedTargetsPaidTx(ctx, qtx.WithTx(sp), cur.ID)
+		var runoutErr *stockRunoutAfterHoldError
+		if errors.As(spErr, &runoutErr) {
+			_ = sp.Rollback(ctx)
+			finalStatus = "perlu_tindak_lanjut"
+			kwtPG = pgtype.Text{}
+			alasan = fmt.Sprintf("Stok tidak mencukupi setelah masa reservasi berakhir (%s): perlu pengembalian dana atau kesepakatan ulang", runoutErr.ProductName)
+		} else if spErr != nil {
+			_ = sp.Rollback(ctx)
+			return nil, spErr
+		} else if cErr := sp.Commit(ctx); cErr != nil {
+			return nil, cErr
+		}
+	}
+	return persistVerificationOutcomeTx(ctx, qtx, claims, cur, finalStatus, in.NominalDibayar, kwtPG, alasan, ip)
+}
+
+func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow, finalStatus string, nominalDibayar int64, kwtPG pgtype.Text, alasan, ip string) (*db.VerifyPembayaranDecisionRow, error) {
 	updated, err := qtx.VerifyPembayaranDecision(ctx, db.VerifyPembayaranDecisionParams{
-		Status:           finalStatus,
-		NominalDibayar:   in.NominalDibayar,
-		NomorKwitansi:    kwtPG,
-		AlasanVerifikasi: alasan,
-		DiverifikasiOleh: response.ToPGUUID(claims.UserID),
-		ID:               cur.ID,
+		Status: finalStatus, NominalDibayar: nominalDibayar, NomorKwitansi: kwtPG,
+		AlasanVerifikasi: alasan, DiverifikasiOleh: response.ToPGUUID(claims.UserID), ID: cur.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("verifikasi pembayaran: %w", err)
 	}
-	if finalStatus == "lunas" {
-		if err := markAllocatedTargetsPaidTx(ctx, qtx, cur.ID); err != nil {
-			return nil, err
-		}
-	}
 	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "pembayaran.verify_" + finalStatus,
-		Entitas:     "pembayaran",
-		EntitasID:   response.FromPGUUID(cur.ID).String(),
-		Ringkasan:   fmt.Sprintf("%s -> %s (dibayar %d)", cur.NomorPembayaran, finalStatus, in.NominalDibayar),
-		IpAddress:   ip,
+		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
+		Aksi: "pembayaran.verify_" + finalStatus, Entitas: "pembayaran",
+		EntitasID: response.FromPGUUID(cur.ID).String(),
+		Ringkasan: fmt.Sprintf("%s -> %s (dibayar %d)", cur.NomorPembayaran, finalStatus, nominalDibayar),
+		IpAddress: ip,
 	})
 	return &updated, nil
 }
@@ -365,10 +386,7 @@ func markAllocatedTargetsPaidTx(ctx context.Context, qtx *db.Queries, bayarID pg
 	}
 	for _, al := range allocs {
 		if al.TagihanIuranID.Valid {
-			if err := qtx.UpdateTagihanStatus(ctx, db.UpdateTagihanStatusParams{
-				Status: "lunas",
-				ID:     al.TagihanIuranID,
-			}); err != nil {
+			if err := qtx.UpdateTagihanStatus(ctx, db.UpdateTagihanStatusParams{Status: "lunas", ID: al.TagihanIuranID}); err != nil {
 				return err
 			}
 		}
@@ -389,28 +407,37 @@ func markPesananPaidWithStockTx(ctx context.Context, qtx *db.Queries, pesananID 
 	if ord.Status == "batal" {
 		return response.NewDomainError(http.StatusConflict, "PESANAN_ALREADY_CANCELLED", "Pesanan sudah dibatalkan")
 	}
-	if ord.Status == "baru" || ord.Status == "menunggu_pembayaran" || ord.Status == "menunggu_verifikasi" {
-		items, err := qtx.ListPesananItems(ctx, pesananID)
-		if err != nil {
+	if ord.StokStatus != "deducted" && (ord.Status == "baru" || ord.Status == "menunggu_pembayaran" || ord.Status == "menunggu_verifikasi") {
+		if err := deductPesananItemsWithHoldTx(ctx, qtx, pesananID, ord.StokStatus); err != nil {
 			return err
 		}
-		for _, it := range items {
-			if _, err := qtx.DecrementProdukStock(ctx, db.DecrementProdukStockParams{
-				ID:  it.ProdukID,
-				Qty: it.Kuantitas,
-			}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+it.NamaProduk+" tidak mencukupi untuk menyetujui pembayaran")
-				}
-				return err
-			}
+		if err := qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "deducted"}); err != nil {
+			return err
 		}
 	}
-	if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
-		Status: "dibayar",
-		ID:     pesananID,
-	}); err != nil {
+	if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{Status: "dibayar", ID: pesananID}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func deductPesananItemsWithHoldTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID, stokStatus string) error {
+	items, err := qtx.ListPesananItems(ctx, pesananID)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		if stokStatus == "reserved" {
+			_, err = qtx.ConfirmReservedProdukStock(ctx, db.ConfirmReservedProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+		} else {
+			_, err = qtx.DecrementAvailableProdukStock(ctx, db.DecrementAvailableProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+		}
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &stockRunoutAfterHoldError{ProductName: it.NamaProduk}
+			}
+			return err
+		}
 	}
 	return nil
 }

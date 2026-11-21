@@ -76,6 +76,7 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, ks *security.PurposeKey
 	angSvc := anggota.NewService(pool, anggota.Config{KeyProvider: dbKP, BlindIndexSecret: blindKey, TrustedProxies: cfg.TrustedProxies})
 	pesSvc := pesanan.NewService(pool, dbKP, pesanan.Config{
 		OrderExpiryMinutes: maxInt(15, int(cfg.PaymentExpiryDuration.Minutes())),
+		StockHoldMinutes:   cfg.StockHoldMinutes,
 		Timezone:           cfg.AppTimezone,
 		TrustedProxies:     cfg.TrustedProxies,
 	})

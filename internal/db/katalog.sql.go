@@ -43,7 +43,7 @@ INSERT INTO produk (
     $5, $6, $7,
     $8, $9, $10
 )
-RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, foto_url, status, created_at
+RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, stok_tertahan, foto_url, status, created_at
 `
 
 type CreateProdukParams struct {
@@ -69,6 +69,7 @@ type CreateProdukRow struct {
 	HargaUmum    pgtype.Int8        `json:"harga_umum"`
 	HargaAnggota pgtype.Int8        `json:"harga_anggota"`
 	Stok         int32              `json:"stok"`
+	StokTertahan int32              `json:"stok_tertahan"`
 	FotoUrl      string             `json:"foto_url"`
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
@@ -98,6 +99,7 @@ func (q *Queries) CreateProduk(ctx context.Context, arg CreateProdukParams) (Cre
 		&i.HargaUmum,
 		&i.HargaAnggota,
 		&i.Stok,
+		&i.StokTertahan,
 		&i.FotoUrl,
 		&i.Status,
 		&i.CreatedAt,
@@ -188,7 +190,7 @@ func (q *Queries) DecrementPromoUsed(ctx context.Context, id pgtype.UUID) error 
 const getProdukByID = `-- name: GetProdukByID :one
 SELECT p.id, p.kategori_id, COALESCE(k.nama, '')::text AS nama_kategori,
        p.sku, p.nama, p.deskripsi, p.satuan, p.harga_umum, p.harga_anggota,
-       p.stok, p.foto_url, p.status, p.created_at, p.updated_at
+       p.stok, p.stok_tertahan, p.foto_url, p.status, p.created_at, p.updated_at
 FROM produk p
 LEFT JOIN kategori k ON k.id = p.kategori_id
 WHERE p.id = $1
@@ -205,6 +207,7 @@ type GetProdukByIDRow struct {
 	HargaUmum    pgtype.Int8        `json:"harga_umum"`
 	HargaAnggota pgtype.Int8        `json:"harga_anggota"`
 	Stok         int32              `json:"stok"`
+	StokTertahan int32              `json:"stok_tertahan"`
 	FotoUrl      string             `json:"foto_url"`
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
@@ -225,6 +228,7 @@ func (q *Queries) GetProdukByID(ctx context.Context, id pgtype.UUID) (GetProdukB
 		&i.HargaUmum,
 		&i.HargaAnggota,
 		&i.Stok,
+		&i.StokTertahan,
 		&i.FotoUrl,
 		&i.Status,
 		&i.CreatedAt,
@@ -234,7 +238,7 @@ func (q *Queries) GetProdukByID(ctx context.Context, id pgtype.UUID) (GetProdukB
 }
 
 const getProdukForUpdate = `-- name: GetProdukForUpdate :one
-SELECT id, sku, nama, harga_umum, harga_anggota, stok, status
+SELECT id, sku, nama, harga_umum, harga_anggota, stok, stok_tertahan, status
 FROM produk
 WHERE id = $1
 FOR UPDATE
@@ -247,6 +251,7 @@ type GetProdukForUpdateRow struct {
 	HargaUmum    pgtype.Int8 `json:"harga_umum"`
 	HargaAnggota pgtype.Int8 `json:"harga_anggota"`
 	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
 	Status       string      `json:"status"`
 }
 
@@ -260,6 +265,7 @@ func (q *Queries) GetProdukForUpdate(ctx context.Context, id pgtype.UUID) (GetPr
 		&i.HargaUmum,
 		&i.HargaAnggota,
 		&i.Stok,
+		&i.StokTertahan,
 		&i.Status,
 	)
 	return i, err
@@ -355,7 +361,7 @@ func (q *Queries) ListKategoriAktif(ctx context.Context) ([]Kategori, error) {
 const listProduk = `-- name: ListProduk :many
 SELECT p.id, p.kategori_id, COALESCE(k.nama, '')::text AS nama_kategori,
        p.sku, p.nama, p.deskripsi, p.satuan, p.harga_umum, p.harga_anggota,
-       p.stok, p.foto_url, p.status, p.created_at
+       p.stok, p.stok_tertahan, p.foto_url, p.status, p.created_at
 FROM produk p
 LEFT JOIN kategori k ON k.id = p.kategori_id
 WHERE ($1::bool = TRUE OR p.status = 'aktif')
@@ -384,6 +390,7 @@ type ListProdukRow struct {
 	HargaUmum    pgtype.Int8        `json:"harga_umum"`
 	HargaAnggota pgtype.Int8        `json:"harga_anggota"`
 	Stok         int32              `json:"stok"`
+	StokTertahan int32              `json:"stok_tertahan"`
 	FotoUrl      string             `json:"foto_url"`
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
@@ -415,6 +422,7 @@ func (q *Queries) ListProduk(ctx context.Context, arg ListProdukParams) ([]ListP
 			&i.HargaUmum,
 			&i.HargaAnggota,
 			&i.Stok,
+			&i.StokTertahan,
 			&i.FotoUrl,
 			&i.Status,
 			&i.CreatedAt,
@@ -497,7 +505,7 @@ SET kategori_id = $1,
     foto_url = $8,
     status = $9
 WHERE id = $10
-RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, foto_url, status, updated_at
+RETURNING id, kategori_id, sku, nama, deskripsi, satuan, harga_umum, harga_anggota, stok, stok_tertahan, foto_url, status, updated_at
 `
 
 type UpdateProdukParams struct {
@@ -523,6 +531,7 @@ type UpdateProdukRow struct {
 	HargaUmum    pgtype.Int8        `json:"harga_umum"`
 	HargaAnggota pgtype.Int8        `json:"harga_anggota"`
 	Stok         int32              `json:"stok"`
+	StokTertahan int32              `json:"stok_tertahan"`
 	FotoUrl      string             `json:"foto_url"`
 	Status       string             `json:"status"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
@@ -552,6 +561,7 @@ func (q *Queries) UpdateProduk(ctx context.Context, arg UpdateProdukParams) (Upd
 		&i.HargaUmum,
 		&i.HargaAnggota,
 		&i.Stok,
+		&i.StokTertahan,
 		&i.FotoUrl,
 		&i.Status,
 		&i.UpdatedAt,

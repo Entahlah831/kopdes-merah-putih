@@ -47,6 +47,8 @@ type ProdukDTO struct {
 	HargaAktifTersedia bool       `json:"harga_aktif_tersedia"`
 	TierHarga          string     `json:"tier_harga"`
 	Stok               int32      `json:"stok"`
+	StokTertahan       int32      `json:"stok_tertahan"`
+	StokTersedia       int32      `json:"stok_tersedia"`
 	FotoURL            string     `json:"foto_url,omitempty"`
 	Status             string     `json:"status"`
 }
@@ -120,6 +122,10 @@ func (s *Service) ListProduk(ctx context.Context, claims *middleware.SessionClai
 func mapProdukRows(rows []db.ListProdukRow, isMember, isStaff bool, tier string) []ProdukDTO {
 	out := make([]ProdukDTO, 0, len(rows))
 	for _, r := range rows {
+		tersedia := r.Stok - r.StokTertahan
+		if tersedia < 0 {
+			tersedia = 0
+		}
 		dto := ProdukDTO{
 			ID:           response.FromPGUUID(r.ID),
 			NamaKategori: r.NamaKategori,
@@ -129,6 +135,8 @@ func mapProdukRows(rows []db.ListProdukRow, isMember, isStaff bool, tier string)
 			Satuan:       r.Satuan,
 			TierHarga:    tier,
 			Stok:         r.Stok,
+			StokTertahan: r.StokTertahan,
+			StokTersedia: tersedia,
 			FotoURL:      r.FotoUrl,
 			Status:       r.Status,
 		}
@@ -313,6 +321,9 @@ func (s *Service) updateProduk(ctx context.Context, claims *middleware.SessionCl
 	st, err := validateProdukPrices(in.HargaUmum, in.HargaAnggota, in.Stok, pickNonEmpty(in.Status, existing.Status))
 	if err != nil {
 		return nil, err
+	}
+	if in.Stok < existing.StokTertahan {
+		return nil, response.NewDomainError(http.StatusConflict, "STOK_RESERVED_CONFLICT", fmt.Sprintf("Stok tidak boleh lebih kecil dari stok tertahan (%d)", existing.StokTertahan))
 	}
 	katPG := existing.KategoriID
 	if strings.TrimSpace(in.KategoriID) != "" {

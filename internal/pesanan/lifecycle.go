@@ -72,6 +72,7 @@ func (s *Service) List(ctx context.Context, claims *middleware.SessionClaims, us
 			MetodePengiriman: r.MetodePengiriman,
 			MetodePembayaran: r.MetodePembayaran,
 			Status:           r.Status,
+			StokStatus:       r.StokStatus,
 			Subtotal:         r.Subtotal,
 			Diskon:           r.Diskon,
 			Ongkir:           r.Ongkir,
@@ -87,6 +88,10 @@ func (s *Service) List(ctx context.Context, claims *middleware.SessionClaims, us
 		if r.ExpiresAt.Valid {
 			t := r.ExpiresAt.Time
 			dto.ExpiresAt = &t
+		}
+		if r.StokHoldExpiresAt.Valid {
+			t := r.StokHoldExpiresAt.Time
+			dto.StokHoldExpiresAt = &t
 		}
 		out = append(out, dto)
 	}
@@ -122,6 +127,7 @@ func (s *Service) GetDetail(ctx context.Context, claims *middleware.SessionClaim
 		MetodePengiriman:  row.MetodePengiriman,
 		MetodePembayaran:  row.MetodePembayaran,
 		Status:            row.Status,
+		StokStatus:        row.StokStatus,
 		Subtotal:          row.Subtotal,
 		Diskon:            row.Diskon,
 		Ongkir:            row.Ongkir,
@@ -141,6 +147,10 @@ func (s *Service) GetDetail(ctx context.Context, claims *middleware.SessionClaim
 	if row.ExpiresAt.Valid {
 		t := row.ExpiresAt.Time
 		dto.ExpiresAt = &t
+	}
+	if row.StokHoldExpiresAt.Valid {
+		t := row.StokHoldExpiresAt.Time
+		dto.StokHoldExpiresAt = &t
 	}
 	return &dto, nil
 }
@@ -166,12 +176,12 @@ func (s *Service) UpdateStatus(ctx context.Context, claims *middleware.SessionCl
 		return nil, err
 	}
 	if !orderHadDeductedStock(cur.Status) && orderHadDeductedStock(st) {
-		if err := deductOrderStockTx(ctx, qtx, cur.ID); err != nil {
+		if err := confirmOrDeductOrderStockTx(ctx, qtx, cur.ID, cur.StokStatus); err != nil {
 			return nil, err
 		}
 	}
 	if st == "batal" && cur.Status != "batal" {
-		if err := restoreOrderResourcesTx(ctx, qtx, cur.ID, cur.PromoID, orderHadDeductedStock(cur.Status)); err != nil {
+		if err := releaseOrRestoreOrderResourcesTx(ctx, qtx, cur.ID, cur.PromoID, cur.StokStatus, orderHadDeductedStock(cur.Status)); err != nil {
 			return nil, err
 		}
 	}
@@ -218,35 +228,48 @@ func orderHadDeductedStock(status string) bool {
 	return status == "dibayar" || status == "diproses" || status == "diantar" || status == "siap_diambil" || status == "selesai"
 }
 
-func deductOrderStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID) error {
+func confirmOrDeductOrderStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID, stokStatus string) error {
+	if stokStatus == "deducted" {
+		return nil
+	}
 	items, err := qtx.ListPesananItems(ctx, pesananID)
 	if err != nil {
 		return err
 	}
 	for _, it := range items {
-		if _, err := qtx.DecrementProdukStock(ctx, db.DecrementProdukStockParams{
-			ID:  it.ProdukID,
-			Qty: it.Kuantitas,
-		}); err != nil {
+		if stokStatus == "reserved" {
+			_, err = qtx.ConfirmReservedProdukStock(ctx, db.ConfirmReservedProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+		} else {
+			_, err = qtx.DecrementAvailableProdukStock(ctx, db.DecrementAvailableProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+		}
+		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+it.NamaProduk+" tidak mencukupi")
 			}
 			return err
 		}
 	}
-	return nil
+	return qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "deducted"})
 }
 
-func restoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesananID, promoID pgtype.UUID, restoreStock bool) error {
-	if restoreStock {
+func releaseOrRestoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesananID, promoID pgtype.UUID, stokStatus string, wasDeducted bool) error {
+	if stokStatus == "reserved" || stokStatus == "deducted" || wasDeducted {
 		items, err := qtx.ListPesananItems(ctx, pesananID)
 		if err != nil {
 			return err
 		}
 		for _, it := range items {
-			if err := qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas}); err != nil {
+			if stokStatus == "reserved" {
+				err = qtx.ReleaseProdukStockHold(ctx, db.ReleaseProdukStockHoldParams{ID: it.ProdukID, Qty: it.Kuantitas})
+			} else {
+				err = qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+			}
+			if err != nil {
 				return err
 			}
+		}
+		if err := qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "released"}); err != nil {
+			return err
 		}
 	}
 	if promoID.Valid {
@@ -328,7 +351,7 @@ func (s *Service) ExpireUnpaidOrders(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ambil pesanan kedaluwarsa: %w", err)
 	}
 	for _, row := range expired {
-		if err := restoreOrderResourcesTx(ctx, qtx, row.ID, row.PromoID, false); err != nil {
+		if err := releaseOrRestoreOrderResourcesTx(ctx, qtx, row.ID, row.PromoID, row.StokStatus, false); err != nil {
 			return 0, err
 		}
 		if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
@@ -345,6 +368,39 @@ func (s *Service) ExpireUnpaidOrders(ctx context.Context) (int, error) {
 	return len(expired), nil
 }
 
+// ReleaseExpiredStockHolds melepas tahanan stok pesanan yang melewati STOCK_HOLD_MINUTES tanpa membatalkan pembayaran menunggu verifikasi.
+func (s *Service) ReleaseExpiredStockHolds(ctx context.Context) (int, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	holds, err := qtx.ListExpiredStockHoldPesanan(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("ambil tahanan stok kedaluwarsa: %w", err)
+	}
+	for _, h := range holds {
+		items, iErr := qtx.ListPesananItems(ctx, h.ID)
+		if iErr != nil {
+			return 0, iErr
+		}
+		for _, it := range items {
+			if err := qtx.ReleaseProdukStockHold(ctx, db.ReleaseProdukStockHoldParams{ID: it.ProdukID, Qty: it.Kuantitas}); err != nil {
+				return 0, err
+			}
+		}
+		if err := qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: h.ID, StokStatus: "released"}); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(holds), nil
+}
+
 func mapPesananCreated(r db.GetPesananByIdempotencyKeyRow, items []db.PesananItem) PesananDTO {
 	dto := PesananDTO{
 		ID:               response.FromPGUUID(r.ID),
@@ -353,6 +409,7 @@ func mapPesananCreated(r db.GetPesananByIdempotencyKeyRow, items []db.PesananIte
 		MetodePengiriman: r.MetodePengiriman,
 		MetodePembayaran: r.MetodePembayaran,
 		Status:           r.Status,
+		StokStatus:       r.StokStatus,
 		Subtotal:         r.Subtotal,
 		Diskon:           r.Diskon,
 		Ongkir:           r.Ongkir,
@@ -366,6 +423,10 @@ func mapPesananCreated(r db.GetPesananByIdempotencyKeyRow, items []db.PesananIte
 	if r.ExpiresAt.Valid {
 		t := r.ExpiresAt.Time
 		dto.ExpiresAt = &t
+	}
+	if r.StokHoldExpiresAt.Valid {
+		t := r.StokHoldExpiresAt.Time
+		dto.StokHoldExpiresAt = &t
 	}
 	return dto
 }
@@ -378,6 +439,7 @@ func mapPesananFromCreate(r db.CreatePesananRow, items []db.PesananItem) Pesanan
 		MetodePengiriman: r.MetodePengiriman,
 		MetodePembayaran: r.MetodePembayaran,
 		Status:           r.Status,
+		StokStatus:       r.StokStatus,
 		Subtotal:         r.Subtotal,
 		Diskon:           r.Diskon,
 		Ongkir:           r.Ongkir,
@@ -391,6 +453,10 @@ func mapPesananFromCreate(r db.CreatePesananRow, items []db.PesananItem) Pesanan
 	if r.ExpiresAt.Valid {
 		t := r.ExpiresAt.Time
 		dto.ExpiresAt = &t
+	}
+	if r.StokHoldExpiresAt.Valid {
+		t := r.StokHoldExpiresAt.Time
+		dto.StokHoldExpiresAt = &t
 	}
 	return dto
 }

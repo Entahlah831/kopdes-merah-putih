@@ -59,6 +59,47 @@ WHERE (sqlc.arg(include_nonaktif)::bool = TRUE OR p.status = 'aktif')
 ORDER BY p.nama ASC
 LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);
 
+-- name: ReserveProdukStock :one
+UPDATE produk
+SET stok_tertahan = stok_tertahan + sqlc.arg(qty)::int
+WHERE id = sqlc.arg(id)
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= sqlc.arg(qty)::int
+RETURNING id, stok, stok_tertahan;
+
+-- name: ReleaseProdukStockHold :exec
+UPDATE produk
+SET stok_tertahan = GREATEST(0, stok_tertahan - sqlc.arg(qty)::int)
+WHERE id = sqlc.arg(id);
+
+-- name: ConfirmReservedProdukStock :one
+UPDATE produk
+SET stok = stok - sqlc.arg(qty)::int,
+    stok_tertahan = stok_tertahan - sqlc.arg(qty)::int
+WHERE id = sqlc.arg(id)
+  AND stok >= sqlc.arg(qty)::int
+  AND stok_tertahan >= sqlc.arg(qty)::int
+RETURNING id, stok, stok_tertahan;
+
+-- name: DecrementAvailableProdukStock :one
+UPDATE produk
+SET stok = stok - sqlc.arg(qty)::int
+WHERE id = sqlc.arg(id)
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= sqlc.arg(qty)::int
+RETURNING id, stok, stok_tertahan;
+
+-- name: DecrementProdukStock :one
+UPDATE produk
+SET stok = stok - sqlc.arg(qty)::int
+WHERE id = sqlc.arg(id) AND status = 'aktif' AND stok >= sqlc.arg(qty)::int
+RETURNING id, stok;
+
+-- name: RestoreProdukStock :exec
+UPDATE produk
+SET stok = stok + sqlc.arg(qty)::int
+WHERE id = sqlc.arg(id);
+
 -- name: CreatePromo :one
 INSERT INTO promo (
     kode, nama, tipe_diskon, nilai_diskon, min_belanja, kuota_total,

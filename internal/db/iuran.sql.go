@@ -186,23 +186,52 @@ func (q *Queries) InsertTagihanIuranIfMissing(ctx context.Context, arg InsertTag
 	return id, err
 }
 
-const listAktifAnggotaIDs = `-- name: ListAktifAnggotaIDs :many
-SELECT id FROM anggota WHERE status = 'aktif' ORDER BY created_at ASC
+const laporanTunggakanIuran = `-- name: LaporanTunggakanIuran :many
+SELECT t.anggota_id,
+       j.kode AS jenis_kode,
+       j.nama AS jenis_nama,
+       t.periode_tahun,
+       t.periode_bulan,
+       (t.nominal - t.nominal_keringanan)::bigint AS nominal_terutang,
+       t.tanggal_jatuh_tempo
+FROM tagihan_iuran t
+JOIN jenis_iuran j ON j.id = t.jenis_iuran_id
+WHERE t.status = 'belum_bayar'
+  AND t.tanggal_jatuh_tempo < CURRENT_DATE
+ORDER BY t.tanggal_jatuh_tempo ASC, t.anggota_id ASC
 `
 
-func (q *Queries) ListAktifAnggotaIDs(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listAktifAnggotaIDs)
+type LaporanTunggakanIuranRow struct {
+	AnggotaID         pgtype.UUID `json:"anggota_id"`
+	JenisKode         string      `json:"jenis_kode"`
+	JenisNama         string      `json:"jenis_nama"`
+	PeriodeTahun      int32       `json:"periode_tahun"`
+	PeriodeBulan      int32       `json:"periode_bulan"`
+	NominalTerutang   int64       `json:"nominal_terutang"`
+	TanggalJatuhTempo pgtype.Date `json:"tanggal_jatuh_tempo"`
+}
+
+func (q *Queries) LaporanTunggakanIuran(ctx context.Context) ([]LaporanTunggakanIuranRow, error) {
+	rows, err := q.db.Query(ctx, laporanTunggakanIuran)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	items := []LaporanTunggakanIuranRow{}
 	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i LaporanTunggakanIuranRow
+		if err := rows.Scan(
+			&i.AnggotaID,
+			&i.JenisKode,
+			&i.JenisNama,
+			&i.PeriodeTahun,
+			&i.PeriodeBulan,
+			&i.NominalTerutang,
+			&i.TanggalJatuhTempo,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -247,13 +276,12 @@ func (q *Queries) ListJenisIuranAktif(ctx context.Context) ([]JenisIuran, error)
 }
 
 const listTagihanIuran = `-- name: ListTagihanIuran :many
-SELECT t.id, t.anggota_id, a.nomor_anggota, a.nama_lengkap,
+SELECT t.id, t.anggota_id,
        t.jenis_iuran_id, j.kode AS jenis_kode, j.nama AS jenis_nama,
        t.periode_tahun, t.periode_bulan, t.nominal, t.nominal_keringanan,
        (t.nominal - t.nominal_keringanan)::bigint AS nominal_netto,
        t.tanggal_jatuh_tempo, t.status, t.alasan_keringanan, t.paid_at, t.created_at
 FROM tagihan_iuran t
-JOIN anggota a ON a.id = t.anggota_id
 JOIN jenis_iuran j ON j.id = t.jenis_iuran_id
 WHERE ($1::uuid IS NULL OR t.anggota_id = $1::uuid)
   AND ($2::bool = FALSE OR (t.status = 'belum_bayar' AND t.tanggal_jatuh_tempo < CURRENT_DATE))
@@ -273,8 +301,6 @@ type ListTagihanIuranParams struct {
 type ListTagihanIuranRow struct {
 	ID                pgtype.UUID        `json:"id"`
 	AnggotaID         pgtype.UUID        `json:"anggota_id"`
-	NomorAnggota      string             `json:"nomor_anggota"`
-	NamaLengkap       string             `json:"nama_lengkap"`
 	JenisIuranID      pgtype.UUID        `json:"jenis_iuran_id"`
 	JenisKode         string             `json:"jenis_kode"`
 	JenisNama         string             `json:"jenis_nama"`
@@ -308,8 +334,6 @@ func (q *Queries) ListTagihanIuran(ctx context.Context, arg ListTagihanIuranPara
 		if err := rows.Scan(
 			&i.ID,
 			&i.AnggotaID,
-			&i.NomorAnggota,
-			&i.NamaLengkap,
 			&i.JenisIuranID,
 			&i.JenisKode,
 			&i.JenisNama,

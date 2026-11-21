@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/config"
+	"github.com/kopdes/merah-putih/internal/filestore"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -55,7 +56,8 @@ type Config struct {
 	StorageBuktiDir              string
 	BuktiRetentionDays           int
 	MaxKYCUploadBytes            int64
-	APIVersion                string
+	FileStore                    filestore.FileStore
+	APIVersion                   string
 	PaymentsDisabled          bool
 	RegistrationDisabled      bool
 	ReadOnlyMode              bool

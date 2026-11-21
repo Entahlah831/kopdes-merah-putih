@@ -5,14 +5,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api/response"
-	"github.com/kopdes/merah-putih/internal/db"
+	bayarapi "github.com/kopdes/merah-putih/internal/pembayaran/api"
+	pengapi "github.com/kopdes/merah-putih/internal/pengaturan/api"
 )
 
 // PublicConfigOptions berisi metadata non-rahasia untuk konfigurasi runtime klien frontend.
 type PublicConfigOptions struct {
-	Pool                        *pgxpool.Pool
+	Settings                    pengapi.SettingsReader
+	QRIS                        bayarapi.ActiveQRISReader
 	APIVersion                  string
 	Timezone                    string
 	MaxBodyBytes                int64
@@ -44,6 +45,11 @@ type PublicConfigHandler struct {
 }
 
 func NewPublicConfigHandler(opts PublicConfigOptions) *PublicConfigHandler {
+	applyPublicConfigDefaults(&opts)
+	return &PublicConfigHandler{opts: opts}
+}
+
+func applyPublicConfigDefaults(opts *PublicConfigOptions) {
 	if strings.TrimSpace(opts.APIVersion) == "" {
 		opts.APIVersion = "1.1.0"
 	}
@@ -86,7 +92,6 @@ func NewPublicConfigHandler(opts PublicConfigOptions) *PublicConfigHandler {
 	if opts.NowFunc == nil {
 		opts.NowFunc = time.Now
 	}
-	return &PublicConfigHandler{opts: opts}
 }
 
 // HandleGetPublicConfig mengembalikan konfigurasi publik non-rahasia tanpa autentikasi.
@@ -152,27 +157,33 @@ func (h *PublicConfigHandler) buildPublicPayload(r *http.Request) map[string]int
 }
 
 func (h *PublicConfigHandler) attachKoperasiInfo(r *http.Request, payload map[string]interface{}) {
-	if h.opts.Pool == nil {
+	if h.opts.Settings == nil {
 		return
 	}
-	pub, err := db.New(h.opts.Pool).GetPublicSettingsWithQRIS(r.Context())
+	pub, err := h.opts.Settings.GetSettings(r.Context())
 	if err != nil {
 		return
+	}
+	var qris bayarapi.PublicQRISInfo
+	if h.opts.QRIS != nil && pub.ActiveRekeningQRISID != nil {
+		if qInfo, qErr := h.opts.QRIS.GetPublicQRISInfo(r.Context(), pub.ActiveRekeningQRISID); qErr == nil {
+			qris = qInfo
+		}
 	}
 	payload["koperasi"] = map[string]interface{}{
 		"nama_koperasi":      pub.NamaKoperasi,
 		"alamat_koperasi":    pub.AlamatKoperasi,
 		"telepon_koperasi":   pub.TeleponKoperasi,
-		"qris_unique_digits": pub.QrisUniqueDigits,
+		"qris_unique_digits": pub.QRISUniqueDigits,
 		"ongkir_tetap":       pub.OngkirTetap,
 		"kebijakan_teks":     pub.KebijakanTeks,
 		"active_qris": map[string]interface{}{
-			"rekening_id":    pub.QrisRekeningID,
-			"nama_merchant":  pub.QrisMerchant,
-			"nmid":           pub.QrisNmid,
-			"nama_bank":      pub.QrisBank,
-			"jenis_pemilik":  pub.QrisJenisPemilik,
-			"qris_image_url": pub.QrisImageUrl,
+			"rekening_id":    qris.RekeningID,
+			"nama_merchant":  qris.NamaMerchant,
+			"nmid":           qris.NMID,
+			"nama_bank":      qris.NamaBank,
+			"jenis_pemilik":  qris.JenisPemilik,
+			"qris_image_url": qris.QRISImageURL,
 		},
 	}
 }

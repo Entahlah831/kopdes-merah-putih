@@ -73,11 +73,8 @@ func (s *Service) buildAdminUpdateResult(ctx context.Context, tx pgx.Tx, qt *db.
 		out["reset_code"] = code
 		out["wa_link"] = waLink
 	}
-	_ = qt.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "update_user", Entitas: "users", EntitasID: idStr,
-		Ringkasan: fmt.Sprintf("Update user aktif=%t reset_mfa=%t", updated.StatusAktif, in.ResetMFA), IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, uuidPtr(claims.UserID), claims.Role, "update_user", "users", idStr,
+		fmt.Sprintf("Update user aktif=%t reset_mfa=%t", updated.StatusAktif, in.ResetMFA), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

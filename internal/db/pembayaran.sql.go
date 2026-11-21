@@ -397,15 +397,14 @@ func (q *Queries) CreateRekeningQRIS(ctx context.Context, arg CreateRekeningQRIS
 	return i, err
 }
 
-const getActiveRekeningFromPengaturan = `-- name: GetActiveRekeningFromPengaturan :one
-SELECT r.id, r.nama_merchant, r.nmid, r.nama_bank, r.nomor_rekening, r.nama_pemilik,
-       r.jenis_pemilik, r.qris_image_url, r.qris_payload, r.aktif
-FROM pengaturan p
-JOIN rekening_qris r ON r.id = p.active_rekening_qris_id
-WHERE p.id = 1 AND r.aktif = TRUE
+const getActiveRekeningQRISByID = `-- name: GetActiveRekeningQRISByID :one
+SELECT id, nama_merchant, nmid, nama_bank, nomor_rekening, nama_pemilik,
+       jenis_pemilik, qris_image_url, qris_payload, aktif
+FROM rekening_qris
+WHERE id = $1 AND aktif = TRUE
 `
 
-type GetActiveRekeningFromPengaturanRow struct {
+type GetActiveRekeningQRISByIDRow struct {
 	ID            pgtype.UUID `json:"id"`
 	NamaMerchant  string      `json:"nama_merchant"`
 	Nmid          string      `json:"nmid"`
@@ -418,9 +417,9 @@ type GetActiveRekeningFromPengaturanRow struct {
 	Aktif         bool        `json:"aktif"`
 }
 
-func (q *Queries) GetActiveRekeningFromPengaturan(ctx context.Context) (GetActiveRekeningFromPengaturanRow, error) {
-	row := q.db.QueryRow(ctx, getActiveRekeningFromPengaturan)
-	var i GetActiveRekeningFromPengaturanRow
+func (q *Queries) GetActiveRekeningQRISByID(ctx context.Context, id pgtype.UUID) (GetActiveRekeningQRISByIDRow, error) {
+	row := q.db.QueryRow(ctx, getActiveRekeningQRISByID, id)
+	var i GetActiveRekeningQRISByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.NamaMerchant,
@@ -857,6 +856,69 @@ func (q *Queries) HasActivePembayaranForTagihan(ctx context.Context, tagihanIura
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const laporanPembayaranRekap = `-- name: LaporanPembayaranRekap :many
+SELECT p.jenis_transaksi,
+       p.metode,
+       p.status,
+       COUNT(*)::bigint AS jumlah_transaksi,
+       COALESCE(SUM(p.nominal_pokok), 0)::bigint AS total_pokok,
+       COALESCE(SUM(p.selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
+       COALESCE(SUM(p.nominal_dibayar), 0)::bigint AS total_dibayar,
+       COALESCE(SUM(CASE WHEN pd.status = 'selesai' THEN pd.nominal ELSE 0 END), 0)::bigint AS total_dikembalikan
+FROM pembayaran p
+LEFT JOIN pengembalian_dana pd ON pd.pembayaran_id = p.id
+WHERE ($1::date IS NULL OR (p.created_at AT TIME ZONE $2::text)::date >= $1::date)
+  AND ($3::date IS NULL OR (p.created_at AT TIME ZONE $2::text)::date <= $3::date)
+GROUP BY p.jenis_transaksi, p.metode, p.status
+ORDER BY p.jenis_transaksi ASC, p.metode ASC, p.status ASC
+`
+
+type LaporanPembayaranRekapParams struct {
+	Dari   pgtype.Date `json:"dari"`
+	Tz     string      `json:"tz"`
+	Sampai pgtype.Date `json:"sampai"`
+}
+
+type LaporanPembayaranRekapRow struct {
+	JenisTransaksi       string `json:"jenis_transaksi"`
+	Metode               string `json:"metode"`
+	Status               string `json:"status"`
+	JumlahTransaksi      int64  `json:"jumlah_transaksi"`
+	TotalPokok           int64  `json:"total_pokok"`
+	TotalSelisihKodeUnik int64  `json:"total_selisih_kode_unik"`
+	TotalDibayar         int64  `json:"total_dibayar"`
+	TotalDikembalikan    int64  `json:"total_dikembalikan"`
+}
+
+func (q *Queries) LaporanPembayaranRekap(ctx context.Context, arg LaporanPembayaranRekapParams) ([]LaporanPembayaranRekapRow, error) {
+	rows, err := q.db.Query(ctx, laporanPembayaranRekap, arg.Dari, arg.Tz, arg.Sampai)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LaporanPembayaranRekapRow{}
+	for rows.Next() {
+		var i LaporanPembayaranRekapRow
+		if err := rows.Scan(
+			&i.JenisTransaksi,
+			&i.Metode,
+			&i.Status,
+			&i.JumlahTransaksi,
+			&i.TotalPokok,
+			&i.TotalSelisihKodeUnik,
+			&i.TotalDibayar,
+			&i.TotalDikembalikan,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAlokasiByPembayaran = `-- name: ListAlokasiByPembayaran :many

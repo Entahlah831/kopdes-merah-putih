@@ -46,4 +46,5 @@ USER kopdesuser
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD sh -c 'test -n "${API_PORT:-}" && curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null'
 
-ENTRYPOINT ["/app/kopdes-api"]
+ENTRYPOINT ["/app/kopdes"]
+CMD ["serve"]

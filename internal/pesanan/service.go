@@ -16,9 +16,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	angapi "github.com/kopdes/merah-putih/internal/anggota/api"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	katapi "github.com/kopdes/merah-putih/internal/katalog/api"
+	bayarapi "github.com/kopdes/merah-putih/internal/pembayaran/api"
+	pengapi "github.com/kopdes/merah-putih/internal/pengaturan/api"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -27,6 +31,11 @@ type Config struct {
 	StockHoldMinutes   int
 	Timezone           string
 	TrustedProxies     []string
+	Settings           pengapi.SettingsReader
+	Audit              pengapi.AuditWriter
+	Members            angapi.MemberReader
+	Stock              katapi.StockPromoManager
+	PayChecker         bayarapi.ActivePaymentChecker
 }
 
 type Service struct {
@@ -44,6 +53,9 @@ func NewService(pool *pgxpool.Pool, kp security.KeyProvider, cfg Config) *Servic
 	if cfg.StockHoldMinutes <= 0 {
 		cfg.StockHoldMinutes = 60
 	}
+	if strings.TrimSpace(cfg.Timezone) == "" {
+		cfg.Timezone = "Asia/Jakarta"
+	}
 	return &Service{
 		pool:    pool,
 		q:       db.New(pool),
@@ -51,6 +63,34 @@ func NewService(pool *pgxpool.Pool, kp security.KeyProvider, cfg Config) *Servic
 		cfg:     cfg,
 		trusted: middleware.NewTrustedProxyMatcher(cfg.TrustedProxies),
 	}
+}
+
+func (s *Service) SetActivePaymentChecker(checker bayarapi.ActivePaymentChecker) {
+	s.cfg.PayChecker = checker
+}
+
+func (s *Service) timezoneOrDefault() string {
+	if strings.TrimSpace(s.cfg.Timezone) == "" {
+		return "Asia/Jakarta"
+	}
+	return s.cfg.Timezone
+}
+
+func (s *Service) logAuditTx(ctx context.Context, tx pgx.Tx, claims *middleware.SessionClaims, aksi, entitas, entitasID, ringkasan, ip string) {
+	if s == nil || s.cfg.Audit == nil {
+		return
+	}
+	var actorPtr *uuid.UUID
+	peran := "system"
+	if claims != nil {
+		u := claims.UserID
+		actorPtr = &u
+		peran = claims.Role
+	}
+	_ = s.cfg.Audit.LogTx(ctx, tx, pengapi.AuditEntry{
+		ActorUserID: actorPtr, ActorPeran: peran, Aksi: aksi,
+		Entitas: entitas, EntitasID: entitasID, Ringkasan: ringkasan, IPAddress: ip,
+	})
 }
 
 type CheckoutItemInput struct {
@@ -196,6 +236,10 @@ func (s *Service) Checkout(ctx context.Context, claims *middleware.SessionClaims
 }
 
 func (s *Service) executeCheckoutTx(ctx context.Context, claims *middleware.SessionClaims, in CheckoutInput, vc *validatedCheckout, idemKey, ip string) (*PesananDTO, error) {
+	if s.cfg.Stock == nil || s.cfg.Settings == nil {
+		return nil, response.NewDomainError(http.StatusInternalServerError, "SERVICE_NOT_WIRED", "Layanan katalog/pengaturan belum terhubung")
+	}
+	isMember, anggotaPG := s.resolveBuyerMembership(ctx, claims.UserID)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
@@ -203,16 +247,15 @@ func (s *Service) executeCheckoutTx(ctx context.Context, claims *middleware.Sess
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	isMember, anggotaPG := s.resolveBuyerMembership(ctx, qtx, claims.UserID)
-	lineItems, subtotal, err := lockAndComputeItems(ctx, qtx, vc, isMember)
+	lineItems, subtotal, err := s.lockAndComputeItems(ctx, tx, vc, isMember)
 	if err != nil {
 		return nil, err
 	}
-	promoID, diskon, err := applyPromoTx(ctx, qtx, in.KodePromo, claims.UserID, anggotaPG, subtotal)
+	promoID, diskon, err := s.applyPromoTx(ctx, tx, qtx, in.KodePromo, claims.UserID, anggotaPG, subtotal)
 	if err != nil {
 		return nil, err
 	}
-	peng, err := qtx.GetPengaturan(ctx)
+	peng, err := s.cfg.Settings.GetSettingsTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +265,7 @@ func (s *Service) executeCheckoutTx(ctx context.Context, claims *middleware.Sess
 	}
 	totalBayar := subtotal - diskon + ongkir
 
-	dto, err := s.persistOrderTx(ctx, qtx, claims, vc, in.Catatan, idemKey, anggotaPG, promoID, subtotal, diskon, ongkir, totalBayar, lineItems, ip)
+	dto, err := s.persistOrderTx(ctx, tx, qtx, claims, vc, in.Catatan, idemKey, anggotaPG, promoID, subtotal, diskon, ongkir, totalBayar, lineItems, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -232,20 +275,22 @@ func (s *Service) executeCheckoutTx(ctx context.Context, claims *middleware.Sess
 	return dto, nil
 }
 
-func (s *Service) resolveBuyerMembership(ctx context.Context, qtx *db.Queries, userID uuid.UUID) (bool, pgtype.UUID) {
-	ag, err := qtx.GetAnggotaByUserID(ctx, response.ToPGUUID(userID))
+func (s *Service) resolveBuyerMembership(ctx context.Context, userID uuid.UUID) (bool, pgtype.UUID) {
+	if s.cfg.Members == nil {
+		return false, pgtype.UUID{}
+	}
+	ag, err := s.cfg.Members.GetByUserID(ctx, userID)
 	if err == nil && ag.Status == "aktif" {
-		return true, ag.ID
+		return true, response.ToPGUUID(ag.ID)
 	}
 	return false, pgtype.UUID{}
 }
 
-func lockAndComputeItems(ctx context.Context, qtx *db.Queries, vc *validatedCheckout, isMember bool) ([]db.CreatePesananItemParams, int64, error) {
+func (s *Service) lockAndComputeItems(ctx context.Context, tx pgx.Tx, vc *validatedCheckout, isMember bool) ([]db.CreatePesananItemParams, int64, error) {
 	var subtotal int64
 	lines := make([]db.CreatePesananItemParams, 0, len(vc.items))
 	for _, it := range vc.items {
-		pid := response.ToPGUUID(it.id)
-		prod, err := qtx.GetProdukForUpdate(ctx, pid)
+		prod, err := s.cfg.Stock.GetProductForOrderUpdateTx(ctx, tx, it.id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, 0, response.NewDomainError(http.StatusNotFound, "PRODUK_NOT_FOUND", "Produk tidak ditemukan")
 		}
@@ -259,37 +304,34 @@ func lockAndComputeItems(ctx context.Context, qtx *db.Queries, vc *validatedChec
 		if isMember {
 			unitPrice = prod.HargaAnggota
 		}
-		if !unitPrice.Valid {
+		if unitPrice == nil {
 			return nil, 0, response.NewDomainError(http.StatusConflict, "MISSING_ACTIVE_PRICE", "Produk "+prod.Nama+" belum memiliki harga aktif untuk tier Anda")
 		}
 		if prod.Stok-prod.StokTertahan < it.qty {
 			return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
 		}
-		if _, rErr := qtx.ReserveProdukStock(ctx, db.ReserveProdukStockParams{ID: pid, Qty: it.qty}); rErr != nil {
-			if errors.Is(rErr, pgx.ErrNoRows) {
+		if rErr := s.cfg.Stock.ReserveStockTx(ctx, tx, it.id, it.qty); rErr != nil {
+			if errors.Is(rErr, katapi.ErrOutOfStock) {
 				return nil, 0, response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+prod.Nama+" tidak mencukupi")
 			}
 			return nil, 0, rErr
 		}
-		lineSub := unitPrice.Int64 * int64(it.qty)
+		lineSub := *unitPrice * int64(it.qty)
 		subtotal += lineSub
 		lines = append(lines, db.CreatePesananItemParams{
-			ProdukID:    pid,
-			NamaProduk:  prod.Nama,
-			Kuantitas:   it.qty,
-			HargaSatuan: unitPrice.Int64,
-			Subtotal:    lineSub,
+			ProdukID: response.ToPGUUID(it.id), NamaProduk: prod.Nama,
+			Kuantitas: it.qty, HargaSatuan: *unitPrice, Subtotal: lineSub,
 		})
 	}
 	return lines, subtotal, nil
 }
 
-func applyPromoTx(ctx context.Context, qtx *db.Queries, kodeRaw string, userID uuid.UUID, anggotaPG pgtype.UUID, subtotal int64) (pgtype.UUID, int64, error) {
+func (s *Service) applyPromoTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, kodeRaw string, userID uuid.UUID, anggotaPG pgtype.UUID, subtotal int64) (pgtype.UUID, int64, error) {
 	kode := strings.ToUpper(strings.TrimSpace(kodeRaw))
 	if kode == "" {
 		return pgtype.UUID{}, 0, nil
 	}
-	pr, err := qtx.GetPromoByKodeForUpdate(ctx, kode)
+	pr, err := s.cfg.Stock.GetPromoByCodeForUpdateTx(ctx, tx, kode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, 0, response.NewDomainError(http.StatusNotFound, "PROMO_NOT_FOUND", "Kode promo tidak ditemukan")
 	}
@@ -297,7 +339,7 @@ func applyPromoTx(ctx context.Context, qtx *db.Queries, kodeRaw string, userID u
 		return pgtype.UUID{}, 0, err
 	}
 	now := time.Now().UTC()
-	if !pr.Aktif || now.Before(pr.MulaiPada.Time) || now.After(pr.BerakhirPada.Time) {
+	if !pr.Aktif || now.Before(pr.MulaiPada) || now.After(pr.BerakhirPada) {
 		return pgtype.UUID{}, 0, response.NewDomainError(http.StatusConflict, "PROMO_INACTIVE", "Promo tidak aktif atau sudah berakhir")
 	}
 	if pr.KuotaTotal > 0 && pr.KuotaTerpakai >= pr.KuotaTotal {
@@ -308,9 +350,7 @@ func applyPromoTx(ctx context.Context, qtx *db.Queries, kodeRaw string, userID u
 	}
 	if pr.SekaliPerAnggota {
 		used, err := qtx.CountPromoUsageByAnggota(ctx, db.CountPromoUsageByAnggotaParams{
-			PromoID:   pr.ID,
-			AnggotaID: anggotaPG,
-			UserID:    response.ToPGUUID(userID),
+			PromoID: response.ToPGUUID(pr.ID), AnggotaID: anggotaPG, UserID: response.ToPGUUID(userID),
 		})
 		if err != nil {
 			return pgtype.UUID{}, 0, err
@@ -319,21 +359,27 @@ func applyPromoTx(ctx context.Context, qtx *db.Queries, kodeRaw string, userID u
 			return pgtype.UUID{}, 0, response.NewDomainError(http.StatusConflict, "PROMO_ALREADY_USED", "Promo ini hanya dapat digunakan 1 kali per anggota")
 		}
 	}
-	diskon := pr.NilaiDiskon
-	if pr.TipeDiskon == "persen" {
-		diskon = (subtotal * pr.NilaiDiskon) / 100
-	}
-	if diskon > subtotal {
-		diskon = subtotal
-	}
-	if err := qtx.IncrementPromoUsed(ctx, pr.ID); err != nil {
+	diskon := computePromoDiscount(pr.TipeDiskon, pr.NilaiDiskon, subtotal)
+	if err := s.cfg.Stock.IncrementPromoUsedTx(ctx, tx, pr.ID); err != nil {
 		return pgtype.UUID{}, 0, err
 	}
-	return pr.ID, diskon, nil
+	return response.ToPGUUID(pr.ID), diskon, nil
+}
+
+func computePromoDiscount(tipe string, nilai, subtotal int64) int64 {
+	diskon := nilai
+	if tipe == "persen" {
+		diskon = (subtotal * nilai) / 100
+	}
+	if diskon > subtotal {
+		return subtotal
+	}
+	return diskon
 }
 
 func (s *Service) persistOrderTx(
 	ctx context.Context,
+	tx pgx.Tx,
 	qtx *db.Queries,
 	claims *middleware.SessionClaims,
 	vc *validatedCheckout,
@@ -371,10 +417,10 @@ func (s *Service) persistOrderTx(
 	if err != nil {
 		return nil, fmt.Errorf("simpan pesanan: %w", err)
 	}
-	return saveOrderItemsAndAudit(ctx, qtx, claims, row, lines, totalBayar, orderID, ip)
+	return s.saveOrderItemsAndAudit(ctx, tx, qtx, claims, row, lines, totalBayar, orderID, ip)
 }
 
-func saveOrderItemsAndAudit(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, row db.CreatePesananRow, lines []db.CreatePesananItemParams, totalBayar int64, orderID uuid.UUID, ip string) (*PesananDTO, error) {
+func (s *Service) saveOrderItemsAndAudit(ctx context.Context, tx pgx.Tx, qtx *db.Queries, claims *middleware.SessionClaims, row db.CreatePesananRow, lines []db.CreatePesananItemParams, totalBayar int64, orderID uuid.UUID, ip string) (*PesananDTO, error) {
 	savedItems := make([]db.PesananItem, 0, len(lines))
 	for _, li := range lines {
 		li.PesananID = row.ID
@@ -384,15 +430,8 @@ func saveOrderItemsAndAudit(ctx context.Context, qtx *db.Queries, claims *middle
 		}
 		savedItems = append(savedItems, it)
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "pesanan.checkout",
-		Entitas:     "pesanan",
-		EntitasID:   orderID.String(),
-		Ringkasan:   fmt.Sprintf("Checkout %s total %d", row.NomorPesanan, totalBayar),
-		IpAddress:   ip,
-	})
+	s.logAuditTx(ctx, tx, claims, "pesanan.checkout", "pesanan", orderID.String(),
+		fmt.Sprintf("Checkout %s total %d", row.NomorPesanan, totalBayar), ip)
 	dto := mapPesananFromCreate(row, savedItems)
 	return &dto, nil
 }

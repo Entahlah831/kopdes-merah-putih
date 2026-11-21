@@ -1,4 +1,4 @@
-package pendaftaran
+package anggota
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kopdes/merah-putih/internal/filestore"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -30,16 +31,19 @@ func TestKYCFileStore_EncryptDecrypt_NoPlaintextMagic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kp1: %v", err)
 	}
-	store, err := NewKYCFileStore(dir, kp1, 1<<20)
+	store, err := filestore.NewLocalFileStore(map[string]filestore.NamespaceConfig{
+		filestore.NamespaceKYC: {Dir: dir, KeyProvider: kp1},
+	})
 	if err != nil {
-		t.Fatalf("NewKYCFileStore: %v", err)
+		t.Fatalf("NewLocalFileStore: %v", err)
 	}
 	raw := decodeSamplePNG(t)
-	saved, err := store.SaveEncrypted("reg-123", "ktp", raw)
+	aad := security.FormatAAD("dokumen_kyc", "ktp", "reg-123")
+	saved, err := store.SaveEncrypted(context.Background(), filestore.NamespaceKYC, "kyc-reg123.enc", raw, aad)
 	if err != nil {
 		t.Fatalf("SaveEncrypted: %v", err)
 	}
-	diskBytes, err := os.ReadFile(filepath.Join(dir, saved.StorageKey))
+	diskBytes, err := os.ReadFile(filepath.Join(dir, saved.ObjectKey))
 	if err != nil {
 		t.Fatalf("read .enc: %v", err)
 	}
@@ -52,11 +56,13 @@ func TestKYCFileStore_EncryptDecrypt_NoPlaintextMagic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kp2: %v", err)
 	}
-	store2, err := NewKYCFileStore(dir, kp2, 1<<20)
+	store2, err := filestore.NewLocalFileStore(map[string]filestore.NamespaceConfig{
+		filestore.NamespaceKYC: {Dir: dir, KeyProvider: kp2},
+	})
 	if err != nil {
 		t.Fatalf("store2: %v", err)
 	}
-	plain, err := store2.LoadDecrypted("reg-123", "ktp", saved.StorageKey, saved.DEKWrapped)
+	plain, err := store2.LoadDecrypted(context.Background(), filestore.NamespaceKYC, saved.ObjectKey, saved.DEKWrapped, aad)
 	if err != nil {
 		t.Fatalf("LoadDecrypted with rotated key failed: %v", err)
 	}
@@ -66,14 +72,13 @@ func TestKYCFileStore_EncryptDecrypt_NoPlaintextMagic(t *testing.T) {
 }
 
 func TestKYCValidationAndTurnstile(t *testing.T) {
-	if _, _, _, err := validateImageBytes([]byte("not-an-image"), 1<<20); err == nil {
+	if _, err := filestore.ValidateImage([]byte("not-an-image"), 1<<20); err == nil {
 		t.Fatal("expected MIME error for text payload")
 	}
-	fs, _ := NewKYCFileStore(t.TempDir(), nil, 1024)
-	if _, err := fs.safePath("../escape.enc"); err == nil {
+	if _, err := filestore.SafeObjectPath(t.TempDir(), "../escape.enc"); err == nil {
 		t.Fatal("expected path traversal rejection")
 	}
-	svc := NewService(nil, fs, Config{CaptchaEnabled: true})
+	svc := NewService(nil, Config{CaptchaEnabled: true})
 	if err := svc.verifyTurnstile(context.Background(), "", "127.0.0.1"); err == nil {
 		t.Fatal("expected error when captcha token missing")
 	}

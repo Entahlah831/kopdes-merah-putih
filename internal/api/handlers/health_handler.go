@@ -85,7 +85,7 @@ func isWorkerJobStale(jobName string, finishedAt time.Time, valid bool, now time
 		return false
 	}
 	age := now.Sub(finishedAt)
-	if jobName == "pesanan_expire" || jobName == "rate_limits_cleanup" {
+	if jobName == "pesanan_expire" || jobName == "rate_limits_cleanup" || jobName == "session_cleanup" {
 		return age > 15*time.Minute
 	}
 	return age > 26*time.Hour

@@ -25,6 +25,20 @@ func (q *Queries) CleanupExpiredRateLimits(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const cleanupExpiredSessions = `-- name: CleanupExpiredSessions :execrows
+DELETE FROM sesi
+WHERE abs_expires_at < NOW()
+   OR idle_expires_at < NOW()
+`
+
+func (q *Queries) CleanupExpiredSessions(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupExpiredSessions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const consumeActivationCode = `-- name: ConsumeActivationCode :exec
 UPDATE kode_aktivasi
 SET used_at = NOW()
@@ -233,12 +247,9 @@ SELECT s.id AS session_id,
        s.abs_expires_at,
        u.peran,
        u.status_aktif,
-       u.mfa_enabled,
-       a.id AS anggota_id,
-       COALESCE(a.status, '')::text AS anggota_status
+       u.mfa_enabled
 FROM sesi s
 JOIN users u ON u.id = s.user_id
-LEFT JOIN anggota a ON a.user_id = u.id
 WHERE s.token_hash = $1
   AND s.revoked_at IS NULL
   AND s.idle_expires_at > NOW()
@@ -257,8 +268,6 @@ type GetActiveSessionByDigestRow struct {
 	Peran         string             `json:"peran"`
 	StatusAktif   bool               `json:"status_aktif"`
 	MfaEnabled    bool               `json:"mfa_enabled"`
-	AnggotaID     pgtype.UUID        `json:"anggota_id"`
-	AnggotaStatus string             `json:"anggota_status"`
 }
 
 func (q *Queries) GetActiveSessionByDigest(ctx context.Context, tokenHash string) (GetActiveSessionByDigestRow, error) {
@@ -276,89 +285,6 @@ func (q *Queries) GetActiveSessionByDigest(ctx context.Context, tokenHash string
 		&i.Peran,
 		&i.StatusAktif,
 		&i.MfaEnabled,
-		&i.AnggotaID,
-		&i.AnggotaStatus,
-	)
-	return i, err
-}
-
-const getPengaturan = `-- name: GetPengaturan :one
-SELECT id, nama_koperasi, alamat_koperasi, telepon_koperasi, qris_unique_digits,
-       ongkir_tetap, kebijakan_teks, catatan_akuntansi, active_rekening_qris_id, updated_at
-FROM pengaturan
-WHERE id = 1
-`
-
-func (q *Queries) GetPengaturan(ctx context.Context) (Pengaturan, error) {
-	row := q.db.QueryRow(ctx, getPengaturan)
-	var i Pengaturan
-	err := row.Scan(
-		&i.ID,
-		&i.NamaKoperasi,
-		&i.AlamatKoperasi,
-		&i.TeleponKoperasi,
-		&i.QrisUniqueDigits,
-		&i.OngkirTetap,
-		&i.KebijakanTeks,
-		&i.CatatanAkuntansi,
-		&i.ActiveRekeningQrisID,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getPublicSettingsWithQRIS = `-- name: GetPublicSettingsWithQRIS :one
-SELECT p.nama_koperasi,
-       p.alamat_koperasi,
-       p.telepon_koperasi,
-       p.qris_unique_digits,
-       p.ongkir_tetap,
-       p.kebijakan_teks,
-       COALESCE(r.id::text, '')::text AS qris_rekening_id,
-       COALESCE(r.nama_merchant, '')::text AS qris_merchant,
-       COALESCE(r.nmid, '')::text AS qris_nmid,
-       COALESCE(r.nama_bank, '')::text AS qris_bank,
-       COALESCE(r.nomor_rekening, '')::text AS qris_nomor_rekening,
-       COALESCE(r.jenis_pemilik, '')::text AS qris_jenis_pemilik,
-       COALESCE(r.qris_image_url, '')::text AS qris_image_url
-FROM pengaturan p
-LEFT JOIN rekening_qris r ON r.id = p.active_rekening_qris_id AND r.aktif = TRUE
-WHERE p.id = 1
-`
-
-type GetPublicSettingsWithQRISRow struct {
-	NamaKoperasi      string `json:"nama_koperasi"`
-	AlamatKoperasi    string `json:"alamat_koperasi"`
-	TeleponKoperasi   string `json:"telepon_koperasi"`
-	QrisUniqueDigits  int32  `json:"qris_unique_digits"`
-	OngkirTetap       int64  `json:"ongkir_tetap"`
-	KebijakanTeks     string `json:"kebijakan_teks"`
-	QrisRekeningID    string `json:"qris_rekening_id"`
-	QrisMerchant      string `json:"qris_merchant"`
-	QrisNmid          string `json:"qris_nmid"`
-	QrisBank          string `json:"qris_bank"`
-	QrisNomorRekening string `json:"qris_nomor_rekening"`
-	QrisJenisPemilik  string `json:"qris_jenis_pemilik"`
-	QrisImageUrl      string `json:"qris_image_url"`
-}
-
-func (q *Queries) GetPublicSettingsWithQRIS(ctx context.Context) (GetPublicSettingsWithQRISRow, error) {
-	row := q.db.QueryRow(ctx, getPublicSettingsWithQRIS)
-	var i GetPublicSettingsWithQRISRow
-	err := row.Scan(
-		&i.NamaKoperasi,
-		&i.AlamatKoperasi,
-		&i.TeleponKoperasi,
-		&i.QrisUniqueDigits,
-		&i.OngkirTetap,
-		&i.KebijakanTeks,
-		&i.QrisRekeningID,
-		&i.QrisMerchant,
-		&i.QrisNmid,
-		&i.QrisBank,
-		&i.QrisNomorRekening,
-		&i.QrisJenisPemilik,
-		&i.QrisImageUrl,
 	)
 	return i, err
 }
@@ -571,37 +497,6 @@ func (q *Queries) IncrementSessionMFAAttempts(ctx context.Context, arg Increment
 	return i, err
 }
 
-const insertAuditLog = `-- name: InsertAuditLog :exec
-INSERT INTO audit_log (actor_user_id, actor_peran, aksi, entitas, entitas_id, ringkasan, ip_address)
-VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7
-)
-`
-
-type InsertAuditLogParams struct {
-	ActorUserID pgtype.UUID `json:"actor_user_id"`
-	ActorPeran  string      `json:"actor_peran"`
-	Aksi        string      `json:"aksi"`
-	Entitas     string      `json:"entitas"`
-	EntitasID   string      `json:"entitas_id"`
-	Ringkasan   string      `json:"ringkasan"`
-	IpAddress   string      `json:"ip_address"`
-}
-
-func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
-	_, err := q.db.Exec(ctx, insertAuditLog,
-		arg.ActorUserID,
-		arg.ActorPeran,
-		arg.Aksi,
-		arg.Entitas,
-		arg.EntitasID,
-		arg.Ringkasan,
-		arg.IpAddress,
-	)
-	return err
-}
-
 const invalidateUserActivationCodes = `-- name: InvalidateUserActivationCodes :exec
 UPDATE kode_aktivasi
 SET used_at = NOW()
@@ -648,13 +543,9 @@ func (q *Queries) ListActiveRateLimitBlocks(ctx context.Context) ([]ListActiveRa
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT u.id, u.email_enc, u.hp_enc, u.nama_lengkap, u.peran, u.status_aktif, u.mfa_enabled,
-       COALESCE(a.id::text, '')::text AS anggota_id,
-       COALESCE(a.nomor_anggota, '')::text AS nomor_anggota,
-       u.created_at
-FROM users u
-LEFT JOIN anggota a ON a.user_id = u.id
-ORDER BY u.created_at DESC
+SELECT id, email_enc, hp_enc, nama_lengkap, peran, status_aktif, mfa_enabled, created_at
+FROM users
+ORDER BY created_at DESC
 LIMIT $2 OFFSET $1
 `
 
@@ -664,16 +555,14 @@ type ListUsersParams struct {
 }
 
 type ListUsersRow struct {
-	ID           pgtype.UUID        `json:"id"`
-	EmailEnc     []byte             `json:"email_enc"`
-	HpEnc        []byte             `json:"hp_enc"`
-	NamaLengkap  string             `json:"nama_lengkap"`
-	Peran        string             `json:"peran"`
-	StatusAktif  bool               `json:"status_aktif"`
-	MfaEnabled   bool               `json:"mfa_enabled"`
-	AnggotaID    string             `json:"anggota_id"`
-	NomorAnggota string             `json:"nomor_anggota"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID          pgtype.UUID        `json:"id"`
+	EmailEnc    []byte             `json:"email_enc"`
+	HpEnc       []byte             `json:"hp_enc"`
+	NamaLengkap string             `json:"nama_lengkap"`
+	Peran       string             `json:"peran"`
+	StatusAktif bool               `json:"status_aktif"`
+	MfaEnabled  bool               `json:"mfa_enabled"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]ListUsersRow, error) {
@@ -693,8 +582,6 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]ListUse
 			&i.Peran,
 			&i.StatusAktif,
 			&i.MfaEnabled,
-			&i.AnggotaID,
-			&i.NomorAnggota,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -781,6 +668,23 @@ func (q *Queries) SetRateLimitBlocked(ctx context.Context, arg SetRateLimitBlock
 	return err
 }
 
+const setUserActiveByID = `-- name: SetUserActiveByID :exec
+UPDATE users
+SET status_aktif = $1,
+    updated_at = NOW()
+WHERE id = $2
+`
+
+type SetUserActiveByIDParams struct {
+	StatusAktif bool        `json:"status_aktif"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) SetUserActiveByID(ctx context.Context, arg SetUserActiveByIDParams) error {
+	_, err := q.db.Exec(ctx, setUserActiveByID, arg.StatusAktif, arg.ID)
+	return err
+}
+
 const touchSessionActivity = `-- name: TouchSessionActivity :exec
 UPDATE sesi
 SET last_active_at = NOW(),
@@ -798,56 +702,6 @@ type TouchSessionActivityParams struct {
 func (q *Queries) TouchSessionActivity(ctx context.Context, arg TouchSessionActivityParams) error {
 	_, err := q.db.Exec(ctx, touchSessionActivity, arg.IdleSecs, arg.ID)
 	return err
-}
-
-const updatePengaturan = `-- name: UpdatePengaturan :one
-UPDATE pengaturan
-SET nama_koperasi = COALESCE(NULLIF($1::text, ''), nama_koperasi),
-    alamat_koperasi = $2,
-    telepon_koperasi = $3,
-    qris_unique_digits = $4,
-    ongkir_tetap = $5,
-    kebijakan_teks = $6,
-    active_rekening_qris_id = $7
-WHERE id = 1
-RETURNING id, nama_koperasi, alamat_koperasi, telepon_koperasi, qris_unique_digits,
-          ongkir_tetap, kebijakan_teks, catatan_akuntansi, active_rekening_qris_id, updated_at
-`
-
-type UpdatePengaturanParams struct {
-	NamaKoperasi         string      `json:"nama_koperasi"`
-	AlamatKoperasi       string      `json:"alamat_koperasi"`
-	TeleponKoperasi      string      `json:"telepon_koperasi"`
-	QrisUniqueDigits     int32       `json:"qris_unique_digits"`
-	OngkirTetap          int64       `json:"ongkir_tetap"`
-	KebijakanTeks        string      `json:"kebijakan_teks"`
-	ActiveRekeningQrisID pgtype.UUID `json:"active_rekening_qris_id"`
-}
-
-func (q *Queries) UpdatePengaturan(ctx context.Context, arg UpdatePengaturanParams) (Pengaturan, error) {
-	row := q.db.QueryRow(ctx, updatePengaturan,
-		arg.NamaKoperasi,
-		arg.AlamatKoperasi,
-		arg.TeleponKoperasi,
-		arg.QrisUniqueDigits,
-		arg.OngkirTetap,
-		arg.KebijakanTeks,
-		arg.ActiveRekeningQrisID,
-	)
-	var i Pengaturan
-	err := row.Scan(
-		&i.ID,
-		&i.NamaKoperasi,
-		&i.AlamatKoperasi,
-		&i.TeleponKoperasi,
-		&i.QrisUniqueDigits,
-		&i.OngkirTetap,
-		&i.KebijakanTeks,
-		&i.CatatanAkuntansi,
-		&i.ActiveRekeningQrisID,
-		&i.UpdatedAt,
-	)
-	return i, err
 }
 
 const updateUserByAdmin = `-- name: UpdateUserByAdmin :one

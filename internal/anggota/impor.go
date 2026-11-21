@@ -10,12 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
-	"github.com/kopdes/merah-putih/internal/auth"
+	authapi "github.com/kopdes/merah-putih/internal/auth/api"
 	"github.com/kopdes/merah-putih/internal/db"
 	"github.com/kopdes/merah-putih/internal/security"
 )
@@ -124,7 +123,6 @@ func (s *Service) ImportCSV(ctx context.Context, claims *middleware.SessionClaim
 			"skipped_existing": skipped, "errors": parseErrs,
 		}, nil
 	}
-
 	created, impErr := s.executeImportTx(ctx, claims, toCreate, ip)
 	if impErr != nil {
 		return nil, impErr
@@ -150,6 +148,9 @@ func (s *Service) filterExistingCSVRows(ctx context.Context, q *db.Queries, rows
 }
 
 func (s *Service) executeImportTx(ctx context.Context, claims *middleware.SessionClaims, rows []parsedCSVRow, ip string) ([]map[string]interface{}, error) {
+	if s.cfg.UserManager == nil {
+		return nil, response.NewDomainError(http.StatusInternalServerError, "USER_MANAGER_UNAVAILABLE", "Pengelola akun user belum siap")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -166,11 +167,8 @@ func (s *Service) executeImportTx(ctx context.Context, claims *middleware.Sessio
 		}
 		created = append(created, item)
 	}
-	_ = qt.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "impor_anggota_csv", Entitas: "anggota", EntitasID: "batch",
-		Ringkasan: fmt.Sprintf("Impor CSV %d anggota baru", len(created)), IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, uuidPtr(claims.UserID), claims.Role, "impor_anggota_csv", "anggota", "batch",
+		fmt.Sprintf("Impor CSV %d anggota baru", len(created)), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -178,30 +176,14 @@ func (s *Service) executeImportTx(ctx context.Context, claims *middleware.Sessio
 }
 
 func (s *Service) insertImportedMemberTx(ctx context.Context, tx pgx.Tx, qt *db.Queries, claims *middleware.SessionClaims, row parsedCSVRow, seq int32) (map[string]interface{}, error) {
-	uid, _ := uuid.NewV7()
-	if uid == uuid.Nil {
-		uid = uuid.New()
-	}
-	var emailEnc []byte
-	var emailHash pgtype.Text
-	if row.Email != "" {
-		emailHash = pgtype.Text{String: security.HashBlindIndex(row.Email, s.cfg.BlindIndexSecret), Valid: true}
-		emailEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(row.Email), security.FormatAAD("users", "email", uid.String()))
-	}
-	uHP, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.NoHP), security.FormatAAD("users", "hp", uid.String()))
-	uRow, err := qt.CreateUser(ctx, db.CreateUserParams{
-		ID: response.ToPGUUID(uid), EmailEnc: emailEnc, EmailHash: emailHash,
-		HpEnc: uHP, HpHash: pgtype.Text{String: security.HashBlindIndex(row.NoHP, s.cfg.BlindIndexSecret), Valid: true},
-		NamaLengkap: row.NamaLengkap, PasswordHash: "", Peran: "anggota", StatusAktif: true,
+	userCreated, err := s.cfg.UserManager.CreateMemberUserTx(ctx, tx, authapi.CreateMemberUserInput{
+		Email: row.Email, NoHP: row.NoHP, NamaLengkap: row.NamaLengkap, Peran: "anggota",
 	})
 	if err != nil {
 		return nil, response.NewDomainError(http.StatusConflict, "IMPORT_USER_CONFLICT", fmt.Sprintf("baris %d: email/no_hp sudah dipakai akun lain", row.Line))
 	}
 
-	aid, _ := uuid.NewV7()
-	if aid == uuid.Nil {
-		aid = uuid.New()
-	}
+	aid := newUUIDv7()
 	nomor := fmt.Sprintf("KMP-%s-%04d-%s", time.Now().Format("200601"), seq, strings.ToUpper(aid.String()[:4]))
 	nikEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.NIK), security.FormatAAD("anggota", "nik", aid.String()))
 	hpEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.NoHP), security.FormatAAD("anggota", "hp", aid.String()))
@@ -212,7 +194,7 @@ func (s *Service) insertImportedMemberTx(ctx context.Context, tx pgx.Tx, qt *db.
 	addrEnc, _ := s.cfg.KeyProvider.EncryptWithAAD([]byte(row.Alamat), security.FormatAAD("anggota", "alamat", aid.String()))
 
 	ang, err := qt.CreateAnggota(ctx, db.CreateAnggotaParams{
-		ID: response.ToPGUUID(aid), UserID: uRow.ID, NomorAnggota: nomor, NamaLengkap: row.NamaLengkap,
+		ID: response.ToPGUUID(aid), UserID: response.ToPGUUID(userCreated.UserID), NomorAnggota: nomor, NamaLengkap: row.NamaLengkap,
 		NikEnc: nikEnc, NikHash: security.HashBlindIndex(row.NIK, s.cfg.BlindIndexSecret),
 		NikKeyVersion: security.BlindIndexKeyVersion(s.cfg.BlindIndexSecret), NikMasked: security.MaskNIK(row.NIK),
 		HpEnc: hpEnc, HpMasked: security.MaskPhone(row.NoHP), TanggalLahirEnc: dobEnc, AlamatEnc: addrEnc, Status: "aktif",
@@ -220,9 +202,10 @@ func (s *Service) insertImportedMemberTx(ctx context.Context, tx pgx.Tx, qt *db.
 	if err != nil {
 		return nil, err
 	}
-	code, _, err := auth.CreateActivationOrResetCodeTx(ctx, tx, uRow.ID, response.ToPGUUID(claims.UserID), "aktivasi_awal", row.NoHP, 24*time.Hour)
+	actorID := claims.UserID
+	codeRes, err := s.cfg.UserManager.CreateActivationOrResetCodeTx(ctx, tx, userCreated.UserID, &actorID, "aktivasi_awal", row.NoHP, 24*time.Hour)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]interface{}{"id": aid, "nomor_anggota": ang.NomorAnggota, "nama_lengkap": ang.NamaLengkap, "activation_code": code}, nil
+	return map[string]interface{}{"id": aid, "nomor_anggota": ang.NomorAnggota, "nama_lengkap": ang.NamaLengkap, "activation_code": codeRes.Code}, nil
 }

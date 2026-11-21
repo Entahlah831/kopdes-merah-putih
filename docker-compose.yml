@@ -38,6 +38,7 @@ services:
     mem_limit: 512m
 
   api:
+    profiles: ["app", "tester", "proxy"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -53,6 +54,11 @@ services:
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
+      WORKER_TICK_INTERVAL: ${WORKER_TICK_INTERVAL:-60s}
+      SLO_READ_P95_MS: ${SLO_READ_P95_MS:-300}
+      SLO_WRITE_P95_MS: ${SLO_WRITE_P95_MS:-800}
+      SLO_MAX_ERROR_RATE: ${SLO_MAX_ERROR_RATE:-0.005}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
@@ -111,6 +117,7 @@ services:
     mem_limit: 512m
 
   worker:
+    profiles: ["worker"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -121,15 +128,23 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["/app/kopdes"]
-    command: ["worker", "--tick", "60s"]
+    command: ["worker"]
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${WORKER_PORT:?WORKER_PORT wajib disetel}/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     environment:
       APP_ENV: ${APP_ENV:-production}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
+      WORKER_TICK_INTERVAL: ${WORKER_TICK_INTERVAL:-60s}
+      SLO_READ_P95_MS: ${SLO_READ_P95_MS:-300}
+      SLO_WRITE_P95_MS: ${SLO_WRITE_P95_MS:-800}
+      SLO_MAX_ERROR_RATE: ${SLO_MAX_ERROR_RATE:-0.005}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
@@ -178,3 +193,57 @@ services:
       - kopdes_internal
     cpus: "0.5"
     mem_limit: 256m
+
+  tester:
+    profiles: ["tester"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    entrypoint: ["/app/kopdes"]
+    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend-tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT:?API_HOST_PORT wajib disetel}"]
+    environment:
+      APP_ENV: ${APP_ENV:-test}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+      UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      API_PORT: ${API_PORT:?API_PORT wajib disetel}
+      API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
+      DB_HOST_PORT: ${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}
+      DB_NAME: ${DB_NAME:?DB_NAME wajib disetel}
+      DB_USER: ${DB_USER:-kopdes_app}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib disetel}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      AES_MASTER_KEY: ${AES_MASTER_KEY:?AES_MASTER_KEY wajib disetel}
+      AES_PREVIOUS_KEYS: ${AES_PREVIOUS_KEYS:-}
+      BLIND_INDEX_SECRET: ${BLIND_INDEX_SECRET:?BLIND_INDEX_SECRET wajib disetel}
+    ports:
+      - "127.0.0.1:${UI_PORT:?UI_PORT wajib disetel}:${UI_PORT:?UI_PORT wajib disetel}"
+    networks:
+      - kopdes_internal
+    cpus: "0.25"
+    mem_limit: 128m
+
+  proxy:
+    profiles: ["proxy"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["caddy", "reverse-proxy", "--from", ":${API_HOST_PORT:?API_HOST_PORT wajib disetel}", "--to", "api:${API_PORT:?API_PORT wajib disetel}"]
+    expose:
+      - "${API_HOST_PORT:?API_HOST_PORT wajib disetel}"
+    networks:
+      - kopdes_edge
+      - kopdes_internal
+    cpus: "0.25"
+    mem_limit: 128m

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,7 +16,8 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
-	"github.com/kopdes/merah-putih/internal/security"
+	"github.com/kopdes/merah-putih/internal/filestore"
+	pesapi "github.com/kopdes/merah-putih/internal/pesanan/api"
 )
 
 type VerifyInput struct {
@@ -29,24 +29,12 @@ type VerifyInput struct {
 	MFACode                string `json:"mfa_code,omitempty"`
 }
 
-func (s *Service) proofTargetPath(bayarID uuid.UUID) (string, error) {
-	if s.cfg.ProofStorageDir == "" {
-		return "", response.NewDomainError(http.StatusInternalServerError, "STORAGE_NOT_CONFIGURED", "Direktori penyimpanan bukti belum siap")
-	}
-	name := "bukti_" + bayarID.String() + ".enc"
-	full := filepath.Join(s.cfg.ProofStorageDir, name)
-	if !strings.HasPrefix(full, s.cfg.ProofStorageDir+string(filepath.Separator)) {
-		return "", fmt.Errorf("path bukti keluar dari direktori")
-	}
-	return full, nil
-}
-
 func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionClaims, bayarIDStr string, rawBytes []byte, catatan, ip string) (*db.AttachPembayaranBuktiRow, error) {
 	idPG, err := response.ParsePGUUID(bayarIDStr)
 	if err != nil {
 		return nil, err
 	}
-	ext, buktiHash, err := validateProofImage(rawBytes, s.cfg.UploadMaxBytes)
+	meta, err := filestore.ValidateImage(rawBytes, s.cfg.UploadMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -57,29 +45,21 @@ func (s *Service) AttachBukti(ctx context.Context, claims *middleware.SessionCla
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	cur, wrappedDEK, keyID, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, buktiHash, rawBytes)
+	cur, wrappedDEK, keyID, err := s.lockAndStoreBuktiFile(ctx, qtx, claims, idPG, meta.SHA256Hex, rawBytes)
 	if err != nil {
 		return nil, err
 	}
-	buktiURL := "/api/v1/pembayaran?bukti_id=" + response.FromPGUUID(cur.ID).String() + "&ext=" + ext
+	buktiURL := "/api/v1/pembayaran?bukti_id=" + response.FromPGUUID(cur.ID).String() + "&ext=" + meta.Ext
 	updated, err := qtx.AttachPembayaranBukti(ctx, db.AttachPembayaranBuktiParams{
-		BuktiUrl:        buktiURL,
-		BuktiHash:       response.ToPGText(buktiHash),
-		BuktiKeyID:      keyID,
-		BuktiDekWrapped: wrappedDEK,
-		CatatanPembayar: strings.TrimSpace(catatan),
-		ID:              cur.ID,
-		PembayarUserID:  cur.PembayarUserID,
+		BuktiUrl: buktiURL, BuktiHash: response.ToPGText(meta.SHA256Hex),
+		BuktiKeyID: keyID, BuktiDekWrapped: wrappedDEK,
+		CatatanPembayar: strings.TrimSpace(catatan), ID: cur.ID, PembayarUserID: cur.PembayarUserID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("perbarui bukti pembayaran: %w", err)
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "pembayaran.upload_bukti", Entitas: "pembayaran",
-		EntitasID: response.FromPGUUID(cur.ID).String(),
-		Ringkasan: "Unggah bukti pembayaran " + cur.NomorPembayaran, IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, claims, "pembayaran.upload_bukti", "pembayaran",
+		response.FromPGUUID(cur.ID).String(), "Unggah bukti pembayaran "+cur.NomorPembayaran, ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -108,72 +88,36 @@ func (s *Service) lockAndStoreBuktiFile(ctx context.Context, qtx *db.Queries, cl
 }
 
 func (s *Service) saveEncryptedProofEnvelope(bayarUUID uuid.UUID, rawBytes []byte) ([]byte, string, error) {
-	target, err := s.proofTargetPath(bayarUUID)
+	store, err := s.activeFileStore()
 	if err != nil {
 		return nil, "", err
 	}
-	if s.cfg.KeyProvider == nil {
-		return nil, "", fmt.Errorf("key provider wajib tersedia untuk enkripsi bukti bayar")
-	}
-	aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
-	cipherBytes, wrappedDEK, keyID, err := security.EncryptEnvelopeFile(s.cfg.KeyProvider, rawBytes, aad)
+	objKey := "bukti_" + bayarUUID.String() + ".enc"
+	saved, err := store.SaveEncrypted(context.Background(), filestore.NamespaceBukti, objKey, rawBytes, formatBuktiAAD("pembayaran", bayarUUID.String()))
 	if err != nil {
-		return nil, "", fmt.Errorf("enkripsi amplop bukti: %w", err)
+		return nil, "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return nil, "", fmt.Errorf("buat direktori bukti: %w", err)
-	}
-	// #nosec G304,G703 -- target dibangun dari UUID tervalidasi dan prefix direktori ProofStorageDir
-	if err := os.WriteFile(target, cipherBytes, 0o600); err != nil {
-		return nil, "", fmt.Errorf("simpan berkas bukti: %w", err)
-	}
-	return wrappedDEK, keyID, nil
-}
-
-func (s *Service) readRawProofBytes(bayarUUID uuid.UUID) ([]byte, error) {
-	target, err := s.proofTargetPath(bayarUUID)
-	if err != nil {
-		return nil, err
-	}
-	// #nosec G304,G703 -- target diverifikasi proofTargetPath dari UUID
-	if raw, rErr := os.ReadFile(target); rErr == nil {
-		return raw, nil
-	}
-	if strings.TrimSpace(s.cfg.LegacyKYCStorageDir) != "" {
-		legacyTarget := filepath.Join(filepath.Clean(s.cfg.LegacyKYCStorageDir), "bukti_"+bayarUUID.String()+".enc")
-		// #nosec G304,G703 -- membaca fallback lokasi lama berdasar UUID tervalidasi sebelum migrasi
-		if raw, lErr := os.ReadFile(legacyTarget); lErr == nil {
-			return raw, nil
-		}
-	}
-	return nil, response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
+	return saved.DEKWrapped, saved.KeyID, nil
 }
 
 func (s *Service) readDecryptedProofEnvelope(bayarUUID uuid.UUID, wrappedDEK []byte) ([]byte, string, error) {
-	raw, err := s.readRawProofBytes(bayarUUID)
+	objKey := "bukti_" + bayarUUID.String() + ".enc"
+	aad := formatBuktiAAD("pembayaran", bayarUUID.String())
+	if len(wrappedDEK) == 0 {
+		return readLegacyDecrypted(s, objKey, aad)
+	}
+	store, err := s.activeFileStore()
 	if err != nil {
 		return nil, "", err
 	}
-	aad := security.FormatAAD("pembayaran", "bukti", bayarUUID.String())
-	if len(wrappedDEK) > 0 {
-		plain, decErr := security.DecryptEnvelopeFile(s.cfg.KeyProvider, raw, wrappedDEK, aad)
-		if decErr != nil {
-			return nil, "", fmt.Errorf("dekripsi amplop bukti: %w", decErr)
+	plain, err := store.LoadDecrypted(context.Background(), filestore.NamespaceBukti, objKey, wrappedDEK, aad)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti tidak ditemukan di disk")
 		}
-		return plain, http.DetectContentType(plain), nil
+		return nil, "", fmt.Errorf("dekripsi amplop bukti: %w", err)
 	}
-	legacyKP := s.cfg.LegacyKeyProvider
-	if legacyKP == nil {
-		legacyKP = s.cfg.KeyProvider
-	}
-	if legacyKP != nil {
-		plain, decErr := legacyKP.DecryptWithAAD(raw, aad)
-		if decErr != nil {
-			return nil, "", fmt.Errorf("dekripsi berkas bukti legacy: %w", decErr)
-		}
-		return plain, http.DetectContentType(plain), nil
-	}
-	return raw, http.DetectContentType(raw), nil
+	return plain, http.DetectContentType(plain), nil
 }
 
 func validateBuktiAttachEligibility(claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow) error {
@@ -210,7 +154,7 @@ func (s *Service) ReadBukti(ctx context.Context, claims *middleware.SessionClaim
 	return s.readDecryptedProofEnvelope(response.FromPGUUID(row.ID), row.BuktiDekWrapped)
 }
 
-// PurgeExpiredBukti menghapus berkas bukti pembayaran non-lunas yang melewati masa retensi (PERLU VERIFIKASI HUKUM).
+// PurgeExpiredBukti menghapus berkas bukti pembayaran non-lunas melewati masa retensi (PERLU VERIFIKASI HUKUM).
 func (s *Service) PurgeExpiredBukti(ctx context.Context, retentionDays int) (int, error) {
 	if retentionDays <= 0 {
 		retentionDays = s.cfg.BuktiRetentionDays
@@ -222,24 +166,19 @@ func (s *Service) PurgeExpiredBukti(ctx context.Context, retentionDays int) (int
 	if err != nil {
 		return 0, fmt.Errorf("ambil bukti kedaluwarsa: %w", err)
 	}
+	store, _ := s.activeFileStore()
 	purged := 0
 	for _, r := range rows {
-		bid := response.FromPGUUID(r.ID)
-		if target, pErr := s.proofTargetPath(bid); pErr == nil {
-			_ = os.Remove(target)
+		if store != nil {
+			_ = store.Delete(ctx, filestore.NamespaceBukti, "bukti_"+response.FromPGUUID(r.ID).String()+".enc")
 		}
 		if err := s.q.ClearPembayaranBukti(ctx, r.ID); err == nil {
 			purged++
 		}
 	}
 	if purged > 0 {
-		_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-			ActorPeran: "system",
-			Aksi:       "pembayaran.bukti_purge",
-			Entitas:    "pembayaran",
-			Ringkasan:  fmt.Sprintf("Pembersihan %d berkas bukti non-lunas > %d hari", purged, retentionDays),
-			IpAddress:  "127.0.0.1",
-		})
+		s.logAuditTx(ctx, nil, nil, "pembayaran.bukti_purge", "pembayaran", "",
+			fmt.Sprintf("Pembersihan %d berkas bukti non-lunas > %d hari", purged, retentionDays), "127.0.0.1")
 	}
 	return purged, nil
 }
@@ -267,14 +206,14 @@ func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.Session
 	if err != nil {
 		return nil, err
 	}
-	usedBG, err := s.authorizeDualControlOrBreakglassTx(ctx, qtx, claims, response.FromPGUUID(cur.DibuatOleh), in.Breakglass, in.MFACode, in.Alasan)
+	usedBG, err := s.authorizeDualControlOrBreakglassTx(ctx, tx, claims, response.FromPGUUID(cur.DibuatOleh), in.Breakglass, in.MFACode, in.Alasan)
 	if err != nil {
 		return nil, err
 	}
 	if cur.Status != "menunggu_verifikasi" && cur.Status != "perlu_tindak_lanjut" {
 		return nil, response.NewDomainError(http.StatusConflict, "INVALID_PAYMENT_STATUS", "Pembayaran tidak dalam status siap verifikasi")
 	}
-	updated, err := applyVerificationDecisionTx(ctx, tx, qtx, claims, cur, keputusan, in, usedBG, ip)
+	updated, err := s.applyVerificationDecisionTx(ctx, tx, qtx, claims, cur, keputusan, in, usedBG, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -284,12 +223,7 @@ func (s *Service) VerifyDecision(ctx context.Context, claims *middleware.Session
 	return updated, nil
 }
 
-func evaluateApprovalTx(
-	ctx context.Context,
-	qtx *db.Queries,
-	cur db.GetPembayaranForUpdateRow,
-	in VerifyInput,
-) (finalStatus, alasan string, kwtPG pgtype.Text, err error) {
+func evaluateApprovalTx(ctx context.Context, qtx *db.Queries, cur db.GetPembayaranForUpdateRow, in VerifyInput) (finalStatus, alasan string, kwtPG pgtype.Text, err error) {
 	alasan = strings.TrimSpace(in.Alasan)
 	if in.NominalDibayar <= 0 {
 		return "", "", kwtPG, response.NewDomainError(http.StatusBadRequest, "INVALID_AMOUNT", "nominal_dibayar harus > 0")
@@ -306,28 +240,12 @@ func evaluateApprovalTx(
 	if err != nil {
 		return "", "", kwtPG, err
 	}
-	kwtPG = response.ToPGText(fmt.Sprintf("KWT-%s-%06d", time.Now().UTC().Format("2006"), seq))
-	return "lunas", alasan, kwtPG, nil
+	return "lunas", alasan, response.ToPGText(fmt.Sprintf("KWT-%s-%06d", time.Now().UTC().Format("2006"), seq)), nil
 }
 
-type stockRunoutAfterHoldError struct {
-	ProductName string
-}
-
-func (e *stockRunoutAfterHoldError) Error() string {
-	return "stok tidak mencukupi setelah masa reservasi berakhir: " + e.ProductName
-}
-
-func applyVerificationDecisionTx(
-	ctx context.Context,
-	tx pgx.Tx,
-	qtx *db.Queries,
-	claims *middleware.SessionClaims,
-	cur db.GetPembayaranForUpdateRow,
-	keputusan string,
-	in VerifyInput,
-	usedBG bool,
-	ip string,
+func (s *Service) applyVerificationDecisionTx(
+	ctx context.Context, tx pgx.Tx, qtx *db.Queries, claims *middleware.SessionClaims,
+	cur db.GetPembayaranForUpdateRow, keputusan string, in VerifyInput, usedBG bool, ip string,
 ) (*db.VerifyPembayaranDecisionRow, error) {
 	alasan := strings.TrimSpace(in.Alasan)
 	finalStatus := "ditolak"
@@ -348,12 +266,11 @@ func applyVerificationDecisionTx(
 		if spErr != nil {
 			return nil, spErr
 		}
-		spErr = markAllocatedTargetsPaidTx(ctx, qtx.WithTx(sp), cur.ID)
-		var runoutErr *stockRunoutAfterHoldError
+		spErr = s.markAllocatedTargetsPaidTx(ctx, sp, qtx.WithTx(sp), cur.ID)
+		var runoutErr *pesapi.StockRunoutError
 		if errors.As(spErr, &runoutErr) {
 			_ = sp.Rollback(ctx)
-			finalStatus = "perlu_tindak_lanjut"
-			kwtPG = pgtype.Text{}
+			finalStatus, kwtPG = "perlu_tindak_lanjut", pgtype.Text{}
 			alasan = fmt.Sprintf("Stok tidak mencukupi setelah masa reservasi berakhir (%s): perlu pengembalian dana atau kesepakatan ulang", runoutErr.ProductName)
 		} else if spErr != nil {
 			_ = sp.Rollback(ctx)
@@ -362,10 +279,10 @@ func applyVerificationDecisionTx(
 			return nil, cErr
 		}
 	}
-	return persistVerificationOutcomeTx(ctx, qtx, claims, cur, finalStatus, in.NominalDibayar, kwtPG, alasan, usedBG, ip)
+	return s.persistVerificationOutcomeTx(ctx, tx, qtx, claims, cur, finalStatus, in.NominalDibayar, kwtPG, alasan, usedBG, ip)
 }
 
-func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow, finalStatus string, nominalDibayar int64, kwtPG pgtype.Text, alasan string, usedBG bool, ip string) (*db.VerifyPembayaranDecisionRow, error) {
+func (s *Service) persistVerificationOutcomeTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, claims *middleware.SessionClaims, cur db.GetPembayaranForUpdateRow, finalStatus string, nominalDibayar int64, kwtPG pgtype.Text, alasan string, usedBG bool, ip string) (*db.VerifyPembayaranDecisionRow, error) {
 	updated, err := qtx.VerifyPembayaranDecision(ctx, db.VerifyPembayaranDecisionParams{
 		Status: finalStatus, NominalDibayar: nominalDibayar, NomorKwitansi: kwtPG,
 		AlasanVerifikasi: alasan, DiverifikasiOleh: response.ToPGUUID(claims.UserID), ID: cur.ID,
@@ -377,74 +294,32 @@ func persistVerificationOutcomeTx(ctx context.Context, qtx *db.Queries, claims *
 	if usedBG {
 		aksiAudit = "pembayaran.verify_breakglass"
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: aksiAudit, Entitas: "pembayaran",
-		EntitasID: response.FromPGUUID(cur.ID).String(),
-		Ringkasan: fmt.Sprintf("%s -> %s (dibayar %d, breakglass=%t)", cur.NomorPembayaran, finalStatus, nominalDibayar, usedBG),
-		IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, claims, aksiAudit, "pembayaran", response.FromPGUUID(cur.ID).String(),
+		fmt.Sprintf("%s -> %s (dibayar %d, breakglass=%t)", cur.NomorPembayaran, finalStatus, nominalDibayar, usedBG), ip)
 	return &updated, nil
 }
 
-func markAllocatedTargetsPaidTx(ctx context.Context, qtx *db.Queries, bayarID pgtype.UUID) error {
+func (s *Service) markAllocatedTargetsPaidTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, bayarID pgtype.UUID) error {
 	allocs, err := qtx.ListAlokasiByPembayaran(ctx, bayarID)
 	if err != nil {
 		return err
 	}
 	for _, al := range allocs {
 		if al.TagihanIuranID.Valid {
-			if err := qtx.UpdateTagihanStatus(ctx, db.UpdateTagihanStatusParams{Status: "lunas", ID: al.TagihanIuranID}); err != nil {
+			if s.cfg.Bills == nil {
+				return response.NewDomainError(http.StatusInternalServerError, "BILL_PAYER_UNAVAILABLE", "Layanan iuran belum terhubung")
+			}
+			if err := s.cfg.Bills.UpdateBillStatusTx(ctx, tx, response.FromPGUUID(al.TagihanIuranID), "lunas"); err != nil {
 				return err
 			}
 		}
 		if al.PesananID.Valid {
-			if err := markPesananPaidWithStockTx(ctx, qtx, al.PesananID); err != nil {
+			if s.cfg.Orders == nil {
+				return response.NewDomainError(http.StatusInternalServerError, "ORDER_PAYER_UNAVAILABLE", "Layanan pesanan belum terhubung")
+			}
+			if err := s.cfg.Orders.ConfirmPaidOrderTx(ctx, tx, response.FromPGUUID(al.PesananID)); err != nil {
 				return err
 			}
-		}
-	}
-	return nil
-}
-
-func markPesananPaidWithStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID) error {
-	ord, err := qtx.GetPesananForUpdate(ctx, pesananID)
-	if err != nil {
-		return err
-	}
-	if ord.Status == "batal" {
-		return response.NewDomainError(http.StatusConflict, "PESANAN_ALREADY_CANCELLED", "Pesanan sudah dibatalkan")
-	}
-	if ord.StokStatus != "deducted" && (ord.Status == "baru" || ord.Status == "menunggu_pembayaran" || ord.Status == "menunggu_verifikasi") {
-		if err := deductPesananItemsWithHoldTx(ctx, qtx, pesananID, ord.StokStatus); err != nil {
-			return err
-		}
-		if err := qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "deducted"}); err != nil {
-			return err
-		}
-	}
-	if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{Status: "dibayar", ID: pesananID}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func deductPesananItemsWithHoldTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID, stokStatus string) error {
-	items, err := qtx.ListPesananItems(ctx, pesananID)
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		if stokStatus == "reserved" {
-			_, err = qtx.ConfirmReservedProdukStock(ctx, db.ConfirmReservedProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
-		} else {
-			_, err = qtx.DecrementAvailableProdukStock(ctx, db.DecrementAvailableProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
-		}
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return &stockRunoutAfterHoldError{ProductName: it.NamaProduk}
-			}
-			return err
 		}
 	}
 	return nil
@@ -462,27 +337,16 @@ func (s *Service) CreateRekening(ctx context.Context, claims *middleware.Session
 		return nil, response.NewDomainError(http.StatusBadRequest, "INVALID_REKENING", "nama_merchant, nmid, dan jenis_pemilik (badan_hukum|perorangan) wajib valid")
 	}
 	row, err := s.q.CreateRekeningQRIS(ctx, db.CreateRekeningQRISParams{
-		NamaMerchant:  strings.TrimSpace(in.NamaMerchant),
-		Nmid:          strings.TrimSpace(in.NMID),
-		NamaBank:      strings.TrimSpace(in.NamaBank),
-		NomorRekening: strings.TrimSpace(in.NomorRekening),
-		NamaPemilik:   strings.TrimSpace(in.NamaPemilik),
-		JenisPemilik:  jenis,
-		QrisImageUrl:  strings.TrimSpace(in.QRISImageURL),
-		QrisPayload:   strings.TrimSpace(in.QRISPayload),
+		NamaMerchant: strings.TrimSpace(in.NamaMerchant), Nmid: strings.TrimSpace(in.NMID),
+		NamaBank: strings.TrimSpace(in.NamaBank), NomorRekening: strings.TrimSpace(in.NomorRekening),
+		NamaPemilik: strings.TrimSpace(in.NamaPemilik), JenisPemilik: jenis,
+		QrisImageUrl: strings.TrimSpace(in.QRISImageURL), QrisPayload: strings.TrimSpace(in.QRISPayload),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("simpan rekening QRIS: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "pembayaran.rekening_create",
-		Entitas:     "rekening_qris",
-		EntitasID:   response.FromPGUUID(row.ID).String(),
-		Ringkasan:   "Tambah rekening QRIS " + row.NamaMerchant,
-		IpAddress:   ip,
-	})
+	s.logAuditTx(ctx, nil, claims, "pembayaran.rekening_create", "rekening_qris",
+		response.FromPGUUID(row.ID).String(), "Tambah rekening QRIS "+row.NamaMerchant, ip)
 	return &row, nil
 }
 
@@ -502,10 +366,7 @@ func (s *Service) List(ctx context.Context, claims *middleware.SessionClaims, us
 		userFilter = uid
 	}
 	return s.q.ListPembayaran(ctx, db.ListPembayaranParams{
-		UserFilter:   userFilter,
-		StatusFilter: strings.TrimSpace(statusFilter),
-		Lim:          lim,
-		Off:          off,
+		UserFilter: userFilter, StatusFilter: strings.TrimSpace(statusFilter), Lim: lim, Off: off,
 	})
 }
 

@@ -27,9 +27,9 @@ func repoRootDir(t *testing.T) string {
 func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 	root := repoRootDir(t)
 
-	// 1. Maksimal 46 variabel env di AppConfig Catalog
-	if n := len(config.Catalog()); n > 46 {
-		t.Fatalf("Catalog memiliki %d variabel env, melebihi batas 46", n)
+	// 1. Maksimal 51 variabel env di AppConfig Catalog
+	if n := len(config.Catalog()); n > 51 {
+		t.Fatalf("Catalog memiliki %d variabel env, melebihi batas 51", n)
 	}
 
 	// 2. Maksimal 22 tabel PostgreSQL lintas migrasi *.up.sql

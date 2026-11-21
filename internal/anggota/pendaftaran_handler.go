@@ -1,4 +1,4 @@
-package pendaftaran
+package anggota
 
 import (
 	"io"
@@ -8,14 +8,6 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 )
-
-type Handler struct {
-	svc *Service
-}
-
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
-}
 
 func (h *Handler) HandlePublicRegister(w http.ResponseWriter, r *http.Request) {
 	var in RegisterInput
@@ -36,8 +28,8 @@ func (h *Handler) HandlePublicRegister(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleUploadDokumen(w http.ResponseWriter, r *http.Request) {
 	var maxBytes int64 = 5 << 20
-	if h.svc != nil && h.svc.store != nil && h.svc.store.maxBytes > 0 {
-		maxBytes = h.svc.store.maxBytes
+	if h.svc != nil && h.svc.cfg.MaxKYCUploadBytes > 0 {
+		maxBytes = h.svc.cfg.MaxKYCUploadBytes
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(64<<10))
 	// #nosec G120 -- ukuran body sudah dibatasi ketat dengan http.MaxBytesReader pada baris sebelumnya

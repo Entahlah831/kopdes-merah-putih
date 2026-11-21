@@ -17,9 +17,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kopdes/merah-putih/internal/anggota"
 	"github.com/kopdes/merah-putih/internal/config"
 	"github.com/kopdes/merah-putih/internal/iuran"
 	"github.com/kopdes/merah-putih/internal/pembayaran"
+	"github.com/kopdes/merah-putih/internal/pengaturan"
 )
 
 type chaosTCPProxy struct {
@@ -336,7 +338,9 @@ func TestChaos_APIRestartActiveSessionSurvives_AndWorkerCrashIdempotent(t *testi
 	}
 
 	// Worker crash / cancel mid-billing -> re-run idempoten tanpa duplikat tagihan
-	iurSvc := iuran.NewService(e.pool, nil)
+	pengSvc := pengaturan.NewService(e.pool, nil)
+	angSvc := anggota.NewService(e.pool, anggota.Config{})
+	iurSvc := iuran.NewService(e.pool, nil, angSvc, pengSvc)
 	res1, err := iurSvc.GenerateMonthlyBills(context.Background(), 2095, 1)
 	if err != nil {
 		t.Fatalf("generate run 1: %v", err)

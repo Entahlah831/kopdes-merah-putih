@@ -16,14 +16,19 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kopdes/merah-putih/internal/anggota"
+	"github.com/kopdes/merah-putih/internal/api"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/config"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/filestore"
 	"github.com/kopdes/merah-putih/internal/iuran"
+	"github.com/kopdes/merah-putih/internal/katalog"
 	"github.com/kopdes/merah-putih/internal/pembayaran"
-	"github.com/kopdes/merah-putih/internal/pendaftaran"
+	"github.com/kopdes/merah-putih/internal/pengaturan"
 	"github.com/kopdes/merah-putih/internal/pesanan"
 	"github.com/kopdes/merah-putih/internal/security"
+	"github.com/kopdes/merah-putih/internal/uiserve"
 	"github.com/kopdes/merah-putih/internal/worker"
 )
 
@@ -42,33 +47,20 @@ func main() {
 	} else if v := strings.TrimSpace(os.Getenv("ENV_FILE")); v != "" {
 		envFlag = v
 	}
-	if len(args) < 1 || (args[0] != "worker" && len(args) < 2) {
+	if len(args) < 1 || (!isSingleTokenCommand(args[0]) && len(args) < 2) {
 		printUsage()
 		os.Exit(2)
 	}
-
 	cfg, err := config.LoadFromEnvAndFile(envFlag)
 	if err != nil {
 		log.Fatalf("gagal memuat env %s: %v", strings.NewReplacer("\r", "", "\n", "").Replace(envFlag), err) // #nosec G706 -- sanitized
 	}
-
-	if args[0] == "worker" {
-		sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		pool, pErr := openPool(sigCtx, cfg)
-		if pErr != nil {
-			log.Fatalf("koneksi database gagal: %v", pErr)
-		}
-		defer pool.Close()
-		if err := runWorkerCommand(sigCtx, pool, cfg, args[1:]); err != nil {
-			log.Fatalf("worker gagal: %v", err)
-		}
+	if handleDaemonCommands(cfg, args) {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		log.Fatalf("koneksi database gagal: %v", err)
@@ -80,17 +72,65 @@ func main() {
 	}
 }
 
+func isSingleTokenCommand(cmd string) bool {
+	return cmd == "worker" || cmd == "serve" || cmd == "uiserve"
+}
+
+func handleDaemonCommands(cfg config.AppConfig, args []string) bool {
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	switch args[0] {
+	case "serve":
+		if err := api.ServeAppConfig(sigCtx, cfg); err != nil {
+			log.Fatalf("serve gagal: %v", err)
+		}
+		return true
+	case "uiserve":
+		if err := runUIServeCommand(sigCtx, cfg, args[1:]); err != nil {
+			log.Fatalf("uiserve gagal: %v", err)
+		}
+		return true
+	case "worker":
+		pool, err := openPool(sigCtx, cfg)
+		if err != nil {
+			log.Fatalf("koneksi database gagal: %v", err)
+		}
+		defer pool.Close()
+		if err := runWorkerCommand(sigCtx, pool, cfg, args[1:]); err != nil {
+			log.Fatalf("worker gagal: %v", err)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func runUIServeCommand(ctx context.Context, cfg config.AppConfig, args []string) error {
+	fs := flag.NewFlagSet("uiserve", flag.ContinueOnError)
+	uiDir := fs.String("ui-dir", "frontend-tester", "Direktori berkas statis UI non-produksi")
+	bind := fs.String("bind", "127.0.0.1", "Alamat bind HTTP UI")
+	apiURL := fs.String("api-url", "", "Override URL publik API")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pool := uiserve.TryOptionalPool(ctx, cfg)
+	if pool != nil {
+		defer pool.Close()
+	}
+	return uiserve.Serve(ctx, cfg, pool, *uiDir, *bind, *apiURL)
+}
+
 func printUsage() {
-	fmt.Println("Penggunaan: kopdes [--env-file .env] <domain> <aksi> [flag]")
-	fmt.Println("  admin create          --email <e> --nama <n> --hp <hp> --password <pwd>")
-	fmt.Println("  admin reset-mfa       --email <e>")
-	fmt.Println("  admin reset-password  --email <e> (--password <pwd> | --password-stdin)")
-	fmt.Println("  iuran generate        --periode YYYY-MM")
-	fmt.Println("  pdp purge             [--days 30]")
-	fmt.Println("  bukti purge           [--days 365]")
+	fmt.Println("Penggunaan: kopdes [--env-file .env] <perintah> [flag]")
+	fmt.Println("  serve                              Jalankan server HTTP API")
+	fmt.Println("  uiserve                            Jalankan server UI uji/wireframe (non-produksi)")
+	fmt.Println("  worker [--tick 60s] [--once]       Jalankan worker terjadwal + health HTTP")
+	fmt.Println("  admin create|reset-mfa|reset-password")
+	fmt.Println("  iuran generate --periode YYYY-MM")
+	fmt.Println("  pdp purge [--days 30]")
+	fmt.Println("  bukti purge [--days 365]")
 	fmt.Println("  pesanan expire")
 	fmt.Println("  storage migrate-files")
-	fmt.Println("  worker                [--tick 60s] [--once]")
 }
 
 func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) {
@@ -121,9 +161,6 @@ func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) 
 }
 
 func dispatchCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
-	if len(args) >= 1 && args[0] == "worker" {
-		return runWorkerCommand(ctx, pool, cfg, args[1:])
-	}
 	if len(args) < 2 {
 		return fmt.Errorf("argumen perintah tidak lengkap")
 	}
@@ -137,7 +174,7 @@ func dispatchCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConf
 	case "admin reset-password":
 		return runAdminResetPassword(ctx, pool, cfg, rest)
 	case "iuran generate":
-		return runIuranGenerate(ctx, pool, rest)
+		return runIuranGenerate(ctx, pool, cfg, rest)
 	case "pdp purge":
 		return runPDPPurge(ctx, pool, cfg, rest)
 	case "bukti purge":
@@ -183,15 +220,9 @@ func runAdminCreate(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfi
 		hpEnc, _ = kp.EncryptWithAAD([]byte(hpNorm), security.FormatAAD("users", "hp", uid.String()))
 	}
 	row, err := db.New(pool).CreateUser(ctx, db.CreateUserParams{
-		ID:           response.ToPGUUID(uid),
-		EmailEnc:     emEnc,
-		EmailHash:    response.ToPGText(security.HashBlindIndex(em, blindKey)),
-		HpEnc:        hpEnc,
-		HpHash:       response.ToPGText(security.HashBlindIndex(hpNorm, blindKey)),
-		NamaLengkap:  strings.TrimSpace(*nama),
-		PasswordHash: passHash,
-		Peran:        "admin",
-		StatusAktif:  true,
+		ID: response.ToPGUUID(uid), EmailEnc: emEnc, EmailHash: response.ToPGText(security.HashBlindIndex(em, blindKey)),
+		HpEnc: hpEnc, HpHash: response.ToPGText(security.HashBlindIndex(hpNorm, blindKey)),
+		NamaLengkap: strings.TrimSpace(*nama), PasswordHash: passHash, Peran: "admin", StatusAktif: true,
 	})
 	if err != nil {
 		return fmt.Errorf("simpan admin: %w", err)
@@ -200,7 +231,7 @@ func runAdminCreate(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfi
 	return nil
 }
 
-func runIuranGenerate(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+func runIuranGenerate(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
 	fs := flag.NewFlagSet("iuran generate", flag.ContinueOnError)
 	periode := fs.String("periode", time.Now().UTC().Format("2006-01"), "Periode tagihan YYYY-MM")
 	if err := fs.Parse(args); err != nil {
@@ -210,7 +241,9 @@ func runIuranGenerate(ctx context.Context, pool *pgxpool.Pool, args []string) er
 	if err != nil {
 		return err
 	}
-	res, err := iuran.NewService(pool, nil).GenerateMonthlyBills(ctx, th, bl)
+	pengSvc := pengaturan.NewService(pool, cfg.TrustedProxies)
+	angSvc := anggota.NewService(pool, anggota.Config{Audit: pengSvc})
+	res, err := iuran.NewService(pool, cfg.TrustedProxies, angSvc, pengSvc).GenerateMonthlyBills(ctx, th, bl)
 	if err != nil {
 		return err
 	}
@@ -228,12 +261,13 @@ func runPDPPurge(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, 
 	if err != nil {
 		return err
 	}
-	kp := kpSet.DB
-	store, err := pendaftaran.NewKYCFileStore(cfg.StorageKYCDir, kpSet.KYC, 5<<20)
+	store, err := filestore.NewLocalFileStore(map[string]filestore.NamespaceConfig{
+		filestore.NamespaceKYC: {Dir: cfg.StorageKYCDir, KeyProvider: kpSet.KYC, LegacyKeyProvider: kpSet.Master},
+	})
 	if err != nil {
 		return err
 	}
-	svc := pendaftaran.NewService(pool, store, pendaftaran.Config{KeyProvider: kp, RetentionDays: *days})
+	svc := anggota.NewService(pool, anggota.Config{KeyProvider: kpSet.DB, RetentionDays: *days, FileStore: store})
 	deleted, err := svc.PurgeExpiredRejected(ctx, *days)
 	if err != nil {
 		return err
@@ -247,17 +281,26 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 	if err != nil {
 		return err
 	}
-	kp := kpSet.DB
-	pesSvc := pesanan.NewService(pool, kp, pesanan.Config{StockHoldMinutes: cfg.StockHoldMinutes, Timezone: cfg.AppTimezone})
+	pengSvc := pengaturan.NewService(pool, cfg.TrustedProxies)
+	angSvc := anggota.NewService(pool, anggota.Config{Audit: pengSvc})
+	katSvc := katalog.NewService(pool, cfg.TrustedProxies, angSvc, pengSvc)
+	pesSvc := pesanan.NewService(pool, kpSet.DB, pesanan.Config{
+		StockHoldMinutes: cfg.StockHoldMinutes, Timezone: cfg.AppTimezone,
+		Settings: pengSvc, Audit: pengSvc, Members: angSvc, Stock: katSvc,
+	})
+	paySvc, err := pembayaran.NewService(pool, pembayaran.Config{
+		PaymentExpiry: cfg.PaymentExpiryDuration, Settings: pengSvc, Audit: pengSvc,
+		Members: angSvc, Orders: pesSvc, Timezone: cfg.AppTimezone,
+	})
+	if err != nil {
+		return err
+	}
+	pesSvc.SetActivePaymentChecker(paySvc)
 	ordCount, err := pesSvc.ExpireUnpaidOrders(ctx)
 	if err != nil {
 		return err
 	}
 	holdCount, err := pesSvc.ReleaseExpiredStockHolds(ctx)
-	if err != nil {
-		return err
-	}
-	paySvc, err := pembayaran.NewService(pool, pembayaran.Config{PaymentExpiry: cfg.PaymentExpiryDuration})
 	if err != nil {
 		return err
 	}
@@ -271,7 +314,11 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 
 func runWorkerCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
-	tick := fs.Duration("tick", 60*time.Second, "Interval penjadwalan tugas worker")
+	defaultTick := cfg.WorkerTickInterval
+	if defaultTick <= 0 {
+		defaultTick = 60 * time.Second
+	}
+	tick := fs.Duration("tick", defaultTick, "Interval penjadwalan tugas worker")
 	once := fs.Bool("once", false, "Jalankan satu kali lalu keluar")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -282,6 +329,13 @@ func runWorkerCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 	}
 	if *once {
 		return w.RunOnce(ctx)
+	}
+	if cfg.WorkerPort > 0 {
+		go func() {
+			if hErr := w.StartHealthServer(ctx, ""); hErr != nil {
+				log.Printf("[worker] server health berhenti: %v", hErr)
+			}
+		}()
 	}
 	log.Printf("[worker] berjalan dengan interval tick=%s", *tick)
 	w.Run(ctx, *tick)

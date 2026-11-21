@@ -96,4 +96,16 @@ func TestEnvCheck_StrictAndPortConflictDetection(t *testing.T) {
 	} else if !strings.Contains(dupOut.String(), "18080") {
 		t.Fatalf("Expected conflict message to mention 18080, got:\n%s", dupOut.String())
 	}
+
+	envDupWorker := filepath.Join(tmp, "dup_worker.env")
+	dupWorkerContent := strings.Replace(string(altBytes), "WORKER_PORT=18082", "WORKER_PORT=18080", 1)
+	if err := os.WriteFile(envDupWorker, []byte(dupWorkerContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dupWrkOut bytes.Buffer
+	if dupWrkCode := runCLI([]string{"--ports", "--no-listen", "--env-file", envDupWorker}, &dupWrkOut, &dupWrkOut); dupWrkCode == 0 {
+		t.Fatalf("Expected --ports to fail when API_HOST_PORT and WORKER_PORT collide on 18080")
+	} else if !strings.Contains(dupWrkOut.String(), "WORKER_PORT") {
+		t.Fatalf("Expected conflict message to mention WORKER_PORT, got:\n%s", dupWrkOut.String())
+	}
 }

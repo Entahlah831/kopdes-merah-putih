@@ -31,8 +31,8 @@ func repoRoot(t *testing.T) string {
 func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	root := repoRoot(t)
 	specs := config.Catalog()
-	if len(specs) != 46 {
-		t.Fatalf("Jumlah variabel env harus tepat 46, ditemukan %d", len(specs))
+	if len(specs) != 51 {
+		t.Fatalf("Jumlah variabel env harus tepat 51, ditemukan %d", len(specs))
 	}
 	specMap := make(map[string]config.EnvVarSpec, len(specs))
 	for _, s := range specs {
@@ -73,7 +73,7 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 		t.Errorf("Set A dan Set B DB_NAME wajib berakhiran _test: A=%q B=%q", setA["DB_NAME"], setB["DB_NAME"])
 	}
 	mustDiffer := []string{
-		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "DB_PORT", "DB_HOST_PORT",
+		"DB_NAME", "API_PORT", "API_HOST_PORT", "UI_PORT", "WORKER_PORT", "DB_PORT", "DB_HOST_PORT",
 		"DB_PASSWORD", "POSTGRES_PASSWORD", "AES_MASTER_KEY", "BLIND_INDEX_SECRET",
 		"BACKUP_AGE_RECIPIENT", "STORAGE_BUKTI_DIR", "STOCK_HOLD_MINUTES",
 		"ALLOW_BEARER_AUTH", "BUKTI_RETENTION_DAYS", "SESSION_IDLE_TTL", "QRIS_UNIQUE_DIGITS", "MFA_REQUIRED_ROLES",
@@ -162,7 +162,7 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"frontend-tester/index.html",
 		"frontend-tester/app.js",
 	}
-	portRe := regexp.MustCompile(`\b(?:8080|8081|18080|18081|5432|5433|9090|9100)\b`)
+	portRe := regexp.MustCompile(`\b(?:8080|8081|8082|18080|18081|18082|5432|5433|9090|9100)\b`)
 	for _, rel := range hardcodedTargets {
 		p := filepath.Join(root, rel)
 		data, err := os.ReadFile(p)

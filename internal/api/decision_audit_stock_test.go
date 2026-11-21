@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/kopdes/merah-putih/internal/katalog"
 	"github.com/kopdes/merah-putih/internal/pesanan"
 	"github.com/kopdes/merah-putih/internal/testseed"
 )
@@ -144,11 +145,13 @@ func TestDecisionAudit_D1_ApprovalAfterExpiredHold_GracefulTindakLanjut(t *testi
 	ord1ID := o1Body["data"].(map[string]interface{})["id"].(string)
 	pay1ID, nom1 := createAndUploadQRISOrderPayment(t, e, mem1Tok, ord1ID)
 
-	// Masa tahan order 1 kedaluwarsa lalu worker melepaskan hold
+	// Bersihkan sisa tahanan kedaluwarsa dari test sebelumnya, lalu tuakan order 1 agar worker melepaskannya
+	katSvc := katalog.NewService(e.pool, nil, nil, nil)
+	pesSvc := pesanan.NewService(e.pool, nil, pesanan.Config{Stock: katSvc})
+	_, _ = pesSvc.ReleaseExpiredStockHolds(context.Background())
 	if _, err := e.pool.Exec(context.Background(), "UPDATE pesanan SET stok_hold_expires_at = NOW() - INTERVAL '5 minutes' WHERE id = $1", ord1ID); err != nil {
 		t.Fatalf("expire hold query: %v", err)
 	}
-	pesSvc := pesanan.NewService(e.pool, nil, pesanan.Config{})
 	rel, err := pesSvc.ReleaseExpiredStockHolds(context.Background())
 	if err != nil || rel != 1 {
 		t.Fatalf("expected ReleaseExpiredStockHolds=1, got rel=%d err=%v", rel, err)

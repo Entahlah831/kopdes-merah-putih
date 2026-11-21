@@ -137,8 +137,8 @@ func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.
 
 func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 	specs := config.Catalog()
-	if len(specs) != 46 {
-		t.Fatalf("Expected exact 46 lean env vars, got %d", len(specs))
+	if len(specs) != 51 {
+		t.Fatalf("Expected exact 51 lean env vars, got %d", len(specs))
 	}
 	md := config.RenderEnvReferenceMarkdown()
 	if !strings.Contains(md, "| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | CONTOH NILAI SINTETIS |") {

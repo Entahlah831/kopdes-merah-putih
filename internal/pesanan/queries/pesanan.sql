@@ -15,47 +15,6 @@ WHERE promo_id = sqlc.arg(promo_id)
   )
   AND status <> 'batal';
 
--- name: ReserveProdukStock :one
-UPDATE produk
-SET stok_tertahan = stok_tertahan + sqlc.arg(qty)::int
-WHERE id = sqlc.arg(id)
-  AND status = 'aktif'
-  AND (stok - stok_tertahan) >= sqlc.arg(qty)::int
-RETURNING id, stok, stok_tertahan;
-
--- name: ReleaseProdukStockHold :exec
-UPDATE produk
-SET stok_tertahan = GREATEST(0, stok_tertahan - sqlc.arg(qty)::int)
-WHERE id = sqlc.arg(id);
-
--- name: ConfirmReservedProdukStock :one
-UPDATE produk
-SET stok = stok - sqlc.arg(qty)::int,
-    stok_tertahan = stok_tertahan - sqlc.arg(qty)::int
-WHERE id = sqlc.arg(id)
-  AND stok >= sqlc.arg(qty)::int
-  AND stok_tertahan >= sqlc.arg(qty)::int
-RETURNING id, stok, stok_tertahan;
-
--- name: DecrementAvailableProdukStock :one
-UPDATE produk
-SET stok = stok - sqlc.arg(qty)::int
-WHERE id = sqlc.arg(id)
-  AND status = 'aktif'
-  AND (stok - stok_tertahan) >= sqlc.arg(qty)::int
-RETURNING id, stok, stok_tertahan;
-
--- name: DecrementProdukStock :one
-UPDATE produk
-SET stok = stok - sqlc.arg(qty)::int
-WHERE id = sqlc.arg(id) AND status = 'aktif' AND stok >= sqlc.arg(qty)::int
-RETURNING id, stok;
-
--- name: RestoreProdukStock :exec
-UPDATE produk
-SET stok = stok + sqlc.arg(qty)::int
-WHERE id = sqlc.arg(id);
-
 -- name: CreatePesanan :one
 INSERT INTO pesanan (
     id, nomor_pesanan, user_id, anggota_id, promo_id, idempotency_key,
@@ -137,19 +96,12 @@ WHERE metode_pengiriman = 'diantar'
 ORDER BY created_at ASC;
 
 -- name: ListExpiredUnpaidPesanan :many
-SELECT p.id, p.promo_id, p.stok_status
-FROM pesanan p
-WHERE p.status IN ('baru', 'menunggu_pembayaran')
-  AND p.expires_at IS NOT NULL
-  AND p.expires_at < NOW()
-  AND NOT EXISTS (
-      SELECT 1
-      FROM pembayaran_alokasi pa
-      JOIN pembayaran bay ON bay.id = pa.pembayaran_id
-      WHERE pa.pesanan_id = p.id
-        AND bay.status IN ('menunggu_verifikasi', 'lunas')
-  )
-FOR UPDATE OF p;
+SELECT id, promo_id, stok_status
+FROM pesanan
+WHERE status IN ('baru', 'menunggu_pembayaran')
+  AND expires_at IS NOT NULL
+  AND expires_at < NOW()
+FOR UPDATE;
 
 -- name: ListExpiredStockHoldPesanan :many
 SELECT id, status
@@ -158,3 +110,17 @@ WHERE stok_status = 'reserved'
   AND stok_hold_expires_at IS NOT NULL
   AND stok_hold_expires_at < NOW()
 FOR UPDATE;
+
+-- name: LaporanPenjualanHarian :many
+SELECT (created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS tanggal,
+       COUNT(*)::bigint AS jumlah_pesanan,
+       COALESCE(SUM(subtotal), 0)::bigint AS total_subtotal,
+       COALESCE(SUM(diskon), 0)::bigint AS total_diskon,
+       COALESCE(SUM(ongkir), 0)::bigint AS total_ongkir,
+       COALESCE(SUM(total_bayar), 0)::bigint AS total_omzet
+FROM pesanan
+WHERE status IN ('dibayar', 'diproses', 'diantar', 'siap_diambil', 'selesai')
+  AND (sqlc.narg(dari)::date IS NULL OR (created_at AT TIME ZONE sqlc.arg(tz)::text)::date >= sqlc.narg(dari)::date)
+  AND (sqlc.narg(sampai)::date IS NULL OR (created_at AT TIME ZONE sqlc.arg(tz)::text)::date <= sqlc.narg(sampai)::date)
+GROUP BY (created_at AT TIME ZONE sqlc.arg(tz)::text)::date
+ORDER BY tanggal DESC;

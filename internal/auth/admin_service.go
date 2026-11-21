@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	angapi "github.com/kopdes/merah-putih/internal/anggota/api"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
@@ -20,16 +23,6 @@ type PasswordInput struct {
 	Code            string `json:"code"`
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
-}
-
-type PengaturanInput struct {
-	NamaKoperasi         string  `json:"nama_koperasi"`
-	AlamatKoperasi       string  `json:"alamat_koperasi"`
-	TeleponKoperasi      string  `json:"telepon_koperasi"`
-	QRISUniqueDigits     int32   `json:"qris_unique_digits"`
-	OngkirTetap          int64   `json:"ongkir_tetap"`
-	KebijakanTeks        string  `json:"kebijakan_teks"`
-	ActiveRekeningQRISID *string `json:"active_rekening_qris_id"`
 }
 
 type CreateUserInput struct {
@@ -92,15 +85,8 @@ func (s *Service) consumeActivationPassword(ctx context.Context, rawCode, newPas
 	if err := qt.RevokeAllUserSessions(ctx, codeRow.UserID); err != nil {
 		return fmt.Errorf("cabut sesi lama: %w", err)
 	}
-	_ = qt.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: codeRow.UserID,
-		ActorPeran:  "system",
-		Aksi:        "password_activate_or_reset",
-		Entitas:     "users",
-		EntitasID:   uuid.UUID(codeRow.UserID.Bytes).String(),
-		Ringkasan:   "Aktivasi/reset password via kode satu kali pakai",
-		IpAddress:   ip,
-	})
+	s.logAuditTx(ctx, tx, pgUUIDPtr(codeRow.UserID), "system", "password_activate_or_reset", "users",
+		response.FromPGUUID(codeRow.UserID).String(), "Aktivasi/reset password via kode satu kali pakai", ip)
 	return tx.Commit(ctx)
 }
 
@@ -120,62 +106,8 @@ func (s *Service) changeAuthenticatedPassword(ctx context.Context, claims *middl
 	if err := q.UpdateUserSandiHash(ctx, db.UpdateUserSandiHashParams{ID: u.ID, PasswordHash: hash}); err != nil {
 		return fmt.Errorf("perbarui password: %w", err)
 	}
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: u.ID,
-		ActorPeran:  u.Peran,
-		Aksi:        "password_change",
-		Entitas:     "users",
-		EntitasID:   claims.UserID.String(),
-		Ringkasan:   "Perubahan kata sandi mandiri",
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, pgUUIDPtr(u.ID), u.Peran, "password_change", "users", claims.UserID.String(), "Perubahan kata sandi mandiri", ip)
 	return nil
-}
-
-func (s *Service) UpdatePengaturan(ctx context.Context, claims *middleware.SessionClaims, in PengaturanInput, ip string) (db.Pengaturan, error) {
-	if strings.TrimSpace(in.NamaKoperasi) == "" {
-		return db.Pengaturan{}, response.NewDomainError(http.StatusBadRequest, "INVALID_NAMA_KOPERASI", "nama_koperasi wajib diisi")
-	}
-	if in.QRISUniqueDigits == 0 {
-		in.QRISUniqueDigits = 3
-	}
-	if in.QRISUniqueDigits != 3 && in.QRISUniqueDigits != 4 {
-		return db.Pengaturan{}, response.NewDomainError(http.StatusBadRequest, "INVALID_QRIS_DIGITS", "qris_unique_digits hanya boleh 3 atau 4")
-	}
-	if in.OngkirTetap < 0 {
-		return db.Pengaturan{}, response.NewDomainError(http.StatusBadRequest, "INVALID_ONGKIR", "ongkir_tetap tidak boleh negatif")
-	}
-	var rekID pgtype.UUID
-	if in.ActiveRekeningQRISID != nil && strings.TrimSpace(*in.ActiveRekeningQRISID) != "" {
-		parsed, err := response.ParsePGUUID(*in.ActiveRekeningQRISID)
-		if err != nil {
-			return db.Pengaturan{}, err
-		}
-		rekID = parsed
-	}
-	q := db.New(s.pool)
-	row, err := q.UpdatePengaturan(ctx, db.UpdatePengaturanParams{
-		NamaKoperasi:         strings.TrimSpace(in.NamaKoperasi),
-		AlamatKoperasi:       strings.TrimSpace(in.AlamatKoperasi),
-		TeleponKoperasi:      strings.TrimSpace(in.TeleponKoperasi),
-		QrisUniqueDigits:     in.QRISUniqueDigits,
-		OngkirTetap:          in.OngkirTetap,
-		KebijakanTeks:        strings.TrimSpace(in.KebijakanTeks),
-		ActiveRekeningQrisID: rekID,
-	})
-	if err != nil {
-		return db.Pengaturan{}, err
-	}
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "update_pengaturan",
-		Entitas:     "pengaturan",
-		EntitasID:   "1",
-		Ringkasan:   fmt.Sprintf("Pembaruan pengaturan koperasi %q", row.NamaKoperasi),
-		IpAddress:   ip,
-	})
-	return row, nil
 }
 
 func (s *Service) ListUsers(ctx context.Context, lim, off int32) ([]map[string]interface{}, error) {
@@ -183,22 +115,44 @@ func (s *Service) ListUsers(ctx context.Context, lim, off int32) ([]map[string]i
 	if err != nil {
 		return nil, err
 	}
+	memberByUser := s.lookupMemberSummaries(ctx, rows)
 	out := make([]map[string]interface{}, 0, len(rows))
 	for _, r := range rows {
+		uid := response.FromPGUUID(r.ID)
+		m := memberByUser[uid]
+		anggotaID := ""
+		if m.ID != uuid.Nil {
+			anggotaID = m.ID.String()
+		}
 		out = append(out, map[string]interface{}{
-			"id":            uuid.UUID(r.ID.Bytes),
+			"id":            uid,
 			"nama_lengkap":  r.NamaLengkap,
 			"peran":         r.Peran,
 			"status_aktif":  r.StatusAktif,
 			"mfa_enabled":   r.MfaEnabled,
 			"email":         s.decryptUserField(r.EmailEnc, r.ID, "email"),
 			"no_hp":         security.MaskPhone(s.decryptUserField(r.HpEnc, r.ID, "hp")),
-			"anggota_id":    r.AnggotaID,
-			"nomor_anggota": r.NomorAnggota,
+			"anggota_id":    anggotaID,
+			"nomor_anggota": m.NomorAnggota,
 			"created_at":    r.CreatedAt.Time,
 		})
 	}
 	return out, nil
+}
+
+func (s *Service) lookupMemberSummaries(ctx context.Context, rows []db.ListUsersRow) map[uuid.UUID]angapi.MemberSummary {
+	if s.cfg.Members == nil || len(rows) == 0 {
+		return map[uuid.UUID]angapi.MemberSummary{}
+	}
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, response.FromPGUUID(r.ID))
+	}
+	res, err := s.cfg.Members.LookupByUserIDs(ctx, ids)
+	if err != nil {
+		return map[uuid.UUID]angapi.MemberSummary{}
+	}
+	return res
 }
 
 func (s *Service) CreateUser(ctx context.Context, claims *middleware.SessionClaims, in CreateUserInput, ip string) (map[string]interface{}, error) {
@@ -225,6 +179,18 @@ func (s *Service) CreateUser(ctx context.Context, claims *middleware.SessionClai
 	return s.persistNewUser(ctx, claims, in, pwdHash, ip)
 }
 
+func (s *Service) encryptUserContactFields(userID uuid.UUID, email, noHP string) (emailEnc []byte, emailHash pgtype.Text, hpEnc []byte, hpHash pgtype.Text) {
+	if em := strings.ToLower(strings.TrimSpace(email)); em != "" {
+		emailHash = pgtype.Text{String: security.HashBlindIndex(em, s.cfg.BlindIndexSecret), Valid: true}
+		emailEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(em), security.FormatAAD("users", "email", userID.String()))
+	}
+	if normHP := security.NormalizePhone(noHP); normHP != "" {
+		hpHash = pgtype.Text{String: security.HashBlindIndex(normHP, s.cfg.BlindIndexSecret), Valid: true}
+		hpEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(normHP), security.FormatAAD("users", "hp", userID.String()))
+	}
+	return emailEnc, emailHash, hpEnc, hpHash
+}
+
 func (s *Service) persistNewUser(ctx context.Context, claims *middleware.SessionClaims, in CreateUserInput, pwdHash, ip string) (map[string]interface{}, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -232,53 +198,40 @@ func (s *Service) persistNewUser(ctx context.Context, claims *middleware.Session
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	qt := db.New(tx)
-	userID, err := uuid.NewV7()
+	u, err := s.insertUserRowTx(ctx, tx, in, pwdHash)
 	if err != nil {
-		userID = uuid.New()
+		return nil, err
 	}
-	var emailEnc, hpEnc []byte
-	var emailHash, hpHash pgtype.Text
-	if em := strings.ToLower(strings.TrimSpace(in.Email)); em != "" {
-		emailHash = pgtype.Text{String: security.HashBlindIndex(em, s.cfg.BlindIndexSecret), Valid: true}
-		emailEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(em), security.FormatAAD("users", "email", userID.String()))
-	}
-	normHP := security.NormalizePhone(in.NoHP)
-	if normHP != "" {
-		hpHash = pgtype.Text{String: security.HashBlindIndex(normHP, s.cfg.BlindIndexSecret), Valid: true}
-		hpEnc, _ = s.cfg.KeyProvider.EncryptWithAAD([]byte(normHP), security.FormatAAD("users", "hp", userID.String()))
-	}
-	u, err := qt.CreateUser(ctx, db.CreateUserParams{
-		ID:           response.ToPGUUID(userID),
-		EmailEnc:     emailEnc,
-		EmailHash:    emailHash,
-		HpEnc:        hpEnc,
-		HpHash:       hpHash,
-		NamaLengkap:  strings.TrimSpace(in.NamaLengkap),
-		PasswordHash: pwdHash,
-		Peran:        in.Peran,
-		StatusAktif:  true,
-	})
-	if err != nil {
-		return nil, response.NewDomainError(http.StatusConflict, "USER_EXISTS", "Email atau nomor HP sudah terdaftar")
-	}
-
 	res := map[string]interface{}{"id": uuid.UUID(u.ID.Bytes), "nama_lengkap": u.NamaLengkap, "peran": u.Peran, "status_aktif": u.StatusAktif}
 	if pwdHash == "" {
-		code, waLink, err := CreateActivationOrResetCodeTx(ctx, tx, u.ID, response.ToPGUUID(claims.UserID), "aktivasi_awal", normHP, 24*time.Hour)
+		code, waLink, err := CreateActivationOrResetCodeTx(ctx, tx, u.ID, response.ToPGUUID(claims.UserID), "aktivasi_awal", security.NormalizePhone(in.NoHP), 24*time.Hour)
 		if err != nil {
 			return nil, err
 		}
 		res["activation_code"] = code
 		res["wa_link"] = waLink
 	}
-	_ = qt.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "create_user", Entitas: "users", EntitasID: uuid.UUID(u.ID.Bytes).String(),
-		Ringkasan: "Buat user peran=" + u.Peran, IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, uuidPtr(claims.UserID), claims.Role, "create_user", "users",
+		response.FromPGUUID(u.ID).String(), "Buat user peran="+u.Peran, ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return res, nil
+}
+
+func (s *Service) insertUserRowTx(ctx context.Context, tx pgx.Tx, in CreateUserInput, pwdHash string) (db.CreateUserRow, error) {
+	userID, err := uuid.NewV7()
+	if err != nil {
+		userID = uuid.New()
+	}
+	emailEnc, emailHash, hpEnc, hpHash := s.encryptUserContactFields(userID, in.Email, in.NoHP)
+	u, err := db.New(tx).CreateUser(ctx, db.CreateUserParams{
+		ID: response.ToPGUUID(userID), EmailEnc: emailEnc, EmailHash: emailHash,
+		HpEnc: hpEnc, HpHash: hpHash, NamaLengkap: strings.TrimSpace(in.NamaLengkap),
+		PasswordHash: pwdHash, Peran: in.Peran, StatusAktif: true,
+	})
+	if err != nil {
+		return u, response.NewDomainError(http.StatusConflict, "USER_EXISTS", "Email atau nomor HP sudah terdaftar")
+	}
+	return u, nil
 }

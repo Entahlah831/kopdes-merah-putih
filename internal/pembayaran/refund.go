@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,7 +15,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
-	"github.com/kopdes/merah-putih/internal/security"
+	"github.com/kopdes/merah-putih/internal/filestore"
 )
 
 type RefundInput struct {
@@ -77,12 +76,8 @@ func (s *Service) requestRefund(ctx context.Context, claims *middleware.SessionC
 	if err != nil {
 		return nil, fmt.Errorf("simpan pengajuan refund: %w", err)
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: "pembayaran.refund_request", Entitas: "pembayaran",
-		EntitasID: response.FromPGUUID(cur.ID).String(),
-		Ringkasan: fmt.Sprintf("Ajukan refund %s nominal %d (%s)", cur.NomorPembayaran, in.Nominal, metode), IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, claims, "pembayaran.refund_request", "pembayaran",
+		response.FromPGUUID(cur.ID).String(), fmt.Sprintf("Ajukan refund %s nominal %d (%s)", cur.NomorPembayaran, in.Nominal, metode), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -120,7 +115,7 @@ func (s *Service) decideRefund(ctx context.Context, claims *middleware.SessionCl
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	cur, ref, usedBG, err := s.lockAndAuthorizeRefundDecisionTx(ctx, qtx, claims, idPG, aksi, in)
+	cur, ref, usedBG, err := s.lockAndAuthorizeRefundDecisionTx(ctx, tx, qtx, claims, idPG, aksi, in)
 	if err != nil {
 		return nil, err
 	}
@@ -128,11 +123,9 @@ func (s *Service) decideRefund(ctx context.Context, claims *middleware.SessionCl
 	if err != nil {
 		return nil, err
 	}
-	targetStatus := "ditolak"
-	auditAksi := "pembayaran.refund_rejected"
+	targetStatus, auditAksi := "ditolak", "pembayaran.refund_rejected"
 	if aksi == "setujui" {
-		targetStatus = "selesai"
-		auditAksi = "pembayaran.refund_approved"
+		targetStatus, auditAksi = "selesai", "pembayaran.refund_approved"
 	}
 	if usedBG {
 		auditAksi = "pembayaran.refund_breakglass"
@@ -146,22 +139,19 @@ func (s *Service) decideRefund(ctx context.Context, claims *middleware.SessionCl
 		return nil, fmt.Errorf("simpan keputusan refund: %w", err)
 	}
 	if aksi == "setujui" {
-		if err := applyApprovedRefundEffectsTx(ctx, qtx, cur.ID, ref.Alasan); err != nil {
+		if err := s.applyApprovedRefundEffectsTx(ctx, tx, qtx, cur.ID, ref.Alasan); err != nil {
 			return nil, err
 		}
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID), ActorPeran: claims.Role,
-		Aksi: auditAksi, Entitas: "pembayaran", EntitasID: response.FromPGUUID(cur.ID).String(),
-		Ringkasan: fmt.Sprintf("Refund %s -> %s nominal %d", cur.NomorPembayaran, targetStatus, ref.Nominal), IpAddress: ip,
-	})
+	s.logAuditTx(ctx, tx, claims, auditAksi, "pembayaran", response.FromPGUUID(cur.ID).String(),
+		fmt.Sprintf("Refund %s -> %s nominal %d", cur.NomorPembayaran, targetStatus, ref.Nominal), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &updated, nil
 }
 
-func (s *Service) lockAndAuthorizeRefundDecisionTx(ctx context.Context, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, aksi string, in RefundInput) (db.GetPembayaranForUpdateRow, db.GetPengembalianByPembayaranIDForUpdateRow, bool, error) {
+func (s *Service) lockAndAuthorizeRefundDecisionTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, claims *middleware.SessionClaims, idPG pgtype.UUID, aksi string, in RefundInput) (db.GetPembayaranForUpdateRow, db.GetPengembalianByPembayaranIDForUpdateRow, bool, error) {
 	cur, err := qtx.GetPembayaranForUpdate(ctx, idPG)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cur, db.GetPengembalianByPembayaranIDForUpdateRow{}, false, response.NewDomainError(http.StatusNotFound, "PEMBAYARAN_NOT_FOUND", "Pembayaran tidak ditemukan")
@@ -183,7 +173,7 @@ func (s *Service) lockAndAuthorizeRefundDecisionTx(ctx context.Context, qtx *db.
 	if aksi == "tolak" && note == "" {
 		return cur, ref, false, response.NewDomainError(http.StatusBadRequest, "REASON_REQUIRED", "catatan_pelaksana wajib diisi saat menolak refund")
 	}
-	usedBG, err := s.authorizeDualControlOrBreakglassTx(ctx, qtx, claims, response.FromPGUUID(ref.DiajukanOleh), in.Breakglass, in.MFACode, note)
+	usedBG, err := s.authorizeDualControlOrBreakglassTx(ctx, tx, claims, response.FromPGUUID(ref.DiajukanOleh), in.Breakglass, in.MFACode, note)
 	if err != nil {
 		return cur, ref, false, err
 	}
@@ -194,48 +184,26 @@ func (s *Service) maybeStoreRefundProofTx(ctx context.Context, qtx *db.Queries, 
 	if len(rawFile) == 0 {
 		return "", pgtype.Text{}, "", nil, nil
 	}
-	ext, buktiHash, err := validateProofImage(rawFile, s.cfg.UploadMaxBytes)
+	meta, err := filestore.ValidateImage(rawFile, s.cfg.UploadMaxBytes)
 	if err != nil {
 		return "", pgtype.Text{}, "", nil, err
 	}
-	if _, err := qtx.GetPengembalianByBuktiHash(ctx, response.ToPGText(buktiHash)); err == nil {
+	if _, err := qtx.GetPengembalianByBuktiHash(ctx, response.ToPGText(meta.SHA256Hex)); err == nil {
 		return "", pgtype.Text{}, "", nil, response.NewDomainError(http.StatusConflict, "DUPLICATE_BUKTI", "Berkas bukti refund ini sudah pernah digunakan")
 	}
-	target, err := s.refundProofPath(refID)
+	store, err := s.activeFileStore()
 	if err != nil {
 		return "", pgtype.Text{}, "", nil, err
 	}
-	if s.cfg.KeyProvider == nil {
-		return "", pgtype.Text{}, "", nil, fmt.Errorf("key provider wajib tersedia")
-	}
-	aad := security.FormatAAD("pengembalian_dana", "bukti", refID.String())
-	cipherBytes, wrapped, keyID, err := security.EncryptEnvelopeFile(s.cfg.KeyProvider, rawFile, aad)
+	saved, err := store.SaveEncrypted(ctx, filestore.NamespaceBukti, "refund_"+refID.String()+".enc", rawFile, formatBuktiAAD("pengembalian_dana", refID.String()))
 	if err != nil {
-		return "", pgtype.Text{}, "", nil, fmt.Errorf("enkripsi bukti refund: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", pgtype.Text{}, "", nil, err
 	}
-	// #nosec G304,G703 -- target diverifikasi refundProofPath dari UUID
-	if err := os.WriteFile(target, cipherBytes, 0o600); err != nil {
-		return "", pgtype.Text{}, "", nil, err
-	}
-	url := "/api/v1/pembayaran?refund_bukti_id=" + refID.String() + "&ext=" + ext
-	return url, response.ToPGText(buktiHash), keyID, wrapped, nil
+	url := "/api/v1/pembayaran?refund_bukti_id=" + refID.String() + "&ext=" + meta.Ext
+	return url, response.ToPGText(meta.SHA256Hex), saved.KeyID, saved.DEKWrapped, nil
 }
 
-func (s *Service) refundProofPath(refID uuid.UUID) (string, error) {
-	if s.cfg.ProofStorageDir == "" {
-		return "", response.NewDomainError(http.StatusInternalServerError, "STORAGE_NOT_CONFIGURED", "Direktori penyimpanan bukti belum siap")
-	}
-	full := filepath.Join(s.cfg.ProofStorageDir, "refund_"+refID.String()+".enc")
-	if !strings.HasPrefix(full, s.cfg.ProofStorageDir+string(filepath.Separator)) {
-		return "", fmt.Errorf("path bukti refund keluar dari direktori")
-	}
-	return full, nil
-}
-
-func applyApprovedRefundEffectsTx(ctx context.Context, qtx *db.Queries, bayarID pgtype.UUID, alasan string) error {
+func (s *Service) applyApprovedRefundEffectsTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, bayarID pgtype.UUID, alasan string) error {
 	if err := qtx.MarkPembayaranDikembalikan(ctx, bayarID); err != nil {
 		return err
 	}
@@ -245,47 +213,23 @@ func applyApprovedRefundEffectsTx(ctx context.Context, qtx *db.Queries, bayarID 
 	}
 	for _, al := range allocs {
 		if al.TagihanIuranID.Valid {
-			if err := qtx.UpdateTagihanStatus(ctx, db.UpdateTagihanStatusParams{Status: "belum_bayar", ID: al.TagihanIuranID}); err != nil {
+			if s.cfg.Bills == nil {
+				return response.NewDomainError(http.StatusInternalServerError, "BILL_PAYER_UNAVAILABLE", "Layanan iuran belum terhubung")
+			}
+			if err := s.cfg.Bills.UpdateBillStatusTx(ctx, tx, response.FromPGUUID(al.TagihanIuranID), "belum_bayar"); err != nil {
 				return err
 			}
 		}
 		if al.PesananID.Valid {
-			if err := cancelAndRestoreOrderAfterRefundTx(ctx, qtx, al.PesananID, alasan); err != nil {
+			if s.cfg.Orders == nil {
+				return response.NewDomainError(http.StatusInternalServerError, "ORDER_PAYER_UNAVAILABLE", "Layanan pesanan belum terhubung")
+			}
+			if err := s.cfg.Orders.CancelOrderAfterRefundTx(ctx, tx, response.FromPGUUID(al.PesananID), alasan); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-func cancelAndRestoreOrderAfterRefundTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID, alasan string) error {
-	ord, err := qtx.GetPesananForUpdate(ctx, pesananID)
-	if err != nil || ord.Status == "batal" {
-		return err
-	}
-	items, err := qtx.ListPesananItems(ctx, pesananID)
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		switch ord.StokStatus {
-		case "reserved":
-			err = qtx.ReleaseProdukStockHold(ctx, db.ReleaseProdukStockHoldParams{ID: it.ProdukID, Qty: it.Kuantitas})
-		case "deducted":
-			err = qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
-		}
-		if err != nil {
-			return err
-		}
-	}
-	if ord.PromoID.Valid {
-		_ = qtx.DecrementPromoUsed(ctx, ord.PromoID)
-	}
-	if err := qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "released"}); err != nil {
-		return err
-	}
-	_, err = qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{Status: "batal", Catatan: "Refund selesai: " + alasan, ID: pesananID})
-	return err
 }
 
 func (s *Service) ReadRefundBukti(ctx context.Context, claims *middleware.SessionClaims, refIDStr string) ([]byte, string, error) {
@@ -303,18 +247,16 @@ func (s *Service) ReadRefundBukti(ctx context.Context, claims *middleware.Sessio
 	if err != nil || row.BuktiUrl == "" {
 		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_NOT_FOUND", "Bukti refund belum tersedia")
 	}
-	refUUID := response.FromPGUUID(row.ID)
-	target, err := s.refundProofPath(refUUID)
+	store, err := s.activeFileStore()
 	if err != nil {
 		return nil, "", err
 	}
-	// #nosec G304,G703 -- target diverifikasi refundProofPath dari UUID tervalidasi
-	cipherBytes, err := os.ReadFile(target)
+	refUUID := response.FromPGUUID(row.ID)
+	plain, err := store.LoadDecrypted(ctx, filestore.NamespaceBukti, "refund_"+refUUID.String()+".enc", row.BuktiDekWrapped, formatBuktiAAD("pengembalian_dana", refUUID.String()))
 	if err != nil {
-		return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti refund tidak ditemukan")
-	}
-	plain, err := security.DecryptEnvelopeFile(s.cfg.KeyProvider, cipherBytes, row.BuktiDekWrapped, security.FormatAAD("pengembalian_dana", "bukti", refUUID.String()))
-	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", response.NewDomainError(http.StatusNotFound, "BUKTI_FILE_MISSING", "Berkas bukti refund tidak ditemukan")
+		}
 		return nil, "", fmt.Errorf("dekripsi bukti refund: %w", err)
 	}
 	return plain, http.DetectContentType(plain), nil

@@ -14,9 +14,6 @@ SELECT id, kode, nama, nominal, hari_jatuh_tempo, klasifikasi_akuntansi, aktif, 
 FROM jenis_iuran
 WHERE id = sqlc.arg(id);
 
--- name: ListAktifAnggotaIDs :many
-SELECT id FROM anggota WHERE status = 'aktif' ORDER BY created_at ASC;
-
 -- name: InsertTagihanIuranIfMissing :one
 INSERT INTO tagihan_iuran (
     anggota_id, jenis_iuran_id, periode_tahun, periode_bulan, nominal, tanggal_jatuh_tempo
@@ -28,13 +25,12 @@ ON CONFLICT (anggota_id, jenis_iuran_id, periode_tahun, periode_bulan) DO NOTHIN
 RETURNING id;
 
 -- name: ListTagihanIuran :many
-SELECT t.id, t.anggota_id, a.nomor_anggota, a.nama_lengkap,
+SELECT t.id, t.anggota_id,
        t.jenis_iuran_id, j.kode AS jenis_kode, j.nama AS jenis_nama,
        t.periode_tahun, t.periode_bulan, t.nominal, t.nominal_keringanan,
        (t.nominal - t.nominal_keringanan)::bigint AS nominal_netto,
        t.tanggal_jatuh_tempo, t.status, t.alasan_keringanan, t.paid_at, t.created_at
 FROM tagihan_iuran t
-JOIN anggota a ON a.id = t.anggota_id
 JOIN jenis_iuran j ON j.id = t.jenis_iuran_id
 WHERE (sqlc.narg(anggota_filter)::uuid IS NULL OR t.anggota_id = sqlc.narg(anggota_filter)::uuid)
   AND (sqlc.arg(only_tunggakan)::bool = FALSE OR (t.status = 'belum_bayar' AND t.tanggal_jatuh_tempo < CURRENT_DATE))
@@ -66,3 +62,17 @@ UPDATE tagihan_iuran
 SET status = sqlc.arg(status),
     paid_at = CASE WHEN sqlc.arg(status) = 'lunas' THEN NOW() ELSE paid_at END
 WHERE id = sqlc.arg(id);
+
+-- name: LaporanTunggakanIuran :many
+SELECT t.anggota_id,
+       j.kode AS jenis_kode,
+       j.nama AS jenis_nama,
+       t.periode_tahun,
+       t.periode_bulan,
+       (t.nominal - t.nominal_keringanan)::bigint AS nominal_terutang,
+       t.tanggal_jatuh_tempo
+FROM tagihan_iuran t
+JOIN jenis_iuran j ON j.id = t.jenis_iuran_id
+WHERE t.status = 'belum_bayar'
+  AND t.tanggal_jatuh_tempo < CURRENT_DATE
+ORDER BY t.tanggal_jatuh_tempo ASC, t.anggota_id ASC;

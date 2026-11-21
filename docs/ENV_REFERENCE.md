@@ -1,7 +1,7 @@
 # Referensi Variabel Environment — Kopdes Merah Putih
 
 > **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.
-> Total variabel: **46** (maksimal 46 variabel).
+> Total variabel: **51** (maksimal 51 variabel).
 
 ## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)
 
@@ -17,6 +17,7 @@
 | `internal` | `API_PORT` | Port internal HTTP API di dalam proses/kontainer |
 | `host` | `API_HOST_PORT` | Port host publik yang dipetakan ke API_PORT |
 | `host` | `UI_PORT` | Port HTTP Frontend Tester lokal/uji (dilarang aktif di production) |
+| `host` | `WORKER_PORT` | Port loopback healthcheck worker (0 = nonaktif) |
 | `host` | `DB_PORT` | Port koneksi PostgreSQL yang dituju API/skrip |
 | `host` | `DB_HOST_PORT` | Port host PostgreSQL yang dipetakan Compose ke kontainer |
 
@@ -29,6 +30,11 @@
 | `API_PORT` | `int` | `8080` | `all` | Tidak | `api,Dockerfile,compose` | Port internal HTTP API di dalam proses/kontainer | `8080` |
 | `API_HOST_PORT` | `int` | `8080` | `compose` | Tidak | `compose,uitester` | Port host publik yang dipetakan ke API_PORT | `8080` |
 | `UI_PORT` | `int` | `8081` | `all` | Tidak | `uitester,compose` | Port HTTP Frontend Tester lokal/uji (dilarang aktif di production) | `8081` |
+| `WORKER_PORT` | `int` | `8082` | `optional` | Tidak | `worker,compose,envcheck` | Port loopback healthcheck worker (0 = nonaktif) | `8082` |
+| `WORKER_TICK_INTERVAL` | `duration` | `60s` | `optional` | Tidak | `worker,compose` | Interval tick penjadwalan worker latar | `60s` |
+| `SLO_READ_P95_MS` | `int` | `300` | `optional` | Tidak | `loadtest,monitoring` | Target SLO latensi p95 endpoint baca (milidetik) | `300` |
+| `SLO_WRITE_P95_MS` | `int` | `800` | `optional` | Tidak | `loadtest,monitoring` | Target SLO latensi p95 endpoint tulis (milidetik) | `800` |
+| `SLO_MAX_ERROR_RATE` | `float64` | `0.005` | `optional` | Tidak | `loadtest,monitoring` | Batas rasio error maksimum SLO beban normal (mis. 0.005 = 0.5%) | `0.005` |
 | `ALLOWED_ORIGINS` | `[]string` | _(kosong)_ | `prod,staging` | Tidak | `api` | Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production) | `http://127.0.0.1:8081` |
 | `TRUSTED_PROXIES` | `[]string` | `127.0.0.1/32` | `prod` | Tidak | `api` | Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For | `127.0.0.1/32` |
 | `DB_HOST` | `string` | `127.0.0.1` | `all` | Tidak | `api,scripts` | Hostname server PostgreSQL | `127.0.0.1` |

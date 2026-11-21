@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
@@ -27,8 +26,9 @@ const (
 
 // SessionAuthOptions mengatur perilaku autentikasi sesi cookie-utama dan Bearer opsional.
 type SessionAuthOptions struct {
-	IdleTTL     time.Duration
-	AllowBearer bool
+	IdleTTL      time.Duration
+	AllowBearer  bool
+	MemberLookup func(ctx context.Context, userID uuid.UUID) (anggotaID uuid.UUID, status string, found bool, err error)
 }
 
 // SessionClaims merepresentasikan sesi pengguna terautentikasi di server.
@@ -78,15 +78,7 @@ func ExtractRawSessionToken(r *http.Request) string {
 	return tok
 }
 
-func pgUUIDToPtr(u pgtype.UUID) *uuid.UUID {
-	if !u.Valid {
-		return nil
-	}
-	val := uuid.UUID(u.Bytes)
-	return &val
-}
-
-func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken string, idleTTL time.Duration, viaCookie bool) (*SessionClaims, bool) {
+func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken string, opts SessionAuthOptions, viaCookie bool) (*SessionClaims, bool) {
 	if pool == nil || rawToken == "" {
 		return nil, false
 	}
@@ -95,14 +87,25 @@ func resolveSessionFromDB(ctx context.Context, pool *pgxpool.Pool, rawToken stri
 	if err != nil || !row.StatusAktif {
 		return nil, false
 	}
-	if row.AnggotaID.Valid && row.AnggotaStatus != "" && row.AnggotaStatus != "aktif" {
-		return nil, false
+	userID := uuid.UUID(row.UserID.Bytes)
+	var anggotaPtr *uuid.UUID
+	if opts.MemberLookup != nil {
+		aid, st, found, mErr := opts.MemberLookup(ctx, userID)
+		if mErr != nil {
+			return nil, false
+		}
+		if found {
+			if st != "" && st != "aktif" {
+				return nil, false
+			}
+			anggotaPtr = &aid
+		}
 	}
-	maybeTouchSessionActivity(ctx, q, row, idleTTL)
+	maybeTouchSessionActivity(ctx, q, row, opts.IdleTTL)
 	return &SessionClaims{
 		SessionID:   uuid.UUID(row.SessionID.Bytes),
-		UserID:      uuid.UUID(row.UserID.Bytes),
-		AnggotaID:   pgUUIDToPtr(row.AnggotaID),
+		UserID:      userID,
+		AnggotaID:   anggotaPtr,
 		Role:        row.Peran,
 		Scope:       row.Scope,
 		MFAVerified: row.MfaVerified,
@@ -134,7 +137,7 @@ func OptionalSessionWithOptions(pool *pgxpool.Pool, opts SessionAuthOptions) fun
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if tok, viaCookie := ExtractSessionToken(r, opts.AllowBearer); tok != "" {
-				if claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts.IdleTTL, viaCookie); ok {
+				if claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts, viaCookie); ok {
 					ctx := context.WithValue(r.Context(), ContextKeySession, claims)
 					r = r.WithContext(ctx)
 				}
@@ -154,7 +157,7 @@ func RequireSessionWithOptions(pool *pgxpool.Pool, opts SessionAuthOptions, allo
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tok, viaCookie := ExtractSessionToken(r, opts.AllowBearer)
-			claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts.IdleTTL, viaCookie)
+			claims, ok := resolveSessionFromDB(r.Context(), pool, tok, opts, viaCookie)
 			if !ok {
 				response.Unauthorized(w, "Sesi tidak valid atau telah kedaluwarsa")
 				return

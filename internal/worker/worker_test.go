@@ -204,3 +204,72 @@ func TestDecisionAudit_D8_CrashRestartCatchUpAndReadyz(t *testing.T) {
 	})
 	_ = response.ToPGText("")
 }
+
+func TestWorker_ConcurrentTwoInstancesNoDuplicate(t *testing.T) {
+	cfg, pool := setupWorkerTestPool(t)
+	ctx := context.Background()
+
+	// Sisipkan 1 sesi sudah kedaluwarsa untuk menguji tugas ke-6 session_cleanup
+	var anyUserID uuid.UUID
+	if err := pool.QueryRow(ctx, "SELECT id FROM users LIMIT 1").Scan(&anyUserID); err != nil {
+		t.Fatalf("ambil user: %v", err)
+	}
+	expiredTok := "expired-worker-" + uuid.NewString()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO sesi (user_id, token_hash, mfa_verified, scope, ip_address, user_agent, idle_expires_at, abs_expires_at)
+		VALUES ($1, $2, TRUE, 'full', '127.0.0.1', 'worker-test', NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')`,
+		anyUserID, expiredTok); err != nil {
+		t.Fatalf("sisip sesi kedaluwarsa: %v", err)
+	}
+
+	w1, err := New(pool, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := New(pool, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, w := range []*Worker{w1, w2} {
+		wg.Add(1)
+		go func(idx int, wk *Worker) {
+			defer wg.Done()
+			<-gate
+			errs[idx] = wk.RunOnce(ctx)
+		}(i, w)
+	}
+	close(gate)
+	wg.Wait()
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("worker #%d gagal: %v", i+1, e)
+		}
+	}
+
+	var left int
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM sesi WHERE token_hash = $1", expiredTok).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("expected expired session cleaned up by session_cleanup, remaining=%d", left)
+	}
+
+	// Pastikan endpoint health worker /healthz & /readyz merespons 200 dengan 6 job tercatat
+	hh := w1.HealthHandler()
+	recH := httptest.NewRecorder()
+	hh.ServeHTTP(recH, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recH.Code != http.StatusOK {
+		t.Fatalf("worker /healthz=%d body=%s", recH.Code, recH.Body.String())
+	}
+	recR := httptest.NewRecorder()
+	hh.ServeHTTP(recR, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	var readyEnv map[string]interface{}
+	_ = json.Unmarshal(recR.Body.Bytes(), &readyEnv)
+	if recR.Code != http.StatusOK || int(readyEnv["data"].(map[string]interface{})["jobs_recorded"].(float64)) < 6 {
+		t.Fatalf("worker /readyz=%d body=%s", recR.Code, recR.Body.String())
+	}
+}

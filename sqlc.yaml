@@ -3,13 +3,12 @@ sql:
   - engine: "postgresql"
     queries:
       - "internal/auth/queries"
-      - "internal/pendaftaran/queries"
+      - "internal/pengaturan/queries"
       - "internal/anggota/queries"
       - "internal/iuran/queries"
       - "internal/katalog/queries"
       - "internal/pesanan/queries"
       - "internal/pembayaran/queries"
-      - "internal/laporan/queries"
       - "internal/worker/queries"
     schema:
       - "db/migrations/000001_init_kopdes_schema.up.sql"

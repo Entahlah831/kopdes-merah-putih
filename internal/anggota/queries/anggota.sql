@@ -20,14 +20,11 @@ FROM anggota
 WHERE nik_hash = sqlc.arg(nik_hash);
 
 -- name: GetAnggotaByID :one
-SELECT a.id, a.user_id, a.nomor_anggota, a.nama_lengkap, a.nik_enc, a.nik_key_version, a.nik_masked,
-       a.hp_enc, a.hp_masked, a.tanggal_lahir_enc, a.alamat_enc, a.status, a.alasan_status,
-       a.tanggal_bergabung, a.created_at, a.updated_at,
-       COALESCE(u.peran, 'anggota')::text AS peran,
-       u.email_enc AS user_email_enc
-FROM anggota a
-LEFT JOIN users u ON u.id = a.user_id
-WHERE a.id = sqlc.arg(id);
+SELECT id, user_id, nomor_anggota, nama_lengkap, nik_enc, nik_key_version, nik_masked,
+       hp_enc, hp_masked, tanggal_lahir_enc, alamat_enc, status, alasan_status,
+       tanggal_bergabung, created_at, updated_at
+FROM anggota
+WHERE id = sqlc.arg(id);
 
 -- name: GetAnggotaByUserID :one
 SELECT id, user_id, nomor_anggota, nama_lengkap, nik_masked, hp_masked, status, tanggal_bergabung
@@ -41,6 +38,19 @@ WHERE (sqlc.arg(status_filter)::text = '' OR status = sqlc.arg(status_filter)::t
 ORDER BY created_at DESC
 LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);
 
+-- name: ListActiveAnggotaIDs :many
+SELECT id FROM anggota WHERE status = 'aktif' ORDER BY created_at ASC;
+
+-- name: ListAnggotaSummariesByUserIDs :many
+SELECT id, user_id, nomor_anggota, nama_lengkap, status
+FROM anggota
+WHERE user_id = ANY(sqlc.arg(user_ids)::uuid[]);
+
+-- name: ListAnggotaSummariesByIDs :many
+SELECT id, user_id, nomor_anggota, nama_lengkap, status
+FROM anggota
+WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
 -- name: UpdateAnggotaStatus :one
 UPDATE anggota
 SET status = sqlc.arg(status),
@@ -48,7 +58,131 @@ SET status = sqlc.arg(status),
 WHERE id = sqlc.arg(id)
 RETURNING id, user_id, nomor_anggota, nama_lengkap, status, alasan_status, updated_at;
 
--- name: DeactivateUserByID :exec
-UPDATE users
-SET status_aktif = sqlc.arg(status_aktif)
+-- name: LaporanRingkasanAnggota :many
+SELECT status, COUNT(*)::bigint AS jumlah
+FROM anggota
+GROUP BY status
+ORDER BY status ASC;
+
+-- name: CountActivePendaftaranByNIKHash :one
+SELECT COUNT(*)::int
+FROM pendaftaran
+WHERE nik_hash = sqlc.arg(nik_hash)
+  AND status IN ('diajukan', 'perlu_perbaikan');
+
+-- name: CreatePendaftaran :one
+INSERT INTO pendaftaran (
+    id, nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
+    hp_enc, hp_hash, hp_masked, tanggal_lahir_enc, alamat_enc, pekerjaan,
+    status, upload_token_hash, ip_address
+) VALUES (
+    COALESCE(sqlc.narg(id), uuid_generate_v7()),
+    sqlc.arg(nama_lengkap), sqlc.narg(email_enc), sqlc.narg(email_hash),
+    sqlc.arg(nik_enc), sqlc.arg(nik_hash), sqlc.arg(nik_key_version), sqlc.arg(nik_masked),
+    sqlc.arg(hp_enc), sqlc.arg(hp_hash), sqlc.arg(hp_masked),
+    sqlc.arg(tanggal_lahir_enc), sqlc.arg(alamat_enc), sqlc.arg(pekerjaan),
+    'diajukan', sqlc.arg(upload_token_hash), sqlc.arg(ip_address)
+)
+RETURNING id, nama_lengkap, nik_masked, hp_masked, pekerjaan, status, created_at;
+
+-- name: GetPendaftaranByID :one
+SELECT id, nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
+       hp_enc, hp_hash, hp_masked, tanggal_lahir_enc, alamat_enc, pekerjaan,
+       status, catatan_verifikasi, verified_by, verified_at, rejected_at, anggota_id,
+       upload_token_hash, ip_address, created_at, updated_at
+FROM pendaftaran
+WHERE id = sqlc.arg(id);
+
+-- name: GetPendaftaranByIDForUpdate :one
+SELECT id, nama_lengkap, email_enc, email_hash, nik_enc, nik_hash, nik_key_version, nik_masked,
+       hp_enc, hp_hash, hp_masked, tanggal_lahir_enc, alamat_enc, pekerjaan,
+       status, catatan_verifikasi, verified_by, verified_at, rejected_at, anggota_id
+FROM pendaftaran
+WHERE id = sqlc.arg(id)
+FOR UPDATE;
+
+-- name: ListPendaftaran :many
+SELECT id, nama_lengkap, nik_masked, hp_masked, pekerjaan, status, catatan_verifikasi,
+       verified_at, anggota_id, created_at
+FROM pendaftaran
+WHERE (sqlc.arg(status_filter)::text = '' OR status = sqlc.arg(status_filter)::text)
+ORDER BY created_at DESC
+LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);
+
+-- name: UpdatePendaftaranDecision :one
+UPDATE pendaftaran
+SET status = sqlc.arg(status),
+    catatan_verifikasi = sqlc.arg(catatan_verifikasi),
+    verified_by = sqlc.narg(verified_by),
+    verified_at = NOW(),
+    rejected_at = CASE WHEN sqlc.arg(status) = 'ditolak' THEN NOW() ELSE NULL END,
+    anggota_id = COALESCE(sqlc.narg(anggota_id), anggota_id)
+WHERE id = sqlc.arg(id)
+RETURNING id, status, catatan_verifikasi, verified_at, rejected_at, anggota_id, updated_at;
+
+-- name: ResubmitPendaftaranAfterFix :exec
+UPDATE pendaftaran
+SET status = 'diajukan'
+WHERE id = sqlc.arg(id) AND status = 'perlu_perbaikan';
+
+-- name: UpsertDokumenKYC :one
+INSERT INTO dokumen_kyc (
+    pendaftaran_id, tipe_dokumen, storage_key, key_id, dek_wrapped,
+    mime_type, ukuran_bytes, lebar_px, tinggi_px, sha256_plain
+) VALUES (
+    sqlc.arg(pendaftaran_id), sqlc.arg(tipe_dokumen), sqlc.arg(storage_key),
+    sqlc.arg(key_id), sqlc.arg(dek_wrapped), sqlc.arg(mime_type),
+    sqlc.arg(ukuran_bytes), sqlc.arg(lebar_px), sqlc.arg(tinggi_px), sqlc.arg(sha256_plain)
+)
+ON CONFLICT (pendaftaran_id, tipe_dokumen) DO UPDATE
+SET storage_key = EXCLUDED.storage_key,
+    key_id = EXCLUDED.key_id,
+    dek_wrapped = EXCLUDED.dek_wrapped,
+    mime_type = EXCLUDED.mime_type,
+    ukuran_bytes = EXCLUDED.ukuran_bytes,
+    lebar_px = EXCLUDED.lebar_px,
+    tinggi_px = EXCLUDED.tinggi_px,
+    sha256_plain = EXCLUDED.sha256_plain,
+    created_at = NOW()
+RETURNING id, pendaftaran_id, tipe_dokumen, mime_type, ukuran_bytes, lebar_px, tinggi_px, created_at;
+
+-- name: ListDokumenKYCByPendaftaran :many
+SELECT id, pendaftaran_id, tipe_dokumen, storage_key, mime_type, ukuran_bytes, lebar_px, tinggi_px, created_at
+FROM dokumen_kyc
+WHERE pendaftaran_id = sqlc.arg(pendaftaran_id)
+ORDER BY tipe_dokumen ASC;
+
+-- name: ListDokumenTipeByPendaftaranIDs :many
+SELECT pendaftaran_id, tipe_dokumen
+FROM dokumen_kyc
+WHERE pendaftaran_id = ANY(sqlc.arg(pendaftaran_ids)::uuid[])
+ORDER BY tipe_dokumen ASC;
+
+-- name: GetDokumenKYCByPendaftaranAndTipe :one
+SELECT id, pendaftaran_id, tipe_dokumen, storage_key, key_id, dek_wrapped,
+       mime_type, ukuran_bytes, lebar_px, tinggi_px, sha256_plain, created_at
+FROM dokumen_kyc
+WHERE pendaftaran_id = sqlc.arg(pendaftaran_id)
+  AND tipe_dokumen = sqlc.arg(tipe_dokumen);
+
+-- name: ListExpiredRejectedPendaftaran :many
+SELECT id, created_at, rejected_at
+FROM pendaftaran
+WHERE status = 'ditolak'
+  AND rejected_at IS NOT NULL
+  AND rejected_at < NOW() - make_interval(days => sqlc.arg(retention_days)::int);
+
+-- name: DeletePendaftaranByID :exec
+DELETE FROM pendaftaran
+WHERE id = sqlc.arg(id);
+
+-- name: ListAllDokumenKYC :many
+SELECT id, pendaftaran_id, tipe_dokumen, storage_key, key_id, dek_wrapped
+FROM dokumen_kyc
+ORDER BY created_at ASC;
+
+-- name: UpdateDokumenKYCEnvelope :exec
+UPDATE dokumen_kyc
+SET key_id = sqlc.arg(key_id),
+    dek_wrapped = sqlc.arg(dek_wrapped)
 WHERE id = sqlc.arg(id);

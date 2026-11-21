@@ -168,21 +168,6 @@ func (h *Handler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, res)
 }
 
-func (h *Handler) HandleUpdatePengaturan(w http.ResponseWriter, r *http.Request) {
-	claims, _ := middleware.GetSessionClaims(r.Context())
-	var in PengaturanInput
-	if err := response.DecodeJSON(w, r, &in, 64<<10); err != nil {
-		response.WriteServiceError(w, err)
-		return
-	}
-	row, err := h.svc.UpdatePengaturan(r.Context(), claims, in, middleware.GetClientIP(r, h.svc.trusted))
-	if err != nil {
-		response.WriteServiceError(w, err)
-		return
-	}
-	response.JSON(w, http.StatusOK, row)
-}
-
 func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	lim, off := response.ParsePagination(r, 20, 100)
 	rows, err := h.svc.ListUsers(r.Context(), lim, off)

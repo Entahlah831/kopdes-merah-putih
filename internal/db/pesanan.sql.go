@@ -11,34 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const confirmReservedProdukStock = `-- name: ConfirmReservedProdukStock :one
-UPDATE produk
-SET stok = stok - $1::int,
-    stok_tertahan = stok_tertahan - $1::int
-WHERE id = $2
-  AND stok >= $1::int
-  AND stok_tertahan >= $1::int
-RETURNING id, stok, stok_tertahan
-`
-
-type ConfirmReservedProdukStockParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-type ConfirmReservedProdukStockRow struct {
-	ID           pgtype.UUID `json:"id"`
-	Stok         int32       `json:"stok"`
-	StokTertahan int32       `json:"stok_tertahan"`
-}
-
-func (q *Queries) ConfirmReservedProdukStock(ctx context.Context, arg ConfirmReservedProdukStockParams) (ConfirmReservedProdukStockRow, error) {
-	row := q.db.QueryRow(ctx, confirmReservedProdukStock, arg.Qty, arg.ID)
-	var i ConfirmReservedProdukStockRow
-	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
-	return i, err
-}
-
 const countPromoUsageByAnggota = `-- name: CountPromoUsageByAnggota :one
 SELECT COUNT(*)::int
 FROM pesanan
@@ -222,57 +194,6 @@ func (q *Queries) CreatePesananItem(ctx context.Context, arg CreatePesananItemPa
 	return i, err
 }
 
-const decrementAvailableProdukStock = `-- name: DecrementAvailableProdukStock :one
-UPDATE produk
-SET stok = stok - $1::int
-WHERE id = $2
-  AND status = 'aktif'
-  AND (stok - stok_tertahan) >= $1::int
-RETURNING id, stok, stok_tertahan
-`
-
-type DecrementAvailableProdukStockParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-type DecrementAvailableProdukStockRow struct {
-	ID           pgtype.UUID `json:"id"`
-	Stok         int32       `json:"stok"`
-	StokTertahan int32       `json:"stok_tertahan"`
-}
-
-func (q *Queries) DecrementAvailableProdukStock(ctx context.Context, arg DecrementAvailableProdukStockParams) (DecrementAvailableProdukStockRow, error) {
-	row := q.db.QueryRow(ctx, decrementAvailableProdukStock, arg.Qty, arg.ID)
-	var i DecrementAvailableProdukStockRow
-	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
-	return i, err
-}
-
-const decrementProdukStock = `-- name: DecrementProdukStock :one
-UPDATE produk
-SET stok = stok - $1::int
-WHERE id = $2 AND status = 'aktif' AND stok >= $1::int
-RETURNING id, stok
-`
-
-type DecrementProdukStockParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-type DecrementProdukStockRow struct {
-	ID   pgtype.UUID `json:"id"`
-	Stok int32       `json:"stok"`
-}
-
-func (q *Queries) DecrementProdukStock(ctx context.Context, arg DecrementProdukStockParams) (DecrementProdukStockRow, error) {
-	row := q.db.QueryRow(ctx, decrementProdukStock, arg.Qty, arg.ID)
-	var i DecrementProdukStockRow
-	err := row.Scan(&i.ID, &i.Stok)
-	return i, err
-}
-
 const getPesananByID = `-- name: GetPesananByID :one
 SELECT id, nomor_pesanan, user_id, anggota_id, promo_id, metode_pengiriman, metode_pembayaran,
        status, stok_status, stok_hold_expires_at, subtotal, diskon, ongkir, total_bayar,
@@ -441,6 +362,63 @@ func (q *Queries) GetPesananForUpdate(ctx context.Context, id pgtype.UUID) (GetP
 	return i, err
 }
 
+const laporanPenjualanHarian = `-- name: LaporanPenjualanHarian :many
+SELECT (created_at AT TIME ZONE $1::text)::date AS tanggal,
+       COUNT(*)::bigint AS jumlah_pesanan,
+       COALESCE(SUM(subtotal), 0)::bigint AS total_subtotal,
+       COALESCE(SUM(diskon), 0)::bigint AS total_diskon,
+       COALESCE(SUM(ongkir), 0)::bigint AS total_ongkir,
+       COALESCE(SUM(total_bayar), 0)::bigint AS total_omzet
+FROM pesanan
+WHERE status IN ('dibayar', 'diproses', 'diantar', 'siap_diambil', 'selesai')
+  AND ($2::date IS NULL OR (created_at AT TIME ZONE $1::text)::date >= $2::date)
+  AND ($3::date IS NULL OR (created_at AT TIME ZONE $1::text)::date <= $3::date)
+GROUP BY (created_at AT TIME ZONE $1::text)::date
+ORDER BY tanggal DESC
+`
+
+type LaporanPenjualanHarianParams struct {
+	Tz     string      `json:"tz"`
+	Dari   pgtype.Date `json:"dari"`
+	Sampai pgtype.Date `json:"sampai"`
+}
+
+type LaporanPenjualanHarianRow struct {
+	Tanggal       pgtype.Date `json:"tanggal"`
+	JumlahPesanan int64       `json:"jumlah_pesanan"`
+	TotalSubtotal int64       `json:"total_subtotal"`
+	TotalDiskon   int64       `json:"total_diskon"`
+	TotalOngkir   int64       `json:"total_ongkir"`
+	TotalOmzet    int64       `json:"total_omzet"`
+}
+
+func (q *Queries) LaporanPenjualanHarian(ctx context.Context, arg LaporanPenjualanHarianParams) ([]LaporanPenjualanHarianRow, error) {
+	rows, err := q.db.Query(ctx, laporanPenjualanHarian, arg.Tz, arg.Dari, arg.Sampai)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LaporanPenjualanHarianRow{}
+	for rows.Next() {
+		var i LaporanPenjualanHarianRow
+		if err := rows.Scan(
+			&i.Tanggal,
+			&i.JumlahPesanan,
+			&i.TotalSubtotal,
+			&i.TotalDiskon,
+			&i.TotalOngkir,
+			&i.TotalOmzet,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDaftarAntar = `-- name: ListDaftarAntar :many
 SELECT id, nomor_pesanan, status, total_bayar, nama_penerima, hp_penerima_enc,
        hp_penerima_masked, alamat_pengantaran_enc, catatan, tanggal_antar, created_at
@@ -532,19 +510,12 @@ func (q *Queries) ListExpiredStockHoldPesanan(ctx context.Context) ([]ListExpire
 }
 
 const listExpiredUnpaidPesanan = `-- name: ListExpiredUnpaidPesanan :many
-SELECT p.id, p.promo_id, p.stok_status
-FROM pesanan p
-WHERE p.status IN ('baru', 'menunggu_pembayaran')
-  AND p.expires_at IS NOT NULL
-  AND p.expires_at < NOW()
-  AND NOT EXISTS (
-      SELECT 1
-      FROM pembayaran_alokasi pa
-      JOIN pembayaran bay ON bay.id = pa.pembayaran_id
-      WHERE pa.pesanan_id = p.id
-        AND bay.status IN ('menunggu_verifikasi', 'lunas')
-  )
-FOR UPDATE OF p
+SELECT id, promo_id, stok_status
+FROM pesanan
+WHERE status IN ('baru', 'menunggu_pembayaran')
+  AND expires_at IS NOT NULL
+  AND expires_at < NOW()
+FOR UPDATE
 `
 
 type ListExpiredUnpaidPesananRow struct {
@@ -691,65 +662,6 @@ func (q *Queries) ListPesananItems(ctx context.Context, pesananID pgtype.UUID) (
 		return nil, err
 	}
 	return items, nil
-}
-
-const releaseProdukStockHold = `-- name: ReleaseProdukStockHold :exec
-UPDATE produk
-SET stok_tertahan = GREATEST(0, stok_tertahan - $1::int)
-WHERE id = $2
-`
-
-type ReleaseProdukStockHoldParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-func (q *Queries) ReleaseProdukStockHold(ctx context.Context, arg ReleaseProdukStockHoldParams) error {
-	_, err := q.db.Exec(ctx, releaseProdukStockHold, arg.Qty, arg.ID)
-	return err
-}
-
-const reserveProdukStock = `-- name: ReserveProdukStock :one
-UPDATE produk
-SET stok_tertahan = stok_tertahan + $1::int
-WHERE id = $2
-  AND status = 'aktif'
-  AND (stok - stok_tertahan) >= $1::int
-RETURNING id, stok, stok_tertahan
-`
-
-type ReserveProdukStockParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-type ReserveProdukStockRow struct {
-	ID           pgtype.UUID `json:"id"`
-	Stok         int32       `json:"stok"`
-	StokTertahan int32       `json:"stok_tertahan"`
-}
-
-func (q *Queries) ReserveProdukStock(ctx context.Context, arg ReserveProdukStockParams) (ReserveProdukStockRow, error) {
-	row := q.db.QueryRow(ctx, reserveProdukStock, arg.Qty, arg.ID)
-	var i ReserveProdukStockRow
-	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
-	return i, err
-}
-
-const restoreProdukStock = `-- name: RestoreProdukStock :exec
-UPDATE produk
-SET stok = stok + $1::int
-WHERE id = $2
-`
-
-type RestoreProdukStockParams struct {
-	Qty int32       `json:"qty"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-func (q *Queries) RestoreProdukStock(ctx context.Context, arg RestoreProdukStockParams) error {
-	_, err := q.db.Exec(ctx, restoreProdukStock, arg.Qty, arg.ID)
-	return err
 }
 
 const updatePesananStatus = `-- name: UpdatePesananStatus :one

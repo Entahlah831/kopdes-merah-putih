@@ -48,6 +48,11 @@ services:
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
+      WORKER_TICK_INTERVAL: ${WORKER_TICK_INTERVAL:-60s}
+      SLO_READ_P95_MS: ${SLO_READ_P95_MS:-300}
+      SLO_WRITE_P95_MS: ${SLO_WRITE_P95_MS:-800}
+      SLO_MAX_ERROR_RATE: ${SLO_MAX_ERROR_RATE:-0.005}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
@@ -112,15 +117,23 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["/app/kopdes"]
-    command: ["worker", "--tick", "60s"]
+    command: ["worker"]
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${WORKER_PORT:?WORKER_PORT wajib disetel}/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     environment:
       APP_ENV: ${APP_ENV:-test}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
+      WORKER_TICK_INTERVAL: ${WORKER_TICK_INTERVAL:-60s}
+      SLO_READ_P95_MS: ${SLO_READ_P95_MS:-300}
+      SLO_WRITE_P95_MS: ${SLO_WRITE_P95_MS:-800}
+      SLO_MAX_ERROR_RATE: ${SLO_MAX_ERROR_RATE:-0.005}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DB_HOST: postgres
@@ -177,13 +190,14 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    entrypoint: ["/app/uitester"]
-    command: ["-bind", "0.0.0.0", "-ui-dir", "/app/frontend-tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT}"]
+    entrypoint: ["/app/kopdes"]
+    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend-tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT}"]
     environment:
       APP_ENV: ${APP_ENV:-test}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}
       API_PORT: ${API_PORT:?API_PORT wajib disetel}
       API_HOST_PORT: ${API_HOST_PORT:?API_HOST_PORT wajib disetel}
+      WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
       DB_HOST_PORT: ${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}

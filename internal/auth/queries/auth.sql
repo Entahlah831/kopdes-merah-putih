@@ -1,40 +1,3 @@
--- name: GetPengaturan :one
-SELECT id, nama_koperasi, alamat_koperasi, telepon_koperasi, qris_unique_digits,
-       ongkir_tetap, kebijakan_teks, catatan_akuntansi, active_rekening_qris_id, updated_at
-FROM pengaturan
-WHERE id = 1;
-
--- name: UpdatePengaturan :one
-UPDATE pengaturan
-SET nama_koperasi = COALESCE(NULLIF(sqlc.arg(nama_koperasi)::text, ''), nama_koperasi),
-    alamat_koperasi = sqlc.arg(alamat_koperasi),
-    telepon_koperasi = sqlc.arg(telepon_koperasi),
-    qris_unique_digits = sqlc.arg(qris_unique_digits),
-    ongkir_tetap = sqlc.arg(ongkir_tetap),
-    kebijakan_teks = sqlc.arg(kebijakan_teks),
-    active_rekening_qris_id = sqlc.narg(active_rekening_qris_id)
-WHERE id = 1
-RETURNING id, nama_koperasi, alamat_koperasi, telepon_koperasi, qris_unique_digits,
-          ongkir_tetap, kebijakan_teks, catatan_akuntansi, active_rekening_qris_id, updated_at;
-
--- name: GetPublicSettingsWithQRIS :one
-SELECT p.nama_koperasi,
-       p.alamat_koperasi,
-       p.telepon_koperasi,
-       p.qris_unique_digits,
-       p.ongkir_tetap,
-       p.kebijakan_teks,
-       COALESCE(r.id::text, '')::text AS qris_rekening_id,
-       COALESCE(r.nama_merchant, '')::text AS qris_merchant,
-       COALESCE(r.nmid, '')::text AS qris_nmid,
-       COALESCE(r.nama_bank, '')::text AS qris_bank,
-       COALESCE(r.nomor_rekening, '')::text AS qris_nomor_rekening,
-       COALESCE(r.jenis_pemilik, '')::text AS qris_jenis_pemilik,
-       COALESCE(r.qris_image_url, '')::text AS qris_image_url
-FROM pengaturan p
-LEFT JOIN rekening_qris r ON r.id = p.active_rekening_qris_id AND r.aktif = TRUE
-WHERE p.id = 1;
-
 -- name: GetRateLimit :one
 SELECT key, kategori, hit_count, window_reset_at, blocked_until, updated_at
 FROM rate_limits
@@ -147,6 +110,12 @@ SET password_hash = sqlc.arg(password_hash),
     locked_until = NULL
 WHERE id = sqlc.arg(id);
 
+-- name: SetUserActiveByID :exec
+UPDATE users
+SET status_aktif = sqlc.arg(status_aktif),
+    updated_at = NOW()
+WHERE id = sqlc.arg(id);
+
 -- name: EnableUserMFA :exec
 UPDATE users
 SET mfa_enabled = TRUE,
@@ -187,13 +156,9 @@ WHERE id = sqlc.arg(id)
 RETURNING id, nama_lengkap, peran, status_aktif, mfa_enabled, created_at, updated_at;
 
 -- name: ListUsers :many
-SELECT u.id, u.email_enc, u.hp_enc, u.nama_lengkap, u.peran, u.status_aktif, u.mfa_enabled,
-       COALESCE(a.id::text, '')::text AS anggota_id,
-       COALESCE(a.nomor_anggota, '')::text AS nomor_anggota,
-       u.created_at
-FROM users u
-LEFT JOIN anggota a ON a.user_id = u.id
-ORDER BY u.created_at DESC
+SELECT id, email_enc, hp_enc, nama_lengkap, peran, status_aktif, mfa_enabled, created_at
+FROM users
+ORDER BY created_at DESC
 LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);
 
 -- name: CreateSession :one
@@ -216,12 +181,9 @@ SELECT s.id AS session_id,
        s.abs_expires_at,
        u.peran,
        u.status_aktif,
-       u.mfa_enabled,
-       a.id AS anggota_id,
-       COALESCE(a.status, '')::text AS anggota_status
+       u.mfa_enabled
 FROM sesi s
 JOIN users u ON u.id = s.user_id
-LEFT JOIN anggota a ON a.user_id = u.id
 WHERE s.token_hash = sqlc.arg(token_hash)
   AND s.revoked_at IS NULL
   AND s.idle_expires_at > NOW()
@@ -260,6 +222,11 @@ UPDATE sesi
 SET revoked_at = NOW()
 WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
 
+-- name: CleanupExpiredSessions :execrows
+DELETE FROM sesi
+WHERE abs_expires_at < NOW()
+   OR idle_expires_at < NOW();
+
 -- name: CreateActivationCode :one
 INSERT INTO kode_aktivasi (user_id, kode_hash, jenis, expires_at, created_by)
 VALUES (sqlc.arg(user_id), sqlc.arg(kode_hash), sqlc.arg(jenis), sqlc.arg(expires_at), sqlc.narg(created_by))
@@ -282,10 +249,3 @@ WHERE id = sqlc.arg(id);
 UPDATE kode_aktivasi
 SET used_at = NOW()
 WHERE user_id = sqlc.arg(user_id) AND used_at IS NULL;
-
--- name: InsertAuditLog :exec
-INSERT INTO audit_log (actor_user_id, actor_peran, aksi, entitas, entitas_id, ringkasan, ip_address)
-VALUES (
-    sqlc.narg(actor_user_id), sqlc.arg(actor_peran), sqlc.arg(aksi),
-    sqlc.arg(entitas), sqlc.arg(entitas_id), sqlc.arg(ringkasan), sqlc.arg(ip_address)
-);

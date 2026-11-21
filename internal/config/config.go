@@ -26,16 +26,21 @@ type EnvVarSpec struct {
 }
 
 // AppConfig merupakan satu-satunya sumber kebenaran (single source of truth)
-// untuk 46 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
+// untuk 51 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
 type AppConfig struct {
-	// --- Runtime & Network (7) ---
-	AppEnv         string   `env:"APP_ENV" type:"string" default:"development" required:"all" secret:"false" component:"api,db-init" desc:"Lingkungan runtime (development|test|staging|production)" example:"test"`
-	AppTimezone    string   `env:"APP_TIMEZONE" type:"string" default:"Asia/Jakarta" required:"all" secret:"false" component:"api,Dockerfile" desc:"Zona waktu operasional (perhitungan batas harian & log)" example:"Asia/Jakarta"`
-	APIPort        int      `env:"API_PORT" type:"int" default:"8080" required:"all" secret:"false" port:"internal" component:"api,Dockerfile,compose" desc:"Port internal HTTP API di dalam proses/kontainer" example:"8080"`
-	APIHostPort    int      `env:"API_HOST_PORT" type:"int" default:"8080" required:"compose" secret:"false" port:"host" component:"compose,uitester" desc:"Port host publik yang dipetakan ke API_PORT" example:"8080"`
-	UIPort         int      `env:"UI_PORT" type:"int" default:"8081" required:"all" secret:"false" port:"host" component:"uitester,compose" desc:"Port HTTP Frontend Tester lokal/uji (dilarang aktif di production)" example:"8081"`
-	AllowedOrigins []string `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" example:"http://127.0.0.1:8081"`
-	TrustedProxies []string `env:"TRUSTED_PROXIES" type:"[]string" default:"127.0.0.1/32" required:"prod" secret:"false" component:"api" desc:"Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For" example:"127.0.0.1/32"`
+	// --- Runtime, Network, Worker & SLO (12) ---
+	AppEnv             string        `env:"APP_ENV" type:"string" default:"development" required:"all" secret:"false" component:"api,db-init" desc:"Lingkungan runtime (development|test|staging|production)" example:"test"`
+	AppTimezone        string        `env:"APP_TIMEZONE" type:"string" default:"Asia/Jakarta" required:"all" secret:"false" component:"api,Dockerfile" desc:"Zona waktu operasional (perhitungan batas harian & log)" example:"Asia/Jakarta"`
+	APIPort            int           `env:"API_PORT" type:"int" default:"8080" required:"all" secret:"false" port:"internal" component:"api,Dockerfile,compose" desc:"Port internal HTTP API di dalam proses/kontainer" example:"8080"`
+	APIHostPort        int           `env:"API_HOST_PORT" type:"int" default:"8080" required:"compose" secret:"false" port:"host" component:"compose,uitester" desc:"Port host publik yang dipetakan ke API_PORT" example:"8080"`
+	UIPort             int           `env:"UI_PORT" type:"int" default:"8081" required:"all" secret:"false" port:"host" component:"uitester,compose" desc:"Port HTTP Frontend Tester lokal/uji (dilarang aktif di production)" example:"8081"`
+	WorkerPort         int           `env:"WORKER_PORT" type:"int" default:"8082" required:"optional" secret:"false" port:"host" component:"worker,compose,envcheck" desc:"Port loopback healthcheck worker (0 = nonaktif)" example:"8082"`
+	WorkerTickInterval time.Duration `env:"WORKER_TICK_INTERVAL" type:"duration" default:"60s" required:"optional" secret:"false" component:"worker,compose" desc:"Interval tick penjadwalan worker latar" example:"60s"`
+	SLOReadP95MS       int           `env:"SLO_READ_P95_MS" type:"int" default:"300" required:"optional" secret:"false" component:"loadtest,monitoring" desc:"Target SLO latensi p95 endpoint baca (milidetik)" example:"300"`
+	SLOWriteP95MS      int           `env:"SLO_WRITE_P95_MS" type:"int" default:"800" required:"optional" secret:"false" component:"loadtest,monitoring" desc:"Target SLO latensi p95 endpoint tulis (milidetik)" example:"800"`
+	SLOMaxErrorRate    float64       `env:"SLO_MAX_ERROR_RATE" type:"float64" default:"0.005" required:"optional" secret:"false" component:"loadtest,monitoring" desc:"Batas rasio error maksimum SLO beban normal (mis. 0.005 = 0.5%)" example:"0.005"`
+	AllowedOrigins     []string      `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" example:"http://127.0.0.1:8081"`
+	TrustedProxies     []string      `env:"TRUSTED_PROXIES" type:"[]string" default:"127.0.0.1/32" required:"prod" secret:"false" component:"api" desc:"Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For" example:"127.0.0.1/32"`
 
 	// --- Database PostgreSQL (8) ---
 	DBHost           string `env:"DB_HOST" type:"string" default:"127.0.0.1" required:"all" secret:"false" component:"api,scripts" desc:"Hostname server PostgreSQL" example:"127.0.0.1"`
@@ -129,22 +134,21 @@ func Load(lookup func(string) (string, bool)) (AppConfig, error) {
 }
 
 func assignField(fv reflect.Value, envKey, raw string) error {
-	switch fv.Kind() {
-	case reflect.String:
+	if fv.Kind() == reflect.String {
 		fv.SetString(raw)
+		return nil
+	}
+	if raw == "" {
+		return nil
+	}
+	switch fv.Kind() {
 	case reflect.Int:
-		if raw == "" {
-			return nil
-		}
 		parsed, err := strconv.Atoi(raw)
 		if err != nil {
 			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus bilangan bulat", envKey, raw)
 		}
 		fv.SetInt(int64(parsed))
 	case reflect.Int64:
-		if raw == "" {
-			return nil
-		}
 		if fv.Type() == reflect.TypeOf(time.Duration(0)) {
 			d, err := time.ParseDuration(raw)
 			if err != nil {
@@ -159,14 +163,17 @@ func assignField(fv reflect.Value, envKey, raw string) error {
 		}
 		fv.SetInt(parsed)
 	case reflect.Bool:
-		if raw == "" {
-			return nil
-		}
 		parsed, err := strconv.ParseBool(raw)
 		if err != nil {
 			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus true/false", envKey, raw)
 		}
 		fv.SetBool(parsed)
+	case reflect.Float64:
+		parsed, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return fmt.Errorf("konfigurasi %s tidak valid (%q): harus bilangan desimal", envKey, raw)
+		}
+		fv.SetFloat(parsed)
 	case reflect.Slice:
 		if fv.Type().Elem().Kind() == reflect.String {
 			var items []string
@@ -200,6 +207,15 @@ func (c AppConfig) validateBasic() error {
 		if pair.val <= 0 || pair.val > 65535 {
 			return fmt.Errorf("%s di luar jangkauan: %d", pair.name, pair.val)
 		}
+	}
+	if c.WorkerPort < 0 || c.WorkerPort > 65535 {
+		return fmt.Errorf("WORKER_PORT di luar jangkauan: %d", c.WorkerPort)
+	}
+	if c.WorkerTickInterval <= 0 {
+		return fmt.Errorf("WORKER_TICK_INTERVAL wajib > 0")
+	}
+	if c.SLOReadP95MS <= 0 || c.SLOWriteP95MS <= 0 || c.SLOMaxErrorRate < 0 || c.SLOMaxErrorRate > 1 {
+		return fmt.Errorf("parameter SLO tidak valid")
 	}
 	if err := c.validateSessionAndLimits(); err != nil {
 		return err
@@ -374,7 +390,7 @@ func (c AppConfig) validateDatabaseURLConsistency() error {
 	return nil
 }
 
-// Catalog mengembalikan daftar spesifikasi 46 variabel environment secara otomatis dari tag struct AppConfig.
+// Catalog mengembalikan daftar spesifikasi 51 variabel environment secara otomatis dari tag struct AppConfig.
 func Catalog() []EnvVarSpec {
 	t := reflect.TypeOf(AppConfig{})
 	specs := make([]EnvVarSpec, 0, t.NumField())
@@ -405,7 +421,7 @@ func RenderEnvReferenceMarkdown() string {
 	var b strings.Builder
 	b.WriteString("# Referensi Variabel Environment — Kopdes Merah Putih\n\n")
 	b.WriteString("> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.\n")
-	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (maksimal 46 variabel).\n\n")
+	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (maksimal 51 variabel).\n\n")
 
 	b.WriteString("## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)\n\n")
 	b.WriteString("| Jenis Pengaturan | Lokasi Penyimpanan | Contoh Parameter |\n")

@@ -293,7 +293,7 @@ func seedIuranAndCatalog(ctx context.Context, q *db.Queries) error {
 	}
 	now := time.Now().UTC()
 	due := time.Date(now.Year(), now.Month(), int(jenisRow.HariJatuhTempo), 0, 0, 0, 0, time.UTC)
-	if agIDs, err := q.ListAktifAnggotaIDs(ctx); err == nil {
+	if agIDs, err := q.ListActiveAnggotaIDs(ctx); err == nil {
 		for _, aid := range agIDs {
 			_, _ = q.InsertTagihanIuranIfMissing(ctx, db.InsertTagihanIuranIfMissingParams{
 				AnggotaID: aid, JenisIuranID: jenisRow.ID, PeriodeTahun: int32(now.Year()), // #nosec G115 -- tahun kalender wajar

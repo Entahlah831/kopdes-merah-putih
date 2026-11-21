@@ -14,17 +14,21 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	angapi "github.com/kopdes/merah-putih/internal/anggota/api"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	pengapi "github.com/kopdes/merah-putih/internal/pengaturan/api"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
-// Config menyimpan parameter runtime untuk domain autentikasi & pengaturan.
+// Config menyimpan parameter runtime untuk domain autentikasi.
 type Config struct {
 	AppEnv               string
 	BlindIndexSecret     []byte
 	KeyProvider          security.KeyProvider
+	Audit                pengapi.AuditWriter
+	Members              angapi.MemberReader
 	BcryptCost           int
 	SessionIdleTTL       time.Duration
 	SessionAbsTTL        time.Duration
@@ -203,15 +207,8 @@ func (s *Service) issueSessionForUser(ctx context.Context, user db.User, in Logi
 		return nil, fmt.Errorf("simpan sesi: %w", err)
 	}
 
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: user.ID,
-		ActorPeran:  user.Peran,
-		Aksi:        "login",
-		Entitas:     "sesi",
-		EntitasID:   uuid.UUID(user.ID.Bytes).String(),
-		Ringkasan:   fmt.Sprintf("Login scope=%s", scope),
-		IpAddress:   in.IP,
-	})
+	uid := response.FromPGUUID(user.ID)
+	s.logAudit(ctx, &uid, user.Peran, "login", "sesi", uid.String(), fmt.Sprintf("Login scope=%s", scope), in.IP)
 
 	return &LoginResult{
 		SessionToken:     rawTok,
@@ -219,7 +216,7 @@ func (s *Service) issueSessionForUser(ctx context.Context, user db.User, in Logi
 		MFARequired:      mfaReq,
 		MFASetupRequired: mfaSetup,
 		ExpiresAt:        idleExp,
-		UserID:           uuid.UUID(user.ID.Bytes),
+		UserID:           uid,
 		Role:             user.Peran,
 		NamaLengkap:      user.NamaLengkap,
 	}, nil
@@ -230,15 +227,7 @@ func (s *Service) Logout(ctx context.Context, claims *middleware.SessionClaims, 
 	if err := q.RevokeSessionByID(ctx, response.ToPGUUID(claims.SessionID)); err != nil {
 		return fmt.Errorf("logout sesi: %w", err)
 	}
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "logout",
-		Entitas:     "sesi",
-		EntitasID:   claims.SessionID.String(),
-		Ringkasan:   "Logout sesi",
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, uuidPtr(claims.UserID), claims.Role, "logout", "sesi", claims.SessionID.String(), "Logout sesi", ip)
 	return nil
 }
 

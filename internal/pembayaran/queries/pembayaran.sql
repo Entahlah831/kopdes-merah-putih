@@ -15,19 +15,18 @@ SELECT id, nama_merchant, nmid, nama_bank, nomor_rekening, nama_pemilik,
 FROM rekening_qris
 WHERE id = sqlc.arg(id);
 
+-- name: GetActiveRekeningQRISByID :one
+SELECT id, nama_merchant, nmid, nama_bank, nomor_rekening, nama_pemilik,
+       jenis_pemilik, qris_image_url, qris_payload, aktif
+FROM rekening_qris
+WHERE id = sqlc.arg(id) AND aktif = TRUE;
+
 -- name: ListRekeningQRIS :many
 SELECT id, nama_merchant, nmid, nama_bank, nomor_rekening, nama_pemilik,
        jenis_pemilik, qris_image_url, aktif, created_at
 FROM rekening_qris
 WHERE aktif = TRUE
 ORDER BY created_at DESC;
-
--- name: GetActiveRekeningFromPengaturan :one
-SELECT r.id, r.nama_merchant, r.nmid, r.nama_bank, r.nomor_rekening, r.nama_pemilik,
-       r.jenis_pemilik, r.qris_image_url, r.qris_payload, r.aktif
-FROM pengaturan p
-JOIN rekening_qris r ON r.id = p.active_rekening_qris_id
-WHERE p.id = 1 AND r.aktif = TRUE;
 
 -- name: GetPembayaranByIdempotencyKey :one
 SELECT id, nomor_pembayaran, nomor_kwitansi, pembayar_user_id, anggota_id, rekening_qris_id,
@@ -275,3 +274,19 @@ SET status = sqlc.arg(status),
     selesai_at = CASE WHEN sqlc.arg(status) = 'selesai' THEN NOW() ELSE NULL END
 WHERE id = sqlc.arg(id)
 RETURNING id, pembayaran_id, nominal, metode, alasan, status, bukti_url, catatan_pelaksana, diajukan_oleh, dilaksanakan_oleh, breakglass, selesai_at, updated_at;
+
+-- name: LaporanPembayaranRekap :many
+SELECT p.jenis_transaksi,
+       p.metode,
+       p.status,
+       COUNT(*)::bigint AS jumlah_transaksi,
+       COALESCE(SUM(p.nominal_pokok), 0)::bigint AS total_pokok,
+       COALESCE(SUM(p.selisih_kode_unik), 0)::bigint AS total_selisih_kode_unik,
+       COALESCE(SUM(p.nominal_dibayar), 0)::bigint AS total_dibayar,
+       COALESCE(SUM(CASE WHEN pd.status = 'selesai' THEN pd.nominal ELSE 0 END), 0)::bigint AS total_dikembalikan
+FROM pembayaran p
+LEFT JOIN pengembalian_dana pd ON pd.pembayaran_id = p.id
+WHERE (sqlc.narg(dari)::date IS NULL OR (p.created_at AT TIME ZONE sqlc.arg(tz)::text)::date >= sqlc.narg(dari)::date)
+  AND (sqlc.narg(sampai)::date IS NULL OR (p.created_at AT TIME ZONE sqlc.arg(tz)::text)::date <= sqlc.narg(sampai)::date)
+GROUP BY p.jenis_transaksi, p.metode, p.status
+ORDER BY p.jenis_transaksi ASC, p.metode ASC, p.status ASC;

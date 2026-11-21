@@ -17,6 +17,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	katapi "github.com/kopdes/merah-putih/internal/katalog/api"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -195,32 +196,23 @@ func (s *Service) UpdateStatus(ctx context.Context, claims *middleware.SessionCl
 		return nil, err
 	}
 	if !orderHadDeductedStock(cur.Status) && orderHadDeductedStock(st) {
-		if err := confirmOrDeductOrderStockTx(ctx, qtx, cur.ID, cur.StokStatus); err != nil {
+		if err := s.confirmOrDeductOrderStockTx(ctx, tx, qtx, cur.ID, cur.StokStatus); err != nil {
 			return nil, err
 		}
 	}
 	if st == "batal" && cur.Status != "batal" {
-		if err := releaseOrRestoreOrderResourcesTx(ctx, qtx, cur.ID, cur.PromoID, cur.StokStatus, orderHadDeductedStock(cur.Status)); err != nil {
+		if err := s.releaseOrRestoreOrderResourcesTx(ctx, tx, qtx, cur.ID, cur.PromoID, cur.StokStatus, orderHadDeductedStock(cur.Status)); err != nil {
 			return nil, err
 		}
 	}
 	updated, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
-		Status:  st,
-		Catatan: strings.TrimSpace(catatan),
-		ID:      idPG,
+		Status: st, Catatan: strings.TrimSpace(catatan), ID: idPG,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ubah status pesanan: %w", err)
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "pesanan.status_" + st,
-		Entitas:     "pesanan",
-		EntitasID:   idStr,
-		Ringkasan:   fmt.Sprintf("Pesanan %s: %s -> %s", cur.NomorPesanan, cur.Status, st),
-		IpAddress:   ip,
-	})
+	s.logAuditTx(ctx, tx, claims, "pesanan.status_"+st, "pesanan", idStr,
+		fmt.Sprintf("Pesanan %s: %s -> %s", cur.NomorPesanan, cur.Status, st), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -247,22 +239,26 @@ func orderHadDeductedStock(status string) bool {
 	return status == "dibayar" || status == "diproses" || status == "diantar" || status == "siap_diambil" || status == "selesai"
 }
 
-func confirmOrDeductOrderStockTx(ctx context.Context, qtx *db.Queries, pesananID pgtype.UUID, stokStatus string) error {
+func (s *Service) confirmOrDeductOrderStockTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, pesananID pgtype.UUID, stokStatus string) error {
 	if stokStatus == "deducted" {
 		return nil
+	}
+	if s.cfg.Stock == nil {
+		return response.NewDomainError(http.StatusInternalServerError, "STOCK_MANAGER_UNAVAILABLE", "Pengelola stok katalog belum siap")
 	}
 	items, err := qtx.ListPesananItems(ctx, pesananID)
 	if err != nil {
 		return err
 	}
 	for _, it := range items {
+		pid := response.FromPGUUID(it.ProdukID)
 		if stokStatus == "reserved" {
-			_, err = qtx.ConfirmReservedProdukStock(ctx, db.ConfirmReservedProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+			err = s.cfg.Stock.ConfirmReservedStockTx(ctx, tx, pid, it.Kuantitas)
 		} else {
-			_, err = qtx.DecrementAvailableProdukStock(ctx, db.DecrementAvailableProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+			err = s.cfg.Stock.DecrementAvailableStockTx(ctx, tx, pid, it.Kuantitas)
 		}
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, katapi.ErrOutOfStock) {
 				return response.NewDomainError(http.StatusConflict, "OUT_OF_STOCK", "Stok produk "+it.NamaProduk+" tidak mencukupi")
 			}
 			return err
@@ -271,17 +267,21 @@ func confirmOrDeductOrderStockTx(ctx context.Context, qtx *db.Queries, pesananID
 	return qtx.UpdatePesananStokStatus(ctx, db.UpdatePesananStokStatusParams{ID: pesananID, StokStatus: "deducted"})
 }
 
-func releaseOrRestoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesananID, promoID pgtype.UUID, stokStatus string, wasDeducted bool) error {
+func (s *Service) releaseOrRestoreOrderResourcesTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, pesananID, promoID pgtype.UUID, stokStatus string, wasDeducted bool) error {
 	if stokStatus == "reserved" || stokStatus == "deducted" || wasDeducted {
+		if s.cfg.Stock == nil {
+			return response.NewDomainError(http.StatusInternalServerError, "STOCK_MANAGER_UNAVAILABLE", "Pengelola stok katalog belum siap")
+		}
 		items, err := qtx.ListPesananItems(ctx, pesananID)
 		if err != nil {
 			return err
 		}
 		for _, it := range items {
+			pid := response.FromPGUUID(it.ProdukID)
 			if stokStatus == "reserved" {
-				err = qtx.ReleaseProdukStockHold(ctx, db.ReleaseProdukStockHoldParams{ID: it.ProdukID, Qty: it.Kuantitas})
+				err = s.cfg.Stock.ReleaseStockHoldTx(ctx, tx, pid, it.Kuantitas)
 			} else {
-				err = qtx.RestoreProdukStock(ctx, db.RestoreProdukStockParams{ID: it.ProdukID, Qty: it.Kuantitas})
+				err = s.cfg.Stock.RestoreStockTx(ctx, tx, pid, it.Kuantitas)
 			}
 			if err != nil {
 				return err
@@ -291,8 +291,8 @@ func releaseOrRestoreOrderResourcesTx(ctx context.Context, qtx *db.Queries, pesa
 			return err
 		}
 	}
-	if promoID.Valid {
-		if err := qtx.DecrementPromoUsed(ctx, promoID); err != nil {
+	if promoID.Valid && s.cfg.Stock != nil {
+		if err := s.cfg.Stock.DecrementPromoUsedTx(ctx, tx, response.FromPGUUID(promoID)); err != nil {
 			return err
 		}
 	}
@@ -369,26 +369,38 @@ func (s *Service) ExpireUnpaidOrders(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("ambil pesanan kedaluwarsa: %w", err)
 	}
+	count := 0
 	for _, row := range expired {
-		if err := releaseOrRestoreOrderResourcesTx(ctx, qtx, row.ID, row.PromoID, row.StokStatus, false); err != nil {
+		if s.cfg.PayChecker != nil {
+			active, pErr := s.cfg.PayChecker.HasActivePembayaranForPesananTx(ctx, tx, response.FromPGUUID(row.ID))
+			if pErr != nil {
+				return 0, fmt.Errorf("cek pembayaran aktif pesanan: %w", pErr)
+			}
+			if active {
+				continue
+			}
+		}
+		if err := s.releaseOrRestoreOrderResourcesTx(ctx, tx, qtx, row.ID, row.PromoID, row.StokStatus, false); err != nil {
 			return 0, err
 		}
 		if _, err := qtx.UpdatePesananStatus(ctx, db.UpdatePesananStatusParams{
-			Status:  "batal",
-			Catatan: "Kedaluwarsa otomatis",
-			ID:      row.ID,
+			Status: "batal", Catatan: "Kedaluwarsa otomatis", ID: row.ID,
 		}); err != nil {
 			return 0, err
 		}
+		count++
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return len(expired), nil
+	return count, nil
 }
 
 // ReleaseExpiredStockHolds melepas tahanan stok pesanan yang melewati STOCK_HOLD_MINUTES tanpa membatalkan pembayaran menunggu verifikasi.
 func (s *Service) ReleaseExpiredStockHolds(ctx context.Context) (int, error) {
+	if s.cfg.Stock == nil {
+		return 0, response.NewDomainError(http.StatusInternalServerError, "STOCK_MANAGER_UNAVAILABLE", "Pengelola stok katalog belum siap")
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return 0, err
@@ -406,7 +418,7 @@ func (s *Service) ReleaseExpiredStockHolds(ctx context.Context) (int, error) {
 			return 0, iErr
 		}
 		for _, it := range items {
-			if err := qtx.ReleaseProdukStockHold(ctx, db.ReleaseProdukStockHoldParams{ID: it.ProdukID, Qty: it.Kuantitas}); err != nil {
+			if err := s.cfg.Stock.ReleaseStockHoldTx(ctx, tx, response.FromPGUUID(it.ProdukID), it.Kuantitas); err != nil {
 				return 0, err
 			}
 		}

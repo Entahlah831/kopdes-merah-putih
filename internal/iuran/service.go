@@ -15,23 +15,51 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	angapi "github.com/kopdes/merah-putih/internal/anggota/api"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	pengapi "github.com/kopdes/merah-putih/internal/pengaturan/api"
 )
 
 type Service struct {
 	pool    *pgxpool.Pool
 	q       *db.Queries
+	members angapi.MemberReader
+	audit   pengapi.AuditWriter
 	trusted *middleware.TrustedProxyMatcher
 }
 
-func NewService(pool *pgxpool.Pool, trusted []string) *Service {
+func NewService(pool *pgxpool.Pool, trusted []string, members angapi.MemberReader, audit pengapi.AuditWriter) *Service {
 	return &Service{
 		pool:    pool,
 		q:       db.New(pool),
+		members: members,
+		audit:   audit,
 		trusted: middleware.NewTrustedProxyMatcher(trusted),
 	}
+}
+
+func (s *Service) logAudit(ctx context.Context, tx pgx.Tx, claims *middleware.SessionClaims, aksi, entitas, entitasID, ringkasan, ip string) {
+	if s == nil || s.audit == nil {
+		return
+	}
+	var actorPtr *uuid.UUID
+	peran := "system"
+	if claims != nil {
+		u := claims.UserID
+		actorPtr = &u
+		peran = claims.Role
+	}
+	entry := pengapi.AuditEntry{
+		ActorUserID: actorPtr, ActorPeran: peran, Aksi: aksi,
+		Entitas: entitas, EntitasID: entitasID, Ringkasan: ringkasan, IPAddress: ip,
+	}
+	if tx != nil {
+		_ = s.audit.LogTx(ctx, tx, entry)
+		return
+	}
+	_ = s.audit.Log(ctx, entry)
 }
 
 type CreateJenisInput struct {
@@ -94,15 +122,8 @@ func (s *Service) CreateJenisOrGenerate(ctx context.Context, claims *middleware.
 		if err != nil {
 			return nil, err
 		}
-		_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-			ActorUserID: response.ToPGUUID(claims.UserID),
-			ActorPeran:  claims.Role,
-			Aksi:        "iuran.generate",
-			Entitas:     "tagihan_iuran",
-			EntitasID:   fmt.Sprintf("%04d-%02d", th, bl),
-			Ringkasan:   fmt.Sprintf("Generate tagihan %04d-%02d: %d dibuat", th, bl, res.Dibuat),
-			IpAddress:   ip,
-		})
+		s.logAudit(ctx, nil, claims, "iuran.generate", "tagihan_iuran",
+			fmt.Sprintf("%04d-%02d", th, bl), fmt.Sprintf("Generate tagihan %04d-%02d: %d dibuat", th, bl, res.Dibuat), ip)
 		return res, nil
 	}
 	return s.createJenis(ctx, claims, in, ip)
@@ -140,15 +161,7 @@ func (s *Service) createJenis(ctx context.Context, claims *middleware.SessionCla
 		}
 		return nil, fmt.Errorf("buat jenis iuran: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "iuran.jenis_create",
-		Entitas:     "jenis_iuran",
-		EntitasID:   response.FromPGUUID(row.ID).String(),
-		Ringkasan:   "Tambah jenis iuran " + row.Kode,
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, nil, claims, "iuran.jenis_create", "jenis_iuran", response.FromPGUUID(row.ID).String(), "Tambah jenis iuran "+row.Kode, ip)
 	return &JenisDTO{
 		ID:                   response.FromPGUUID(row.ID),
 		Kode:                 row.Kode,
@@ -188,7 +201,10 @@ func (s *Service) GenerateMonthlyBills(ctx context.Context, tahun, bulan int32) 
 	if err != nil {
 		return nil, fmt.Errorf("ambil jenis iuran aktif: %w", err)
 	}
-	anggotaIDs, err := s.q.ListAktifAnggotaIDs(ctx)
+	if s.members == nil {
+		return nil, fmt.Errorf("layanan pembaca anggota wajib tersedia")
+	}
+	anggotaIDs, err := s.members.ListActiveMemberIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ambil daftar anggota aktif: %w", err)
 	}
@@ -197,7 +213,7 @@ func (s *Service) GenerateMonthlyBills(ctx context.Context, tahun, bulan int32) 
 		due := time.Date(int(tahun), time.Month(bulan), int(j.HariJatuhTempo), 0, 0, 0, 0, time.UTC)
 		for _, aID := range anggotaIDs {
 			_, insErr := s.q.InsertTagihanIuranIfMissing(ctx, db.InsertTagihanIuranIfMissingParams{
-				AnggotaID:         aID,
+				AnggotaID:         response.ToPGUUID(aID),
 				JenisIuranID:      j.ID,
 				PeriodeTahun:      tahun,
 				PeriodeBulan:      bulan,
@@ -221,14 +237,17 @@ func (s *Service) ListTagihan(ctx context.Context, claims *middleware.SessionCla
 	var anggotaFilter pgtype.UUID
 	onlyTunggakan := false
 	if claims.Role == "anggota" || strings.EqualFold(scope, "saya") {
-		ag, err := s.q.GetAnggotaByUserID(ctx, response.ToPGUUID(claims.UserID))
-		if errors.Is(err, pgx.ErrNoRows) {
+		if s.members == nil {
+			return []TagihanDTO{}, nil
+		}
+		ag, err := s.members.GetByUserID(ctx, claims.UserID)
+		if errors.Is(err, angapi.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			return []TagihanDTO{}, nil
 		}
 		if err != nil {
 			return nil, fmt.Errorf("cari anggota user: %w", err)
 		}
-		anggotaFilter = ag.ID
+		anggotaFilter = response.ToPGUUID(ag.ID)
 	} else if strings.EqualFold(scope, "tunggakan") {
 		onlyTunggakan = true
 	}
@@ -242,17 +261,28 @@ func (s *Service) ListTagihan(ctx context.Context, claims *middleware.SessionCla
 	if err != nil {
 		return nil, fmt.Errorf("list tagihan iuran: %w", err)
 	}
-	return mapTagihanRows(rows), nil
+	ids := make([]uuid.UUID, 0, len(rows))
+	seen := make(map[uuid.UUID]bool, len(rows))
+	for _, r := range rows {
+		aid := response.FromPGUUID(r.AnggotaID)
+		if !seen[aid] {
+			seen[aid] = true
+			ids = append(ids, aid)
+		}
+	}
+	return mapTagihanRows(rows, s.lookupMembersMap(ctx, ids)), nil
 }
 
-func mapTagihanRows(rows []db.ListTagihanIuranRow) []TagihanDTO {
+func mapTagihanRows(rows []db.ListTagihanIuranRow, members map[uuid.UUID]angapi.MemberSummary) []TagihanDTO {
 	out := make([]TagihanDTO, 0, len(rows))
 	for _, r := range rows {
+		aid := response.FromPGUUID(r.AnggotaID)
+		m := members[aid]
 		dto := TagihanDTO{
 			ID:                response.FromPGUUID(r.ID),
-			AnggotaID:         response.FromPGUUID(r.AnggotaID),
-			NomorAnggota:      r.NomorAnggota,
-			NamaLengkap:       r.NamaLengkap,
+			AnggotaID:         aid,
+			NomorAnggota:      m.NomorAnggota,
+			NamaLengkap:       m.NamaLengkap,
 			JenisKode:         r.JenisKode,
 			JenisNama:         r.JenisNama,
 			PeriodeTahun:      r.PeriodeTahun,
@@ -308,15 +338,8 @@ func (s *Service) ApplyKeringanan(ctx context.Context, claims *middleware.Sessio
 	if err != nil {
 		return nil, fmt.Errorf("simpan keringanan: %w", err)
 	}
-	_ = qtx.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "iuran.keringanan",
-		Entitas:     "tagihan_iuran",
-		EntitasID:   idStr,
-		Ringkasan:   fmt.Sprintf("Keringanan %d -> status %s", in.NominalKeringanan, updated.Status),
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, tx, claims, "iuran.keringanan", "tagihan_iuran", idStr,
+		fmt.Sprintf("Keringanan %d -> status %s", in.NominalKeringanan, updated.Status), ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

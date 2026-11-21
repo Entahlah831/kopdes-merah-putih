@@ -1,4 +1,4 @@
-package pendaftaran
+package anggota
 
 import (
 	"context"
@@ -12,51 +12,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kopdes/merah-putih/internal/api/middleware"
+
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
 var nikRegex = regexp.MustCompile(`^[0-9]{16}$`)
-
-type Config struct {
-	RegistrationEnabled bool
-	CaptchaEnabled      bool
-	CaptchaSecretKey    string
-	TurnstileVerifyURL  string
-	KeyProvider         security.KeyProvider
-	BlindIndexSecret    []byte
-	RetentionDays       int
-	TrustedProxies      []string
-	HTTPClient          *http.Client
-}
-
-type Service struct {
-	pool    *pgxpool.Pool
-	store   *KYCFileStore
-	cfg     Config
-	trusted *middleware.TrustedProxyMatcher
-}
-
-func NewService(pool *pgxpool.Pool, store *KYCFileStore, cfg Config) *Service {
-	if cfg.TurnstileVerifyURL == "" {
-		cfg.TurnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
-	}
-	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 30
-	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 5 * time.Second}
-	}
-	return &Service{
-		pool:    pool,
-		store:   store,
-		cfg:     cfg,
-		trusted: middleware.NewTrustedProxyMatcher(cfg.TrustedProxies),
-	}
-}
 
 type RegisterInput struct {
 	NamaLengkap  string `json:"nama_lengkap"`
@@ -147,7 +109,6 @@ func (s *Service) RegisterPublic(ctx context.Context, in RegisterInput, ip strin
 	if _, err := q.GetAnggotaByNIKHash(ctx, nikHash); err == nil {
 		return nil, response.NewDomainError(http.StatusConflict, "ALREADY_MEMBER", "NIK sudah terdaftar sebagai anggota aktif")
 	}
-
 	return s.persistRegistration(ctx, in, nik, nikHash, normHP, ip)
 }
 
@@ -176,10 +137,7 @@ func (s *Service) encryptRegistrationPII(idStr string, in RegisterInput, nik, no
 }
 
 func (s *Service) persistRegistration(ctx context.Context, in RegisterInput, nik, nikHash, normHP, ip string) (map[string]interface{}, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		id = uuid.New()
-	}
+	id := newUUIDv7()
 	idStr := id.String()
 	rawTok, tokHash, err := security.GenerateOpaqueToken(24)
 	if err != nil {
@@ -190,39 +148,21 @@ func (s *Service) persistRegistration(ctx context.Context, in RegisterInput, nik
 		return nil, err
 	}
 
-	q := db.New(s.pool)
-	row, err := q.CreatePendaftaran(ctx, db.CreatePendaftaranParams{
-		ID:              response.ToPGUUID(id),
-		NamaLengkap:     strings.TrimSpace(in.NamaLengkap),
-		EmailEnc:        pii.emailEnc,
-		EmailHash:       pii.emailHash,
-		NikEnc:          pii.nikEnc,
-		NikHash:         nikHash,
-		NikKeyVersion:   security.BlindIndexKeyVersion(s.cfg.BlindIndexSecret),
-		NikMasked:       security.MaskNIK(nik),
-		HpEnc:           pii.hpEnc,
-		HpHash:          security.HashBlindIndex(normHP, s.cfg.BlindIndexSecret),
-		HpMasked:        security.MaskPhone(normHP),
-		TanggalLahirEnc: pii.dobEnc,
-		AlamatEnc:       pii.addrEnc,
-		Pekerjaan:       strings.TrimSpace(in.Pekerjaan),
-		UploadTokenHash: tokHash,
-		IpAddress:       ip,
+	row, err := db.New(s.pool).CreatePendaftaran(ctx, db.CreatePendaftaranParams{
+		ID: response.ToPGUUID(id), NamaLengkap: strings.TrimSpace(in.NamaLengkap),
+		EmailEnc: pii.emailEnc, EmailHash: pii.emailHash, NikEnc: pii.nikEnc, NikHash: nikHash,
+		NikKeyVersion: security.BlindIndexKeyVersion(s.cfg.BlindIndexSecret), NikMasked: security.MaskNIK(nik),
+		HpEnc: pii.hpEnc, HpHash: security.HashBlindIndex(normHP, s.cfg.BlindIndexSecret),
+		HpMasked: security.MaskPhone(normHP), TanggalLahirEnc: pii.dobEnc, AlamatEnc: pii.addrEnc,
+		Pekerjaan: strings.TrimSpace(in.Pekerjaan), UploadTokenHash: tokHash, IpAddress: ip,
 	})
 	if err != nil {
 		return nil, err
 	}
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorPeran: "publik", Aksi: "submit_pendaftaran", Entitas: "pendaftaran",
-		EntitasID: idStr, Ringkasan: "Pengajuan pendaftaran calon anggota", IpAddress: ip,
-	})
+	s.logAudit(ctx, nil, "publik", "submit_pendaftaran", "pendaftaran", idStr, "Pengajuan pendaftaran calon anggota", ip)
 	return map[string]interface{}{
-		"id":           uuid.UUID(row.ID.Bytes),
-		"nama_lengkap": row.NamaLengkap,
-		"nik_masked":   row.NikMasked,
-		"hp_masked":    row.HpMasked,
-		"status":       row.Status,
-		"upload_token": rawTok,
-		"created_at":   row.CreatedAt.Time,
+		"id": uuid.UUID(row.ID.Bytes), "nama_lengkap": row.NamaLengkap,
+		"nik_masked": row.NikMasked, "hp_masked": row.HpMasked,
+		"status": row.Status, "upload_token": rawTok, "created_at": row.CreatedAt.Time,
 	}, nil
 }

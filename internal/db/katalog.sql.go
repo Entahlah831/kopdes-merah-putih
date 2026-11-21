@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const confirmReservedProdukStock = `-- name: ConfirmReservedProdukStock :one
+UPDATE produk
+SET stok = stok - $1::int,
+    stok_tertahan = stok_tertahan - $1::int
+WHERE id = $2
+  AND stok >= $1::int
+  AND stok_tertahan >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type ConfirmReservedProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type ConfirmReservedProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) ConfirmReservedProdukStock(ctx context.Context, arg ConfirmReservedProdukStockParams) (ConfirmReservedProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, confirmReservedProdukStock, arg.Qty, arg.ID)
+	var i ConfirmReservedProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
+}
+
 const createKategori = `-- name: CreateKategori :one
 INSERT INTO kategori (slug, nama, aktif)
 VALUES ($1, $2, TRUE)
@@ -173,6 +201,57 @@ func (q *Queries) CreatePromo(ctx context.Context, arg CreatePromoParams) (Creat
 		&i.BerakhirPada,
 		&i.Aktif,
 	)
+	return i, err
+}
+
+const decrementAvailableProdukStock = `-- name: DecrementAvailableProdukStock :one
+UPDATE produk
+SET stok = stok - $1::int
+WHERE id = $2
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type DecrementAvailableProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type DecrementAvailableProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) DecrementAvailableProdukStock(ctx context.Context, arg DecrementAvailableProdukStockParams) (DecrementAvailableProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, decrementAvailableProdukStock, arg.Qty, arg.ID)
+	var i DecrementAvailableProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
+}
+
+const decrementProdukStock = `-- name: DecrementProdukStock :one
+UPDATE produk
+SET stok = stok - $1::int
+WHERE id = $2 AND status = 'aktif' AND stok >= $1::int
+RETURNING id, stok
+`
+
+type DecrementProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type DecrementProdukStockRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Stok int32       `json:"stok"`
+}
+
+func (q *Queries) DecrementProdukStock(ctx context.Context, arg DecrementProdukStockParams) (DecrementProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, decrementProdukStock, arg.Qty, arg.ID)
+	var i DecrementProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok)
 	return i, err
 }
 
@@ -491,6 +570,65 @@ func (q *Queries) ListPromoAktif(ctx context.Context) ([]ListPromoAktifRow, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseProdukStockHold = `-- name: ReleaseProdukStockHold :exec
+UPDATE produk
+SET stok_tertahan = GREATEST(0, stok_tertahan - $1::int)
+WHERE id = $2
+`
+
+type ReleaseProdukStockHoldParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ReleaseProdukStockHold(ctx context.Context, arg ReleaseProdukStockHoldParams) error {
+	_, err := q.db.Exec(ctx, releaseProdukStockHold, arg.Qty, arg.ID)
+	return err
+}
+
+const reserveProdukStock = `-- name: ReserveProdukStock :one
+UPDATE produk
+SET stok_tertahan = stok_tertahan + $1::int
+WHERE id = $2
+  AND status = 'aktif'
+  AND (stok - stok_tertahan) >= $1::int
+RETURNING id, stok, stok_tertahan
+`
+
+type ReserveProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+type ReserveProdukStockRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Stok         int32       `json:"stok"`
+	StokTertahan int32       `json:"stok_tertahan"`
+}
+
+func (q *Queries) ReserveProdukStock(ctx context.Context, arg ReserveProdukStockParams) (ReserveProdukStockRow, error) {
+	row := q.db.QueryRow(ctx, reserveProdukStock, arg.Qty, arg.ID)
+	var i ReserveProdukStockRow
+	err := row.Scan(&i.ID, &i.Stok, &i.StokTertahan)
+	return i, err
+}
+
+const restoreProdukStock = `-- name: RestoreProdukStock :exec
+UPDATE produk
+SET stok = stok + $1::int
+WHERE id = $2
+`
+
+type RestoreProdukStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) RestoreProdukStock(ctx context.Context, arg RestoreProdukStockParams) error {
+	_, err := q.db.Exec(ctx, restoreProdukStock, arg.Qty, arg.ID)
+	return err
 }
 
 const updateProduk = `-- name: UpdateProduk :one

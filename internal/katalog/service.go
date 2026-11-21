@@ -15,23 +15,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	angapi "github.com/kopdes/merah-putih/internal/anggota/api"
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	pengapi "github.com/kopdes/merah-putih/internal/pengaturan/api"
 )
 
 type Service struct {
 	pool    *pgxpool.Pool
 	q       *db.Queries
+	members angapi.MemberReader
+	audit   pengapi.AuditWriter
 	trusted *middleware.TrustedProxyMatcher
 }
 
-func NewService(pool *pgxpool.Pool, trusted []string) *Service {
+func NewService(pool *pgxpool.Pool, trusted []string, members angapi.MemberReader, audit pengapi.AuditWriter) *Service {
 	return &Service{
 		pool:    pool,
 		q:       db.New(pool),
+		members: members,
+		audit:   audit,
 		trusted: middleware.NewTrustedProxyMatcher(trusted),
 	}
+}
+
+func (s *Service) logAudit(ctx context.Context, claims *middleware.SessionClaims, aksi, entitas, entitasID, ringkasan, ip string) {
+	if s == nil || s.audit == nil {
+		return
+	}
+	var actorPtr *uuid.UUID
+	peran := "system"
+	if claims != nil {
+		u := claims.UserID
+		actorPtr = &u
+		peran = claims.Role
+	}
+	_ = s.audit.Log(ctx, pengapi.AuditEntry{
+		ActorUserID: actorPtr, ActorPeran: peran, Aksi: aksi,
+		Entitas: entitas, EntitasID: entitasID, Ringkasan: ringkasan, IPAddress: ip,
+	})
 }
 
 type ProdukDTO struct {
@@ -79,10 +102,10 @@ type WriteProdukInput struct {
 }
 
 func (s *Service) isActiveMember(ctx context.Context, claims *middleware.SessionClaims) bool {
-	if claims == nil {
+	if claims == nil || s.members == nil {
 		return false
 	}
-	ag, err := s.q.GetAnggotaByUserID(ctx, response.ToPGUUID(claims.UserID))
+	ag, err := s.members.GetByUserID(ctx, claims.UserID)
 	if err != nil {
 		return false
 	}
@@ -224,15 +247,7 @@ func (s *Service) createKategori(ctx context.Context, claims *middleware.Session
 		}
 		return nil, fmt.Errorf("buat kategori: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "katalog.kategori_create",
-		Entitas:     "kategori",
-		EntitasID:   response.FromPGUUID(row.ID).String(),
-		Ringkasan:   "Tambah kategori " + row.Slug,
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, claims, "katalog.kategori_create", "kategori", response.FromPGUUID(row.ID).String(), "Tambah kategori "+row.Slug, ip)
 	return &row, nil
 }
 
@@ -297,15 +312,7 @@ func (s *Service) createProduk(ctx context.Context, claims *middleware.SessionCl
 		}
 		return nil, fmt.Errorf("buat produk: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "katalog.produk_create",
-		Entitas:     "produk",
-		EntitasID:   response.FromPGUUID(row.ID).String(),
-		Ringkasan:   "Tambah produk " + row.Sku,
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, claims, "katalog.produk_create", "produk", response.FromPGUUID(row.ID).String(), "Tambah produk "+row.Sku, ip)
 	return &row, nil
 }
 
@@ -356,15 +363,7 @@ func (s *Service) updateProduk(ctx context.Context, claims *middleware.SessionCl
 	if err != nil {
 		return nil, fmt.Errorf("perbarui produk: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "katalog.produk_update",
-		Entitas:     "produk",
-		EntitasID:   in.ID,
-		Ringkasan:   "Update produk " + nama,
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, claims, "katalog.produk_update", "produk", in.ID, "Update produk "+nama, ip)
 	return &row, nil
 }
 
@@ -400,15 +399,7 @@ func (s *Service) createPromo(ctx context.Context, claims *middleware.SessionCla
 		}
 		return nil, fmt.Errorf("buat promo: %w", err)
 	}
-	_ = s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: response.ToPGUUID(claims.UserID),
-		ActorPeran:  claims.Role,
-		Aksi:        "katalog.promo_create",
-		Entitas:     "promo",
-		EntitasID:   response.FromPGUUID(row.ID).String(),
-		Ringkasan:   "Tambah promo " + row.Kode,
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, claims, "katalog.promo_create", "promo", response.FromPGUUID(row.ID).String(), "Tambah promo "+row.Kode, ip)
 	return &row, nil
 }
 

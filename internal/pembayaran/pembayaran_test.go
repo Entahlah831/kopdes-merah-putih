@@ -14,6 +14,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/api/middleware"
 	"github.com/kopdes/merah-putih/internal/api/response"
 	"github.com/kopdes/merah-putih/internal/db"
+	"github.com/kopdes/merah-putih/internal/filestore"
 	"github.com/kopdes/merah-putih/internal/security"
 )
 
@@ -34,11 +35,11 @@ func TestPickRandomUniqueCode(t *testing.T) {
 
 func TestValidateProofImageAndPaymentsGuard(t *testing.T) {
 	pngBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-	ext, hash, err := validateProofImage(pngBytes, 1<<20)
-	if err != nil || ext != ".png" || len(hash) != 64 {
-		t.Fatalf("valid png failed: ext=%q len=%d err=%v", ext, len(hash), err)
+	meta, err := filestore.ValidateImage(pngBytes, 1<<20)
+	if err != nil || meta.Ext != ".png" || len(meta.SHA256Hex) != 64 {
+		t.Fatalf("valid png failed: meta=%+v err=%v", meta, err)
 	}
-	if _, _, err := validateProofImage([]byte("not an image"), 1<<20); err == nil {
+	if _, err := filestore.ValidateImage([]byte("not an image"), 1<<20); err == nil {
 		t.Fatal("expected rejection of fake image")
 	}
 	if _, _, _, err := evaluateApprovalTx(context.Background(), nil, db.GetPembayaranForUpdateRow{}, VerifyInput{NominalDibayar: 0}); err == nil {

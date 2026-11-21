@@ -115,15 +115,7 @@ func (s *Service) persistEnabledMFA(ctx context.Context, claims *middleware.Sess
 	if err := qt.UpgradeSessionAfterMFA(ctx, response.ToPGUUID(claims.SessionID)); err != nil {
 		return nil, fmt.Errorf("upgrade sesi mfa: %w", err)
 	}
-	_ = qt.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: pgUID,
-		ActorPeran:  claims.Role,
-		Aksi:        "mfa_setup",
-		Entitas:     "users",
-		EntitasID:   claims.UserID.String(),
-		Ringkasan:   "Aktivasi MFA TOTP",
-		IpAddress:   ip,
-	})
+	s.logAuditTx(ctx, tx, uuidPtr(claims.UserID), claims.Role, "mfa_setup", "users", claims.UserID.String(), "Aktivasi MFA TOTP", ip)
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit mfa setup: %w", err)
 	}
@@ -157,15 +149,7 @@ func (s *Service) VerifyMFA(ctx context.Context, claims *middleware.SessionClaim
 	if err := q.UpgradeSessionAfterMFA(ctx, response.ToPGUUID(claims.SessionID)); err != nil {
 		return nil, fmt.Errorf("upgrade sesi mfa: %w", err)
 	}
-	_ = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-		ActorUserID: u.ID,
-		ActorPeran:  u.Peran,
-		Aksi:        "mfa_verify",
-		Entitas:     "sesi",
-		EntitasID:   claims.SessionID.String(),
-		Ringkasan:   "Verifikasi MFA berhasil",
-		IpAddress:   ip,
-	})
+	s.logAudit(ctx, pgUUIDPtr(u.ID), u.Peran, "mfa_verify", "sesi", claims.SessionID.String(), "Verifikasi MFA berhasil", ip)
 	return map[string]interface{}{"mfa_verified": true, "scope": "full"}, nil
 }
 

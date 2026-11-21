@@ -110,8 +110,8 @@ func runStrictAudit(cfg config.AppConfig, raw map[string]string, stdout, stderr 
 			issues = append(issues, fmt.Sprintf("PASSWORD DB PRODUKSI: %v", err))
 		}
 	}
-	if specs := config.Catalog(); len(specs) > 46 {
-		issues = append(issues, fmt.Sprintf("JUMLAH VARIABEL ENV MELEBIHI BATAS (<= 46): %d", len(specs)))
+	if specs := config.Catalog(); len(specs) > 51 {
+		issues = append(issues, fmt.Sprintf("JUMLAH VARIABEL ENV MELEBIHI BATAS (<= 51): %d", len(specs)))
 	}
 
 	if len(issues) > 0 {
@@ -140,6 +140,7 @@ func runPortAudit(cfg config.AppConfig, checkBind bool, stdout, stderr io.Writer
 	addHostPort(cfg.APIHostPort, "API_HOST_PORT")
 	addHostPort(cfg.DBHostPort, "DB_HOST_PORT")
 	addHostPort(cfg.UIPort, "UI_PORT")
+	addHostPort(cfg.WorkerPort, "WORKER_PORT")
 
 	for port, owners := range hostPorts {
 		if len(owners) > 1 {

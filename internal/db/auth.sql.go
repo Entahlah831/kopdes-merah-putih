@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cleanupExpiredRateLimits = `-- name: CleanupExpiredRateLimits :execrows
+DELETE FROM rate_limits
+WHERE window_reset_at < NOW()
+  AND (blocked_until IS NULL OR blocked_until < NOW())
+`
+
+func (q *Queries) CleanupExpiredRateLimits(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupExpiredRateLimits)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const consumeActivationCode = `-- name: ConsumeActivationCode :exec
 UPDATE kode_aktivasi
 SET used_at = NOW()
@@ -597,6 +611,40 @@ WHERE user_id = $1 AND used_at IS NULL
 func (q *Queries) InvalidateUserActivationCodes(ctx context.Context, userID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, invalidateUserActivationCodes, userID)
 	return err
+}
+
+const listActiveRateLimitBlocks = `-- name: ListActiveRateLimitBlocks :many
+SELECT key, kategori, blocked_until
+FROM rate_limits
+WHERE blocked_until IS NOT NULL AND blocked_until > NOW()
+ORDER BY blocked_until DESC
+LIMIT 1000
+`
+
+type ListActiveRateLimitBlocksRow struct {
+	Key          string             `json:"key"`
+	Kategori     string             `json:"kategori"`
+	BlockedUntil pgtype.Timestamptz `json:"blocked_until"`
+}
+
+func (q *Queries) ListActiveRateLimitBlocks(ctx context.Context) ([]ListActiveRateLimitBlocksRow, error) {
+	rows, err := q.db.Query(ctx, listActiveRateLimitBlocks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveRateLimitBlocksRow{}
+	for rows.Next() {
+		var i ListActiveRateLimitBlocksRow
+		if err := rows.Scan(&i.Key, &i.Kategori, &i.BlockedUntil); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listUsers = `-- name: ListUsers :many

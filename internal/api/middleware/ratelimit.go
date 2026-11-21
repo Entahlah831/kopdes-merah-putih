@@ -112,7 +112,7 @@ func NewIPRateLimiterWithConfig(rps float64, burst int, trustedProxies []string,
 	if maxClients <= 0 {
 		maxClients = 10000
 	}
-	limiter := &IPRateLimiter{
+	return &IPRateLimiter{
 		clients:        make(map[string]*list.Element),
 		lruList:        list.New(),
 		rate:           rps,
@@ -120,31 +120,25 @@ func NewIPRateLimiterWithConfig(rps float64, burst int, trustedProxies []string,
 		maxClients:     maxClients,
 		trustedProxies: NewTrustedProxyMatcher(trustedProxies),
 	}
-
-	// Rutin pembersihan IP tidak aktif setiap 10 menit
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-		for range ticker.C {
-			limiter.mu.Lock()
-			now := time.Now()
-			for elem := limiter.lruList.Back(); elem != nil; {
-				prev := elem.Prev()
-				entry := elem.Value.(*clientEntry)
-				if now.Sub(entry.lastRefill) > 10*time.Minute {
-					delete(limiter.clients, entry.key)
-					limiter.lruList.Remove(elem)
-				}
-				elem = prev
-			}
-			limiter.mu.Unlock()
-		}
-	}()
-
-	return limiter
 }
 
 func NewIPRateLimiter(rps float64, burst int) *IPRateLimiter {
 	return NewIPRateLimiterWithConfig(rps, burst, nil, 10000)
+}
+
+func (limiter *IPRateLimiter) pruneStaleTail(now time.Time, maxCheck int) {
+	for i := 0; i < maxCheck && limiter.lruList.Len() > 0; i++ {
+		oldest := limiter.lruList.Back()
+		if oldest == nil {
+			return
+		}
+		entry := oldest.Value.(*clientEntry)
+		if now.Sub(entry.lastRefill) <= 10*time.Minute {
+			return
+		}
+		delete(limiter.clients, entry.key)
+		limiter.lruList.Remove(oldest)
+	}
 }
 
 func (limiter *IPRateLimiter) Allow(ip string) (bool, int) {
@@ -152,6 +146,7 @@ func (limiter *IPRateLimiter) Allow(ip string) (bool, int) {
 	defer limiter.mu.Unlock()
 
 	now := time.Now()
+	limiter.pruneStaleTail(now, 4)
 	elem, exists := limiter.clients[ip]
 	if !exists {
 		// Evict LRU jika sudah mencapai batas kapasitas

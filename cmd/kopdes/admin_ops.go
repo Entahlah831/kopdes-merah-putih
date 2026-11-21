@@ -111,11 +111,5 @@ func resolveCLIResetPassword(flagVal string, fromStdin bool) (string, error) {
 		}
 		return strings.TrimRight(string(raw), "\r\n"), nil
 	}
-	if flagVal != "" {
-		return flagVal, nil
-	}
-	if envPwd := os.Getenv("KOPDES_RESET_PASSWORD"); envPwd != "" {
-		return envPwd, nil
-	}
-	return "", nil
+	return flagVal, nil
 }

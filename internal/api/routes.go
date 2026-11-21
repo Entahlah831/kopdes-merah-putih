@@ -30,9 +30,9 @@ type domainHandlers struct {
 	iuran        *iuran.Handler
 	katalog      *katalog.Handler
 	pesanan      *pesanan.Handler
-	pembayaran   *pembayaran.Handler
-	laporan      *laporan.Handler
-	dbLimiter    *middleware.DBRateLimiter
+	pembayaran    *pembayaran.Handler
+	laporan       *laporan.Handler
+	hybridLimiter *middleware.HybridRateLimiter
 }
 
 func resolveStorageDirs(cfg Config) (string, string) {
@@ -96,7 +96,7 @@ func buildDomainHandlers(pool *pgxpool.Pool, cfg Config, ks *security.PurposeKey
 		anggota: anggota.NewHandler(angSvc), iuran: iuran.NewHandler(iuran.NewService(pool, cfg.TrustedProxies)),
 		katalog: katalog.NewHandler(katalog.NewService(pool, cfg.TrustedProxies)), pesanan: pesanan.NewHandler(pesSvc),
 		pembayaran: pembayaran.NewHandler(bayarSvc), laporan: laporan.NewHandler(laporan.NewService(pool, cfg.AppTimezone)),
-		dbLimiter: middleware.NewDBRateLimiter(pool, cfg.TrustedProxies),
+		hybridLimiter: middleware.NewHybridRateLimiter(pool, cfg.TrustedProxies, cfg.MaxRateLimitClients),
 	}
 }
 
@@ -133,8 +133,8 @@ func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config
 	mux.HandleFunc("GET /healthz", dh.health.HandleHealthz)
 	mux.HandleFunc("GET /readyz", dh.health.HandleReadyz)
 	mux.HandleFunc("GET /api/v1/public/config", dh.publicConfig.HandleGetPublicConfig)
-	mux.Handle("POST /api/v1/public/pendaftaran", dbLimit(dh.dbLimiter, "registration", 20, 3600)(http.HandlerFunc(dh.pendaftaran.HandlePublicRegister)))
-	mux.Handle("POST /api/v1/public/pendaftaran/{id}/dokumen", dbLimit(dh.dbLimiter, "kyc_upload", 40, 3600)(http.HandlerFunc(dh.pendaftaran.HandleUploadDokumen)))
+	mux.Handle("POST /api/v1/public/pendaftaran", hybridLimit(dh.hybridLimiter, "registration", 20, 3600)(http.HandlerFunc(dh.pendaftaran.HandlePublicRegister)))
+	mux.Handle("POST /api/v1/public/pendaftaran/{id}/dokumen", hybridLimit(dh.hybridLimiter, "kyc_upload", 40, 3600)(http.HandlerFunc(dh.pendaftaran.HandleUploadDokumen)))
 	mux.HandleFunc("POST /api/v1/auth/login", dh.auth.HandleLogin)
 	mux.Handle("POST /api/v1/auth/mfa/setup", limSes(http.HandlerFunc(dh.auth.HandleMFASetup)))
 	mux.Handle("POST /api/v1/auth/mfa/verify", limSes(http.HandlerFunc(dh.auth.HandleMFAVerify)))
@@ -187,7 +187,7 @@ func registerCommerceFinanceRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg C
 	mux.Handle("GET /api/v1/laporan", fullSes(laporanRoles(http.HandlerFunc(dh.laporan.HandleGet))))
 }
 
-func dbLimit(lim *middleware.DBRateLimiter, cat string, maxHits, windowSecs int32) func(http.Handler) http.Handler {
+func hybridLimit(lim *middleware.HybridRateLimiter, cat string, maxHits, windowSecs int32) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if lim != nil {

@@ -80,6 +80,18 @@ ON CONFLICT (key) DO UPDATE
 SET blocked_until = NOW() + make_interval(secs => sqlc.arg(block_secs)::int),
     updated_at = NOW();
 
+-- name: ListActiveRateLimitBlocks :many
+SELECT key, kategori, blocked_until
+FROM rate_limits
+WHERE blocked_until IS NOT NULL AND blocked_until > NOW()
+ORDER BY blocked_until DESC
+LIMIT 1000;
+
+-- name: CleanupExpiredRateLimits :execrows
+DELETE FROM rate_limits
+WHERE window_reset_at < NOW()
+  AND (blocked_until IS NULL OR blocked_until < NOW());
+
 -- name: GetUserByEmailHash :one
 SELECT id, email_enc, email_hash, hp_enc, hp_hash, nama_lengkap, password_hash, peran,
        status_aktif, mfa_enabled, mfa_secret_enc, mfa_last_step, mfa_recovery_hashes,

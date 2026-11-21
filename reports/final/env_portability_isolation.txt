@@ -1,0 +1,55 @@
+=== SET C ENVCHECK STRICT + COMPARE ===
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 51 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_setc_test, API_PORT=28080
+DIFF  AES_MASTER_KEY                   A=***REDACTED***       B=***REDACTED***
+DIFF  ALLOWED_ORIGINS                  A=http://127.0.0.1:3000,http://127.0.0.1:8081,http://localhost:8081 B=http://127.0.0.1:28081,http://localhost:28081
+DIFF  ALLOW_BEARER_AUTH                A=true                 B=false
+DIFF  API_HOST_PORT                    A=8080                 B=28080
+DIFF  API_PORT                         A=8080                 B=28080
+DIFF  BACKUP_AGE_RECIPIENT             A=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsetaaa B=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsetccc
+DIFF  BACKUP_DIR                       A=./backups/test_setA  B=C:/Users/12/AppData/Local/Temp/kopdes_setC_backups
+DIFF  BLIND_INDEX_SECRET               A=***REDACTED***       B=***REDACTED***
+DIFF  DB_HOST_PORT                     A=5433                 B=25433
+DIFF  DB_NAME                          A=kopdes_test          B=kopdes_setc_test
+DIFF  DB_PASSWORD                      A=***REDACTED***       B=***REDACTED***
+DIFF  DB_PORT                          A=5433                 B=25433
+DIFF  POSTGRES_PASSWORD                A=***REDACTED***       B=***REDACTED***
+DIFF  STORAGE_BUKTI_DIR                A=./storage/bukti_test_setA B=C:/Users/12/AppData/Local/Temp/kopdes_setC_bukti
+DIFF  STORAGE_KYC_DIR                  A=./storage/kyc_test_setA B=C:/Users/12/AppData/Local/Temp/kopdes_setC_kyc
+DIFF  UI_PORT                          A=8081                 B=28081
+DIFF  WORKER_PORT                      A=8082                 B=28082
+envcheck COMPARE PASS: skema kunci 100% identik (51 kunci).
+=== WORKER_PORT COLLISION CHECK (28080 == API_PORT) ===
+ExitCode=1
+go : KONFLIK PORT HOST 28080 digunakan bersama oleh: API_HOST_PORT, WORKER_PORT
+At line:21 char:10
++ $oCol = (go run ./cmd/envcheck --strict --ports --no-listen --env-fil ...
++          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (KONFLIK PORT HO...RT, WORKER_PORT:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+exit status 1
+=== SET C SEED ACCOUNTS ===
+Seeded 5 akun uji sintetis ke database kopdes_setc_test (postgres://kopdes_app:%2A%2A%2A%2A%2A%2A@127.0.0.1:25433/kopdes_setc_test?sslmode=disable) selesai.
+Gunakan kata sandi uji dari TEST_SEED_PASSWORD (panjang 25 karakter) di input UI Tester.
+- admin         admin@kopdes-test.local          hp=08110000001  mfa=true
+- bendahara     bendahara@kopdes-test.local      hp=08110000002  mfa=true
+- petugas_toko  petugas@kopdes-test.local        hp=08110000003  mfa=false
+- anggota       anggota1@kopdes-test.local       hp=08110000004  mfa=false
+- anggota       anggota2@kopdes-test.local       hp=08110000005  mfa=false
+
+=== SET C LIVE HEALTH & UI CONFIG ===
+API 28080 /healthz -> 200 {"success":true,"data":{"status":"UP","timestamp":"2026-11-21T19:04:15Z"}}
+Worker 28082 /healthz -> 200 {"success":true,"data":{"service":"worker","status":"UP","timestamp":"2026-11-21T19:04:15Z"}}
+UI 28081 /config.json -> 200 api_public_url=http://127.0.0.1:28080
+=== SET C PLAYWRIGHT SMOKE (UI 28081 -> API 28080) ===
+
+Running 1 test using 1 worker
+
+  ok 1 e2e\wireframe.spec.ts:78:3 › Kopdes Wireframe E2E (Set B Cookie-Primary) › 01. Beranda, Katalog, Mobile Viewport, & Auth Cookie/XSS Hygiene (602ms)
+
+  1 passed (1.3s)
+=== LIVE CROSS-ENV COOKIE ISOLATION (SET A 8080 vs SET B 18080) ===
+Set A (8080) login -> 200, Set-Cookie kopdes_session=***REDACTED***
+Set A cookie -> GET http://127.0.0.1:8080/api/v1/auth/me => HTTP 200
+Set A cookie -> GET http://127.0.0.1:18080/api/v1/auth/me => HTTP 401

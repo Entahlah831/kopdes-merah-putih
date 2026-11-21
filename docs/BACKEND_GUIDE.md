@@ -1,44 +1,46 @@
 # Panduan Developer Backend — Kopdes Merah Putih (Ramping)
 
-Target Runtime: `Go 1.27+` | `PostgreSQL 16` | Kontrak API: `v2.1.0-lean` (`36` endpoint, `21` tabel, `46` variabel env).  
-Hasil Audit Keputusan Desain D1–D10 tersedia di [DECISION_AUDIT.md](DECISION_AUDIT.md) dan [adr/](adr/).
+Target Runtime: `Go 1.27+` | `PostgreSQL 16` | Kontrak API: `v2.1.0-lean` (`36` endpoint, `21` tabel, `51` variabel env).  
+Arsitektur Modular Monolith terdokumentasi di [ARCHITECTURE.md](ARCHITECTURE.md), [adr/0001-modular-monolith.md](adr/0001-modular-monolith.md), dan [MODULAR_REPORT.md](MODULAR_REPORT.md).
 
 > **Catatan Kepatuhan & Akuntansi**: Backend ini menerapkan kontrol keamanan teknis sesuai baseline OWASP dan prinsip minimalisasi data (`tanggal_lahir` opsional). Penetapan masa retensi dokumen calon anggota yang ditolak (`PDP_REJECTED_RETENTION_DAYS=30`) dan bukti non-lunas (`BUKTI_RETENTION_DAYS=365`) ditandai **PERLU VERIFIKASI HUKUM**, dan kolom `klasifikasi_akuntansi` / selisih kode unik / koreksi refund ditandai **KEPUTUSAN AKUNTAN**.
 
 ---
 
-## 1. Prinsip & Anggaran Arsitektur Ramping
+## 1. Prinsip & Anggaran Arsitektur Ramping Modular
 
 Backend dirancang **khusus untuk 1 koperasi di 1 lokasi** (tanpa multi-tenant RLS, tanpa SIMKOPDES, tanpa simpanan/pinjaman/SHU, tanpa double-entry ledger, tanpa keranjang server, dan tanpa impor CSV mutasi bank):
 
-1. **Basis Data**: `21` tabel lintas migrasi [000001_init_kopdes_schema.up.sql](../db/migrations/000001_init_kopdes_schema.up.sql) dan [000002_decision_audit_enhancements.up.sql](../db/migrations/000002_decision_audit_enhancements.up.sql) (+ tabel #20 `pengembalian_dana`, tabel #21 `worker_runs`, kolom `stok_tertahan`, `stok_status`, `stok_hold_expires_at`, `bukti_key_id`, `bukti_dek_wrapped`, dan `tanggal_lahir_enc` nullable). Seluruh query diketik via **`sqlc`** ke [internal/db/](../internal/db/). Dilarang menulis SQL mentah atau mengedit `internal/db/*.go` manual.
+1. **Basis Data**: `21` tabel lintas migrasi [000001_init_kopdes_schema.up.sql](../db/migrations/000001_init_kopdes_schema.up.sql) dan [000002_decision_audit_enhancements.up.sql](../db/migrations/000002_decision_audit_enhancements.up.sql). Seluruh query diketik via **`sqlc`** ke [internal/db/](../internal/db/) dengan kepemilikan tabel per modul yang dijaga `TestArchitecture_*`. Dilarang menulis SQL mentah atau mengedit `internal/db/*.go` manual.
 2. **Keamanan Role Database**: Koneksi aplikasi wajib memakai role non-superuser `kopdes_app` (`NOSUPERUSER NOBYPASSRLS`) yang dicek saat startup.
-3. **Batas Ukuran Kode**: Setiap berkas handler `<= 400` baris, setiap fungsi non-test `<= 60` baris, maks `46` env var, `22` tabel, `36` endpoint (`TestStructural_FileAndFunctionSizes_NoRawSQL`, `TestStructural_LeanBudgetsAndLimits`).
+3. **Batas Ukuran Kode & Batas Modul**: Setiap berkas handler `<= 400` baris, setiap fungsi non-test `<= 60` baris, maks `51` env var, `22` tabel, `36` endpoint (`TestStructural_*` & `TestArchitecture_*`). Modul hanya boleh mengimpor `internal/<modul>/api`, bukan paket internal modul lain.
 4. **Dependensi Minimal**: Hanya `github.com/google/uuid`, `github.com/jackc/pgx/v5`, dan `golang.org/x/crypto` plus Go standard library `net/http`.
 
 ---
 
-## 2. Peta Paket & Domain
+## 2. Peta Paket & 8 Modul Domain
 
 | Paket | Tanggung Jawab |
 | :--- | :--- |
-| `cmd/server` | Server HTTP API 36 endpoint, verifikasi `kopdes_app` saat startup, dan config guard. |
-| `cmd/kopdes` | CLI pemeliharaan & pemulihan: `admin create`, `admin reset-mfa`, `admin reset-password`, `iuran generate`, `pesanan expire`, `pdp purge`, `bukti purge`, `storage migrate-files`, `worker [--tick 60s] [--once]`. |
-| `cmd/envcheck` | Validasi ketat 46 variabel env (`--strict --ports --no-listen --compare`), menolak wildcard CORS / default password pada profil `production`. |
+| `cmd/kopdes` | **Biner utama tunggal**: `serve` (HTTP API), `worker` (jadwal + `/healthz` `WORKER_PORT`), `uiserve` (UI statis + `/config.json`), `admin {create,reset-mfa,reset-password}`, `iuran generate`, `pesanan expire`, `pdp/bukti purge`, `storage migrate-files`. |
+| `cmd/server` | Alias binary HTTP API (kompatibilitas `chaosdrill`). |
+| `cmd/envcheck` | Validasi ketat **51 variabel env** (`--strict --ports --no-listen --compare`), menolak bentrok `WORKER_PORT`, wildcard CORS, atau default password di `production`. |
 | `cmd/seed_test_accounts` | Seeder deterministik 5 akun uji sintetis (`admin`, `bendahara`, `petugas_toko`, 2x `anggota`) + katalog/iuran contoh untuk DB `*_test` non-produksi. |
-| `cmd/uitester` | Server UI tester lokal non-produksi (`frontend-tester/`, `/config.json`, `/api/probe-cors`, `/api/totp-helper`). |
-| `internal/config` | Loader dan validator ketat `AppConfig` tepat 46 variabel (`COOKIE_SECURE`, `ALLOW_BEARER_AUTH`, `STOCK_HOLD_MINUTES`, `DUAL_CONTROL_BREAKGLASS_ENABLED`, `STORAGE_BUKTI_DIR`, `BUKTI_RETENTION_DAYS`, `BACKUP_AGE_RECIPIENT`). |
+| `cmd/uitester` | Wrapper penyaji UI statis (`frontend-wireframe/dist` atau `frontend-tester/`) lewat `internal/uiserve`. |
+| `internal/config` | Loader dan validator ketat `AppConfig` tepat **51 variabel** (`WORKER_PORT`, `WORKER_TICK_INTERVAL`, `SLO_*`, `COOKIE_SECURE`, `ALLOW_BEARER_AUTH`, `STOCK_HOLD_MINUTES`, `DUAL_CONTROL_BREAKGLASS_ENABLED`, `STORAGE_BUKTI_DIR`, `BUKTI_RETENTION_DAYS`, `BACKUP_AGE_RECIPIENT`). |
+| `internal/filestore` | Kontrak `FileStore` AES-256-GCM + amplop DEK (`NamespaceKYC` & `NamespaceBukti` terpisah). |
+| `internal/uiserve` | Penyaji SPA + `/config.json` runtime, `/api/probe-cors`, `/api/totp-helper` (`*test*` saja). |
 | `internal/security` | AES-256-GCM + AAD, derivasi 4 subkunci HKDF-SHA256 (`kdf.go`: `db-columns`, `kyc-files`, `bukti-files`, `backup`), amplop DEK seragam, blind index HKDF-SHA256, TOTP RFC 6238, recovery codes, netralisasi CSV. |
-| `internal/api` | Server HTTP (`server.go`, `routes.go`), `CSRFGuard` (Origin/Referer + `X-Requested-With`), `CORS` (`Vary: Origin`), `HybridRateLimiter` (LRU L1 + persistensi ambang `rate_limits` L2, tanpa ticker goroutine liar), body limit, mode baca-saja, & `TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries`. |
-| `internal/auth` | Cookie `HttpOnly` utama (`__Host-kopdes_session` HTTPS / `kopdes_session` dev), Bearer opsional (`ALLOW_BEARER_AUTH`), throttle `TouchSessionActivity` <= 1x/60s dengan pencabutan seketika, MFA TOTP 2-langkah, `PUT /api/v1/pengaturan`, users. |
-| `internal/pendaftaran` | Pendaftaran publik (`tanggal_lahir` opsional), `X-Upload-Token` wajib, berkas KYC `.enc` di `STORAGE_KYC_DIR` (subkunci `kyc-files` + amplop DEK), verifikasi admin. |
-| `internal/anggota` | Profil anggota (`unmask=true` khusus `admin`), suspend + cabut sesi seketika, impor CSV (`tanggal_lahir` opsional). |
-| `internal/iuran` | Jenis iuran (`KEPUTUSAN AKUNTAN`), generate tagihan bulanan idempoten, keringanan nominal. |
-| `internal/katalog` | Kategori, promo berkuota, produk dengan validasi `foto_url` (`https://` / `/...`, maks 512 karakter) & kalkulasi `stok_tersedia = stok - stok_tertahan`. |
-| `internal/pesanan` | Checkout idempoten tanpa keranjang server; reservasi atomik `stok_tertahan` berlaku `STOCK_HOLD_MINUTES`; status pemenuhan (`admin`/`petugas_toko` saja — `bendahara` ditolak `403`); `daftar-antar` CSV aman. |
-| `internal/pembayaran` | QRIS statis (+ kode unik 3/4 digit), tunai (`admin`/`bendahara` saja — `petugas_toko`/`anggota` ditolak `403`), bukti terenkripsi amplop di `STORAGE_BUKTI_DIR` (subkunci `bukti-files`), dual-control + `breakglass` admin opsional (`DUAL_CONTROL_BREAKGLASS_ENABLED`), fallback savepoint `perlu_tindak_lanjut` bila stok habis pasca-hold, & refund manual `POST /api/v1/pembayaran/{id}/refund`. |
-| `internal/laporan` | Laporan `anggota`, `tunggakan`, `penjualan`, `pembayaran` (JSON/CSV) termasuk `total_dikembalikan` dari tabel `pengembalian_dana`. |
-| `internal/worker` | Penjadwalan bawaan (`kopdes worker`) ber-advisory-lock per koneksi tunggal (`pg_try_advisory_lock`/`pg_advisory_unlock`) untuk 5 job berkala + telemetri `worker_runs` ke `/readyz`. |
+| `internal/api` | Server HTTP (`server.go`, `routes.go`, `runtime.go`), `CSRFGuard`, `CORS`, `HybridRateLimiter`, body limit, mode baca-saja, `TestRBAC_*` & `TestStructural_*`. |
+| `internal/auth` | Sesi opaque (throttle 60s) dengan pencabutan instan, MFA TOTP 2-langkah, dan manajemen user (ekspor kontrak via `internal/auth/api`). |
+| `internal/pengaturan` | Konfigurasi koperasi & pencatatan `audit_log` lintas modul (`internal/pengaturan/api`). |
+| `internal/anggota` | Registrasi publik (`tanggal_lahir` opsional), `X-Upload-Token`, berkas KYC `.enc` di `STORAGE_KYC_DIR`, verifikasi admin, profil anggota (`unmask=true`), suspend + cabut sesi instan, impor CSV (`internal/anggota/api`). |
+| `internal/iuran` | Jenis iuran (`KEPUTUSAN AKUNTAN`), generate tagihan bulanan idempoten, keringanan nominal (`internal/iuran/api`). |
+| `internal/katalog` | Kategori, promo berkuota, produk dengan validasi `foto_url` & reservasi `stok_tertahan` via `internal/katalog/api`. |
+| `internal/pesanan` | Checkout idempoten tanpa keranjang server; reservasi atomik `stok_tertahan` (`STOCK_HOLD_MINUTES`); pemenuhan & `daftar-antar` CSV aman (`internal/pesanan/api`). |
+| `internal/pembayaran` | QRIS statis (+ kode unik), tunai, bukti `.enc` di `STORAGE_BUKTI_DIR`, dual-control + `breakglass` admin opsional, savepoint `perlu_tindak_lanjut`, & refund manual (`internal/pembayaran/api`); memanggil `iuran/api` & `pesanan/api` dalam `pgx.Tx` tunggal. |
+| `internal/laporan` | Aggregator murni (**0 tabel** milik sendiri) membaca proyeksi laporan `anggota`, `tunggakan`, `penjualan`, `pembayaran` (JSON/CSV) lewat kontrak `*/api`. |
+| `internal/worker` | Penjadwal tugas berkala ber-advisory-lock (`pg_try_advisory_lock`) + telemetri `worker_runs` (`/readyz`) + `/healthz` pada `WORKER_PORT`. |
 
 ---
 

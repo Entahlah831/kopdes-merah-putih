@@ -1,0 +1,56 @@
+=== RUN   TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries
+--- PASS: TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries (6.40s)
+=== RUN   TestChaos_DBOutageLatencyAndAutoRecovery
+--- PASS: TestChaos_DBOutageLatencyAndAutoRecovery (1.71s)
+=== RUN   TestChaos_ConnectionPoolExhaustion
+--- PASS: TestChaos_ConnectionPoolExhaustion (2.16s)
+=== RUN   TestChaos_UnwritableStorageGracefulRejectionAndNoOrphans
+--- PASS: TestChaos_UnwritableStorageGracefulRejectionAndNoOrphans (3.99s)
+=== RUN   TestChaos_APIRestartActiveSessionSurvives_AndWorkerCrashIdempotent
+--- PASS: TestChaos_APIRestartActiveSessionSurvives_AndWorkerCrashIdempotent (3.98s)
+=== RUN   TestSecurityAbuse_SlotExhaustionAndStockHold
+--- PASS: TestSecurityAbuse_SlotExhaustionAndStockHold (4.97s)
+=== RUN   TestSecurityAbuse_RegUploadSpamAndCredentialStuffingVsCGNAT
+--- PASS: TestSecurityAbuse_RegUploadSpamAndCredentialStuffingVsCGNAT (7.47s)
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/public_pendaftaran
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_login
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_password
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_mfa_verify
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pengaturan_put
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/users_post
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/users_patch
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/anggota_status
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/iuran_jenis
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/iuran_keringanan
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/katalog_write
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/toko_checkout
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pesanan_status
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_post
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_verifikasi
+=== RUN   TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_refund
+--- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints (3.88s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/public_pendaftaran (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_login (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_password (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/auth_mfa_verify (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pengaturan_put (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/users_post (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/users_patch (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/anggota_status (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/iuran_jenis (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/iuran_keringanan (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/katalog_write (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/toko_checkout (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pesanan_status (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_post (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_verifikasi (0.00s)
+    --- PASS: TestSecurityAbuse_MassAssignment_RejectedOnAllMutatingEndpoints/pembayaran_refund (0.00s)
+=== RUN   TestSecurityAbuse_BOLA_TokensCSRF_AndCrossSetIsolation
+--- PASS: TestSecurityAbuse_BOLA_TokensCSRF_AndCrossSetIsolation (6.85s)
+=== RUN   TestSecurityAbuse_MaliciousUploads_CSVInjection_AndStoredXSS
+--- PASS: TestSecurityAbuse_MaliciousUploads_CSVInjection_AndStoredXSS (3.67s)
+=== RUN   TestSecurityAbuse_ProofReplayAndCrossUserIdempotency
+--- PASS: TestSecurityAbuse_ProofReplayAndCrossUserIdempotency (3.84s)
+PASS
+ok  	github.com/kopdes/merah-putih/internal/api	51.760s

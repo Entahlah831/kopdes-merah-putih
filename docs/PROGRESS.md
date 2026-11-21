@@ -1422,3 +1422,25 @@ $ go run ./cmd/kopdes --env-file .env.test bukti purge
 Bukti purge selesai: 0 berkas bukti non-lunas kedaluwarsa dihapus
 ```
 
+---
+
+## Modular Monolith, Figma Wireframe, & Eksperimen Microservice (Prompt v9 — Branch `modular-and-wireframe`, Tag Dasar `pre-modular` = `448da13`)
+
+1. **Fase 0 — Baseline Pra-Restrukturisasi (`9e17632`)**:
+   - Menambahkan skrip `tools/loadtest`, `tools/chaosdrill`, suite `TestSecurityAbuse_*` & `TestChaos_*`, serta menambal **3 temuan nyata** (*fail-first*): `DecodeJSON` `DisallowUnknownFields()`, scoping `Idempotency-Key` per `UserID`, dan guard `FileStore == nil` di unggah KYC.
+   - Menyimpan angka patokan performa, chaos (`0` stok negatif/selisih/orphan, RTO `5.180 ms`), dan SAST di [BASELINE_REPORT.md](BASELINE_REPORT.md) & `reports/baseline/`.
+2. **Fase 1 — Modular Monolith dengan Batas Terpaksa (`869eb5c`)**:
+   - Menyatukan biner `cmd/kopdes` (`serve`, `worker`, `uiserve`, `admin`), memisahkan 8 modul (`auth`, `pengaturan`, `anggota`, `iuran`, `katalog`, `pesanan`, `pembayaran`, `laporan`) + `internal/<modul>/api`, `internal/filestore`, `internal/uiserve`, dan 51 env var termasuk `WORKER_PORT`, `WORKER_TICK_INTERVAL`, `SLO_*`.
+   - Memaksa batas impor & kepemilikan 21 tabel melalui [internal/arch_test.go](../internal/arch_test.go) (`4/4` PASS) serta menyusun [ADR-0001](adr/0001-modular-monolith.md) dan [ARCHITECTURE.md](ARCHITECTURE.md).
+3. **Fase 2 — Implementasi Wireframe Figma & E2E Set B (`4b895f8`)**:
+   - Menginventarisasi **19 frame** Figma (`5RsPLIopItTEIp21N1VU2x`) -> [INVENTARIS_LAYAR.md](wireframe/INVENTARIS_LAYAR.md) & [ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), menandai fitur luar lingkup dengan `BLOCKED: butuh keputusan pemilik`.
+   - Membangun `frontend-wireframe/` (Vite + TypeScript ketat, `0` deps runtime, cookie HttpOnly + CSRF `X-Requested-With`, bebas `innerHTML`, `<canvas>` PNG/JPG) dan lulus **4/4** suite Playwright Chromium pada Set B (`18,7s`, `10` tangkapan layar di `reports/wireframe/`, [LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)).
+4. **Fase 3 — Eksperimen Microservice Terukur `spike/filesvc` (`848c2be`)**:
+   - Memisahkan `kopdes filesvc` via `RemoteFileStore`: delta p95 loopback `SaveEncrypted = +1.013 ms` & `LoadDecrypted = -0.599 ms`, S2S bearer `401`, API `0` kunci berkas (`phase_a_api_key_rejects_enc=true`), isolasi `200`/`503` saat mati & pemulihan `200`.
+   - Ditolak sementara via gerbang 6 kriteria di [ADR-0002](adr/0002-filesvc-spike.md) agar tetap ramping (`1` VPS, `51` var `.env`, `1` developer), dengan cetak biru & data eksperimen tetap disimpan di `reports/spike/`.
+5. **Fase 4 & Penutup — Re-Test Final, Set C Port Acak, & Dokumentasi**:
+   - Re-test beban (`GOMAXPROCS=2`): `0` regresi SLO; `load` baca p95 `117,00 ms`, `spike` baca p95 `257,23 ms` (`PASS < 300 ms`), `soak` baca p95 `45,19 ms`, `0` error tak terduga.
+   - Chaos `tools/chaosdrill` (`112` req / `79` order, `0` inkonsistensi stok/uang, restore `21` tabel / `38` anggota RTO `7.415 ms`), `TestArchitecture_*`, `TestSecurityAbuse_*`, `staticcheck`, `gosec` (`0` isu), `govulncheck` (`0` kerentanan terpanggil), `gitleaks` (`115` commit, `0` bocoran).
+   - Portabilitas Set C (`28080/28081/28082/25433`) lolos dengan `0` edit kode, konflik `WORKER_PORT=28080` ditolak exit `1`, dan cookie Set A ditolak `401` di Set B ([MODULAR_REPORT.md](MODULAR_REPORT.md)).
+
+

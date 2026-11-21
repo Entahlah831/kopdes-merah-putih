@@ -2,16 +2,16 @@ name: CI Kopdes Merah Putih (Lean Backend)
 
 on:
   push:
-    branches: [main, lean-revamp, decision-audit]
+    branches: [main, lean-revamp, decision-audit, modular-and-wireframe]
   pull_request:
-    branches: [main, lean-revamp, decision-audit]
+    branches: [main, lean-revamp, decision-audit, modular-and-wireframe]
 
 permissions:
   contents: read
 
 jobs:
   env-sqlc-and-secrets:
-    name: Validasi Env (46 Var), sqlc, & Secret Scan
+    name: Validasi Env (51 Var), sqlc, & Secret Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -105,7 +105,11 @@ jobs:
       - name: Build & Vet
         run: |
           go build ./...
+          go build ./cmd/kopdes
           go vet ./...
+
+      - name: Tes Batas Arsitektur Modular Monolith
+        run: go test -count=1 ./internal -run TestArchitecture
 
       - name: Jalankan Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
         run: go test -count=1 -race -p 1 ./...
@@ -137,3 +141,24 @@ jobs:
           staticcheck ./...
           gosec ./...
           govulncheck ./...
+
+  frontend-wireframe-build:
+    name: Build & Typecheck Frontend Wireframe (Vite + TS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-wireframe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-wireframe/package-lock.json
+      - name: Install & Verifikasi TypeScript + Build
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build

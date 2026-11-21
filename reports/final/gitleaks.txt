@@ -1,0 +1,16 @@
+gitleaks : 
+At line:19 char:40
++ ... eaks.txt" { gitleaks git --config .gitleaks.toml --verbose --redact } ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    ○
+    │╲
+    │ ○
+    ○ ░
+    ░    gitleaks
+
+[90m2:00AM[0m [32mINF[0m [1m115 commits scanned.[0m
+[90m2:00AM[0m [32mINF[0m [1mscanned ~4205245 bytes (4.21 MB) in 5.34s[0m
+[90m2:00AM[0m [32mINF[0m [1mno leaks found[0m

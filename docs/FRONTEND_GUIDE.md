@@ -1,6 +1,6 @@
 # Panduan Integrasi Frontend — Kopdes Merah Putih (Ramping)
 
-Target Kontrak: [openapi.yaml](openapi.yaml) (`v2.1.0-lean`, `36` endpoint) | Matriks Peran: [roles_matrix.json](roles_matrix.json) | Audit Keputusan: [DECISION_AUDIT.md](DECISION_AUDIT.md) | Bukti Live: [../frontend-tester/README.md](../frontend-tester/README.md).
+Target Kontrak: [openapi.yaml](openapi.yaml) (`v2.1.0-lean`, `36` endpoint) | Matriks Peran: [roles_matrix.json](roles_matrix.json) | Audit Keputusan: [DECISION_AUDIT.md](DECISION_AUDIT.md) | Implementasi Referensi Wireframe: [../frontend-wireframe/](../frontend-wireframe/) ([LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)) & Tester Polos: [../frontend-tester/README.md](../frontend-tester/README.md).
 
 > **Aturan Keras**: Jangan menanamkan nomor port backend, URL API produksi, ataupun kunci rahasia di kode frontend. Selalu baca konfigurasi runtime dari environment frontend lalu sinkronkan batas aturan dari `GET /api/v1/public/config`.
 

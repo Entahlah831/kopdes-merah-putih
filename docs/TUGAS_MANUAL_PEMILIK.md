@@ -2,9 +2,9 @@
 
 Dokumen ini berisi langkah-langkah yang **wajib dilakukan langsung oleh pemilik sistem** pada `.env` asli, penyimpanan kunci backup off-server, dan keputusan kebijakan bisnis sebelum go-live (agen dilarang membaca, mengubah, atau mengomit `.env` asli).
 
-## 1. Sinkronisasi `.env` Asli dari `.env.example` (46 Variabel)
+## 1. Sinkronisasi `.env` Asli dari `.env.example` (51 Variabel)
 
-Jalankan skrip sinkronisasi agar seluruh 46 kunci variabel terbaru hadir tanpa menimpa rahasia yang sudah Anda isi:
+Jalankan skrip sinkronisasi agar seluruh 51 kunci variabel terbaru (termasuk `WORKER_PORT`, `WORKER_TICK_INTERVAL`, `SLO_READ_P95_MS`, `SLO_WRITE_P95_MS`, `SLO_MAX_ERROR_RATE`) hadir tanpa menimpa rahasia yang sudah Anda isi:
 
 - **Windows (PowerShell):**
   ```powershell
@@ -53,16 +53,17 @@ Pastikan variabel berikut juga disetel unik dengan CSPRNG (`openssl rand -hex 32
 | `PDP_REJECTED_RETENTION_DAYS` | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
 | `BUKTI_RETENTION_DAYS` | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
 | `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |
+| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md)) | Non-aktif di `frontend-wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final. |
 
 ---
 
 ## 4. Inisialisasi VPS, Worker Bawaan, Pemulihan Admin, & Backup Off-Server
 
-1. Pastikan konfigurasi valid dan jalankan 4 layanan Compose (`postgres`, `api`, `worker` terjadwal otomatis):
+1. Pastikan konfigurasi valid dan jalankan layanan Compose inti (`postgres`, `api` profil `app`, `worker` profil `worker`, plus opsional `proxy` Caddy):
    ```bash
    go run ./cmd/envcheck --strict --ports --no-listen --env-file .env
-   docker compose --env-file .env config --quiet
-   docker compose --env-file .env up -d --build
+   docker compose --env-file .env --profile app --profile worker config --quiet
+   docker compose --env-file .env --profile app --profile worker up -d --build
    ```
 2. Jika upgrade dari versi sebelum `decision-audit`, jalankan migrasi berkas storage sekali secara idempoten:
    ```bash

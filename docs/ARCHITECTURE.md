@@ -24,7 +24,7 @@ Konfigurasi 51 variabel lingkungan divalidasi penuh oleh `go run ./cmd/envcheck 
 ```mermaid
 flowchart LR
   subgraph Transport["Transport & Wiring"]
-    API["internal/api\n(chi router + middleware)"]
+    API["internal/api\n(http.ServeMux + middleware)"]
     WRK["internal/worker\n(6 cron job + /healthz)"]
   end
 

@@ -34,3 +34,12 @@ Setiap ketidaksesuaian yang terungkap saat menjalankan Frontend Tester Polos lan
 | **REV-DISC-02** | `internal/auth/admin_service.go`, `frontend-tester/roles_matrix.json` (`RBAC-04`) | `PUT /api/v1/pengaturan` diharapkan `adminOnly` dan menolak payload kosong `{}` dengan HTTP `400`. | `routes.go` memasang `staffRoles` (`admin`, `bendahara`) dan `UpdatePengaturan` sebelumnya menerima `nama_koperasi` kosong sebagai HTTP `200` (berisiko mengosongkan nama koperasi). | Tambahkan validasi `INVALID_NAMA_KOPERASI` HTTP `400` di `UpdatePengaturan` dan selaraskan `roles_matrix.json` (`admin` & `bendahara` mendapat `400` untuk `{}`). | `TestAuth_...`, `Role Matrix RBAC-04` PASS. |
 | **REV-DISC-03** | `frontend-tester/openapi.json` & `lab.js` (`SCEN-09`) | Payload `keputusan` pada `POST /api/v1/pembayaran/{id}/verifikasi` ditulis `"diterima"`. | `internal/pembayaran/verifikasi.go` menerima hanya `"setuju"` atau `"tolak"`. | Perbarui `openapi.json`, `FRONTEND_GUIDE.md`, dan `lab.js` ke `"setuju"` / `"tolak"`. | Live Demo `DEMO-04` & `SCEN-09` PASS. |
 | **REV-DISC-04** | `frontend-tester/lab.js` (`SCEN-06`) | Mengasumsikan `POST /api/v1/iuran/jenis` (`action: "generate"`) selalu mengembalikan HTTP `200`. | Handler mengembalikan HTTP `201 Created` dengan ringkasan `{periode_tahun, periode_bulan, dibuat, dilewati}`. | Terima `200 || 201` di `lab.js` dan dokumentasikan di `openapi.json`. | `SCEN-06` PASS (`periode=2082-04`). |
+
+---
+
+## Temuan Integrasi Wireframe Figma (`modular-and-wireframe` Fase 2)
+
+| ID | Lokasi Terdampak | Klaim / Asumsi Awal | Perilaku Nyata Backend | Resolusi | Bukti |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **WF-DISC-01** | `frontend-wireframe/` & `docs/wireframe/ANALISIS_KESENJANGAN.md` | Field datar top-level pada `/api/v1/public/config`, field user `role`/`nama_lengkap`, respons daftar `pendaftaran_id`, dan harga katalog `harga_umum`/`harga_anggota` selalu terisi untuk anonim. | `PublicConfigHandler` membungkus field ke `features.*`, `koperasi.*`, `koperasi.active_qris.*`; `GET /api/v1/auth/me` mengembalikan `peran` & `nama`; `POST /api/v1/public/pendaftaran` mengembalikan `"id"`; `GET /api/v1/katalog/produk` mengembalikan `nama_kategori` & `harga_aktif` (sedangkan `harga_umum`/`harga_anggota` hanya diekspos ke staf). | Tipe TypeScript `frontend-wireframe/src/types.ts` serta seluruh *view* diselaraskan ke skema respons nyata server tanpa mengubah kontrak backend yang sudah stabil. | Playwright E2E Set B (`wireframe.spec.ts`) PASS. |
+

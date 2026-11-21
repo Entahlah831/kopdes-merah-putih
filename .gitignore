@@ -8,6 +8,10 @@ bin/
 dist/
 scratch/
 node_modules/
+frontend-wireframe/node_modules/
+frontend-wireframe/dist/
+frontend-wireframe/test-results/
+frontend-wireframe/playwright-report/
 
 # Environment variables & secrets (UU 27/2022 PDP)
 .env

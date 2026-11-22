@@ -373,11 +373,43 @@ jobs:
             exit "$rc_api"
           fi
 
+          PG_CID=$(docker ps -q --filter ancestor=postgres:16-alpine | head -n 1 || true)
+          if [ -n "$PG_CID" ]; then
+            docker logs "$PG_CID" > reports/ci/pg_dast.log 2>&1 || true
+          fi
+
           python3 - <<'PY'
-          import json, urllib.parse
+          import json, os, re, urllib.parse
           lines = []
           med_plus = []
+          triage_rows = []
           has_high = False
+
+          pg_err_cnt = 0
+          pg_syntax_cnt = 0
+          if os.path.exists("reports/ci/pg_dast.log"):
+              for ln in open("reports/ci/pg_dast.log", encoding="utf-8", errors="replace"):
+                  lo = ln.lower()
+                  if "error:" in lo or "fatal:" in lo:
+                      pg_err_cnt += 1
+                  if "syntax error" in lo or "sqlstate" in lo:
+                      pg_syntax_cnt += 1
+
+          api_500_cnt = 0
+          api_sql_err_cnt = 0
+          if os.path.exists("reports/ci/api_dast.log"):
+              for ln in open("reports/ci/api_dast.log", encoding="utf-8", errors="replace"):
+                  lo = ln.lower()
+                  if " 500 " in lo or "internal_server_error" in lo:
+                      api_500_cnt += 1
+                  if "sqlstate" in lo or "syntax error" in lo:
+                      api_sql_err_cnt += 1
+
+          def clean_otherinfo(raw: str) -> str:
+              s = re.sub(r"\[[^\]]*\]", "[REDACTED]", raw or "")
+              s = re.sub(r"'[^']*'|\"[^\"]*\"", "[REDACTED]", s)
+              return " ".join(s.split())[:120]
+
           for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
               data = json.load(open(fname, encoding="utf-8"))
               alerts = [a for s in data.get("site", []) for a in s.get("alerts", [])]
@@ -391,13 +423,27 @@ jobs:
                   lines.append(f"  - [risk={rc}:{a.get('riskdesc')}] plugin={a.get('pluginid')} {a.get('name')} (count={a.get('count')}) paths=[{pstr}]")
                   if rc in ("2", "3"):
                       med_plus.append(f"[risk={rc}] {a.get('pluginid')}:{a.get('name')}(count={a.get('count')},paths={pstr})")
+                      for inst in a.get("instances", []):
+                          m = inst.get("method", "?")
+                          p = urllib.parse.urlparse(inst.get("uri", "")).path or "/"
+                          prm = inst.get("param", "") or "-"
+                          oi = clean_otherinfo(inst.get("otherinfo", ""))
+                          triage_rows.append(f"{fname} plugin={a.get('pluginid')} risk={rc} conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
                   if rc == "3":
                       has_high = True
+
           summary = "\n".join(lines)
           open("reports/ci/zap_summary.txt", "w", encoding="utf-8").write(summary + "\n")
+          triage_header = f"pg_log_errors={pg_err_cnt} pg_syntax_errors={pg_syntax_cnt} api_500={api_500_cnt} api_sql_errors={api_sql_err_cnt}"
+          open("reports/ci/zap_triage_evidence.txt", "w", encoding="utf-8").write(triage_header + "\n" + "\n".join(triage_rows) + "\n")
           print(summary)
+          print("TRIAGE:", triage_header)
+          for row in triage_rows:
+              print(" ", row)
           med_msg = " | ".join(med_plus) if med_plus else "NONE (0 Medium, 0 High)"
+          triage_notice = (triage_header + " | " + " || ".join(triage_rows[:12])).replace("%", "%25")
           print(f"::notice title=OWASP ZAP Findings (Medium+)::{med_msg}")
+          print(f"::notice title=ZAP Triage Evidence (No Payloads)::{triage_notice}")
           if has_high:
               print(f"::error title=OWASP ZAP HIGH::{med_msg}")
               raise SystemExit(1)
@@ -557,8 +603,10 @@ jobs:
           set -e
           cat ../reports/wireframe/playwright_ci.txt
           if [ "$rc" -ne 0 ]; then
-            ERR_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✘|✓|Error:|expect\(|TimeoutError|ReferenceError|failed|passed' | head -n 30 | tr '\r\n' ' ' | sed 's/%/%25/g')
-            echo "::error title=Playwright E2E Failed (exit=${rc})::${ERR_SUMMARY}"
+            ERR_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✘|✓|passed|failed' | tr '\r\n' ' ')
+            ERR_STACK=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -A 10 'Error:' | head -n 40 | tr '\r\n' ' ')
+            CLEAN_MSG=$(printf '%s || %s' "${ERR_SUMMARY}" "${ERR_STACK}" | sed 's/%/%25/g')
+            echo "::error title=Playwright E2E Failed (exit=${rc})::${CLEAN_MSG}"
             exit "$rc"
           fi
           PW_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✓|passed' | tr '\r\n' ' ' | sed 's/%/%25/g')

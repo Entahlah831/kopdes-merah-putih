@@ -150,7 +150,7 @@ async function bootstrap(): Promise<void> {
     await api.init();
     try {
       const me = await api.request<UserSession>("GET", "/api/v1/auth/me");
-      currentUser = me.data;
+      currentUser = me.data && me.data.scope === "full" ? me.data : null;
     } catch {
       currentUser = null;
     }

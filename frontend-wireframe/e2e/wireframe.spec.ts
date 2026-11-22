@@ -66,6 +66,7 @@ async function loginUI(page: Page, identifier: string, password: string, mfaEmai
     if (!loggedIn) {
       const waitSec = 31 - (Math.floor(Date.now() / 1000) % 30);
       await page.waitForTimeout(waitSec * 1000);
+      await page.context().clearCookies();
       await page.goto("/");
       await page.getByTestId("nav-masuk").click();
       await page.getByTestId("login-identifier").fill(identifier);
@@ -201,6 +202,7 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
   });
 
   test("03. Happy Path Toko -> Pesanan -> Bukti Canvas -> Verifikasi Bendahara -> Selesai -> Iuran", async ({ page }) => {
+    test.setTimeout(90_000);
     await page.goto("/");
     const rt = await (await page.request.get("/config.json")).json() as { api_public_url: string };
     const apiBase = rt.api_public_url;

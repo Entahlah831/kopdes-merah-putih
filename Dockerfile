@@ -32,8 +32,8 @@ ENV TZ=${APP_TIMEZONE}
 # Alasan DL3018: base image alpine:3.23 sudah di-pin dan paket apk mengikuti security patch minor Alpine; seluruh CVE paket diaudit oleh Trivy Image Scan di CI.
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata curl && \
-    addgroup -S kopdes && adduser -S -G kopdes kopdesuser && \
-    mkdir -p /app/storage/kyc /app/storage/bukti && chown -R kopdesuser:kopdes /app/storage
+    addgroup -S -g 10001 kopdes && adduser -S -u 10001 -G kopdes kopdesuser && \
+    mkdir -p /app/storage/kyc /app/storage/bukti && chown -R 10001:10001 /app/storage
 
 COPY --from=builder /app/kopdes-api /app/kopdes-api
 COPY --from=builder /app/kopdes /app/kopdes
@@ -42,11 +42,11 @@ COPY --from=builder /app/uitester /app/uitester
 COPY --from=builder /app/frontend-tester /app/frontend-tester
 COPY --from=builder /app/db/migrations /app/db/migrations
 
-USER kopdesuser
+USER 10001:10001
 
-# Healthcheck membaca variabel API_PORT runtime (tanpa hardcoded port)
+# Healthcheck memanggil subperintah kopdes healthcheck (membaca API_PORT dari env, bentuk JSON)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD test -n "${API_PORT:-}" && curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null
+  CMD ["/app/kopdes", "healthcheck"]
 
 ENTRYPOINT ["/app/kopdes"]
 CMD ["serve"]

@@ -53,3 +53,24 @@ rules:
     message: "Gunakan textContent atau DOM builder aman untuk mencegah DOM XSS."
     languages: [ts, js]
     severity: ERROR
+
+  - id: kopdes-no-dynamic-sql-build
+    patterns:
+      - pattern-either:
+          - pattern: $DB.Exec($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.Query($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.QueryRow($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.Exec($CTX, $A + $B, ...)
+          - pattern: $DB.Query($CTX, $A + $B, ...)
+          - pattern: $DB.QueryRow($CTX, $A + $B, ...)
+    paths:
+      include:
+        - internal/
+        - cmd/
+      exclude:
+        - internal/db/
+        - internal/**/*_test.go
+        - cmd/**/*_test.go
+    message: "Dilarang membentuk query SQL dinamis dengan fmt.Sprintf atau penggabungan string; wajib query berparameter sqlc."
+    languages: [go]
+    severity: ERROR

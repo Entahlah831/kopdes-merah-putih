@@ -51,6 +51,12 @@ func main() {
 		printUsage()
 		os.Exit(2)
 	}
+	if args[0] == "healthcheck" {
+		if err := runHealthcheckCommand(context.Background(), envFlag, args[1:]); err != nil {
+			log.Fatalf("healthcheck gagal: %v", err)
+		}
+		return
+	}
 	cfg, err := config.LoadFromEnvAndFile(envFlag)
 	if err != nil {
 		log.Fatalf("gagal memuat env %s: %v", strings.NewReplacer("\r", "", "\n", "").Replace(envFlag), err) // #nosec G706 -- sanitized
@@ -73,7 +79,7 @@ func main() {
 }
 
 func isSingleTokenCommand(cmd string) bool {
-	return cmd == "worker" || cmd == "serve" || cmd == "uiserve"
+	return cmd == "worker" || cmd == "serve" || cmd == "uiserve" || cmd == "healthcheck"
 }
 
 func handleDaemonCommands(cfg config.AppConfig, args []string) bool {
@@ -125,6 +131,7 @@ func printUsage() {
 	fmt.Println("  serve                              Jalankan server HTTP API")
 	fmt.Println("  uiserve                            Jalankan server UI uji/wireframe (non-produksi)")
 	fmt.Println("  worker [--tick 60s] [--once]       Jalankan worker terjadwal + health HTTP")
+	fmt.Println("  healthcheck [--service api|worker] [--timeout 3s]  Cek liveness /healthz via env port")
 	fmt.Println("  admin create|reset-mfa|reset-password")
 	fmt.Println("  iuran generate --periode YYYY-MM")
 	fmt.Println("  pdp purge [--days 30]")
@@ -146,7 +153,8 @@ func openPool(ctx context.Context, cfg config.AppConfig) (*pgxpool.Pool, error) 
 		return nil, err
 	}
 	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, fmt.Sprintf("SET ROLE %s", config.DefaultDBAppRole))
+		const sessionRoleSQL = "SET ROLE " + config.DefaultDBAppRole
+		_, err := conn.Exec(ctx, sessionRoleSQL)
 		return err
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)

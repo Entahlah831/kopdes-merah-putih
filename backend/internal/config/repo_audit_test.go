@@ -142,6 +142,10 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"scripts/promote_env.sh",
 		"scripts/port_check.ps1",
 		"scripts/port_check.sh",
+		"scripts/backup_keys.sh",
+		"scripts/restore_keys.sh",
+		"scripts/rotate_keys.sh",
+		"docs/KEAMANAN_KUNCI_PEMILIK.md",
 		"docs/TUGAS_MANUAL_PEMILIK.md",
 	}
 	for _, rel := range requiredFiles {
@@ -156,8 +160,11 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"docker-compose.yml",
 		"docker-compose.test.yml",
 		"scripts/backup.sh",
+		"scripts/backup_keys.sh",
 		"scripts/restore_drill.sh",
+		"scripts/restore_keys.sh",
 		"scripts/restore_test.sh",
+		"scripts/rotate_keys.sh",
 		"scripts/seed_test_accounts.ps1",
 		"scripts/seed_test_accounts.sh",
 		"backend/cmd/server/main.go",

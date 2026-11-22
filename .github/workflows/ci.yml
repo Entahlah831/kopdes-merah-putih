@@ -207,6 +207,17 @@ jobs:
           ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh | tee reports/ci/age_backup.txt
           ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh | tee -a reports/ci/age_backup.txt
           ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh | tee -a reports/ci/age_backup.txt
+          bash -n scripts/backup_keys.sh scripts/restore_keys.sh scripts/rotate_keys.sh
+          VAULT_KEYFILE="${AGE_TMP_DIR}/ci-vault-private.key"
+          age-keygen -o "$VAULT_KEYFILE" 2>/dev/null
+          VAULT_PUB=$(grep '^# public key: ' "$VAULT_KEYFILE" | awk '{print $4}')
+          ENV_FILE=.env.test KEY_VAULT_DIR="${AGE_TMP_DIR}/keyvault" VAULT_AGE_RECIPIENT="$VAULT_PUB" bash scripts/backup_keys.sh --include-db | tee -a reports/ci/age_backup.txt
+          KEY_VAULT_DIR="${AGE_TMP_DIR}/keyvault" VAULT_AGE_IDENTITY_FILE="$VAULT_KEYFILE" bash scripts/restore_keys.sh --drill | tee -a reports/ci/age_backup.txt
+          cp .env.test "${AGE_TMP_DIR}/env.rot"
+          printf 'v2:kci=%s\n' "$(openssl rand -hex 32)" > "${AGE_TMP_DIR}/owner_new_aes.txt"
+          bash scripts/rotate_keys.sh --env-file "${AGE_TMP_DIR}/env.rot" --new-key-file "${AGE_TMP_DIR}/owner_new_aes.txt" --dry-run | tee -a reports/ci/age_backup.txt
+          bash scripts/rotate_keys.sh --env-file "${AGE_TMP_DIR}/env.rot" --new-key-file "${AGE_TMP_DIR}/owner_new_aes.txt" | tee -a reports/ci/age_backup.txt
+          KEY_VAULT_DIR="${AGE_TMP_DIR}/keyvault" VAULT_AGE_IDENTITY_FILE="$VAULT_KEYFILE" bash scripts/restore_keys.sh --apply-env "${AGE_TMP_DIR}/env.restored" | tee -a reports/ci/age_backup.txt
           rm -rf "$AGE_TMP_DIR" ./backups ./storage/kyc_test_setA ./storage/bukti_test_setA
 
       - name: SAST (staticcheck, gosec, govulncheck)
@@ -224,7 +235,7 @@ jobs:
           trivy image --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_image.txt kopdes-ci:latest
           head -n 80 reports/ci/trivy_image.txt
           RACE_PKG=$(grep -c '^ok' reports/ci/go_test_race_pg16.txt || true)
-          echo "::notice title=PG16 Race, SAST, age & Trivy Image::pg16_race_ok_pkgs=${RACE_PKG} | age_drill=PASS | staticcheck_gosec_govulncheck=PASS | trivy_image_fixable_HIGH_CRITICAL=0"
+          echo "::notice title=PG16 Race, SAST, age & Trivy Image::pg16_race_ok_pkgs=${RACE_PKG} | age_drill=PASS | keyvault_drill=PASS | staticcheck_gosec_govulncheck=PASS | trivy_image_fixable_HIGH_CRITICAL=0"
 
       - name: Upload Artifact Go Race, Age & Trivy Image
         if: always()

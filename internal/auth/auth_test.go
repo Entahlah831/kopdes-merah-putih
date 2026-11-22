@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,12 @@ func TestPasswordPolicyAndRoleMFA(t *testing.T) {
 	}
 	if err := validatePasswordPolicy("SandiKuat123!"); err != nil {
 		t.Fatalf("unexpected error for valid password: %v", err)
+	}
+	if err := validatePasswordPolicy(strings.Repeat("a", 72)); err != nil {
+		t.Fatalf("unexpected error for 72-byte password: %v", err)
+	}
+	if err := validatePasswordPolicy(strings.Repeat("a", 73)); err == nil {
+		t.Fatal("expected >72-byte password to be rejected before bcrypt")
 	}
 	svc := NewService(nil, Config{
 		BcryptCost:       4,

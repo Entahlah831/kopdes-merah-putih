@@ -294,7 +294,7 @@ export function setup() {
     throw new Error('K6_ANGGOTA_TOKEN, K6_ADMIN_TOKEN, dan K6_BENDAHARA_TOKEN wajib disediakan dari auth_helper.py');
   }
   const produkID = ensureLoadProduct(adminToken);
-  const buyerCount = Math.max(WRITE_VUS, 20);
+  const buyerCount = Math.max(WRITE_VUS + 10, 30);
   const buyers = ensureBuyerSessions(adminToken, buyerCount);
   return { anggotaToken, bendaharaToken, produkID, buyers };
 }
@@ -327,8 +327,8 @@ export function runRead(data) {
 }
 
 export function runWrite(data) {
-  const slot = (exec.vu.idInScenario - 1) % data.buyers.length;
   const it = exec.scenario.iterationInInstance;
+  const slot = it % data.buyers.length;
   const buyerToken = data.buyers[slot];
   const buyerIP = `10.20.${1 + slot}.${(it % 250) + 1}`;
   const staffIP = `10.21.${1 + slot}.${(it % 250) + 1}`;
@@ -354,7 +354,10 @@ export function runWrite(data) {
     writeReqs.add(1);
     const ordOK = w1.status === 201;
     errRate.add(!ordOK);
-    if (!ordOK) return;
+    if (!ordOK) {
+      if (it < 3) console.error(`k6 checkout fail it=${it} slot=${slot} status=${w1.status} body=${w1.body}`);
+      return;
+    }
 
     const pesananID = w1.json('data.id');
     const idemPay = `k6-${SCENARIO}-pay-${slot}-${it}-${Date.now()}`;
@@ -373,7 +376,10 @@ export function runWrite(data) {
     writeReqs.add(1);
     const payOK = w2.status === 201;
     errRate.add(!payOK);
-    if (!payOK) return;
+    if (!payOK) {
+      if (it < 3) console.error(`k6 pay create fail it=${it} slot=${slot} status=${w2.status} body=${w2.body}`);
+      return;
+    }
 
     const bayarID = w2.json('data.pembayaran.id');
     const nominalTotal = w2.json('data.pembayaran.nominal_total');
@@ -394,7 +400,10 @@ export function runWrite(data) {
     writeReqs.add(1);
     const upOK = w3.status === 200;
     errRate.add(!upOK);
-    if (!upOK) return;
+    if (!upOK) {
+      if (it < 3) console.error(`k6 bukti upload fail it=${it} slot=${slot} status=${w3.status} body=${w3.body}`);
+      return;
+    }
 
     const w4 = http.post(
       `${API_BASE}/api/v1/pembayaran/${bayarID}/verifikasi`,
@@ -408,7 +417,11 @@ export function runWrite(data) {
     epPembayaranVerify.add(w4.timings.duration);
     writeDur.add(w4.timings.duration);
     writeReqs.add(1);
-    errRate.add(w4.status !== 200);
+    const verOK = w4.status === 200;
+    errRate.add(!verOK);
+    if (!verOK && it < 3) {
+      console.error(`k6 verify fail it=${it} slot=${slot} status=${w4.status} body=${w4.body}`);
+    }
   });
   sleep(0.8);
 }

@@ -44,6 +44,9 @@ func validatePasswordPolicy(pwd string) error {
 	if len(pwd) < 10 {
 		return response.NewDomainError(http.StatusBadRequest, "WEAK_PASSWORD", "Kata sandi minimal 10 karakter")
 	}
+	if len(pwd) > 72 {
+		return response.NewDomainError(http.StatusBadRequest, "PASSWORD_TOO_LONG", "Kata sandi maksimal 72 byte")
+	}
 	return nil
 }
 

@@ -12,5 +12,6 @@ paths = [
   '''^\.env\.test$''',
   '''^\.env\.test\.alt$''',
   '''^internal/testseed/seed_test\.go$''',
+  '''^backend/internal/testseed/seed_test\.go$''',
   '''^internal/pendaftaran/pendaftaran_test\.go$''',
 ]

@@ -22,7 +22,7 @@ jobs:
       - name: Setup Go & Python
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: backend/go.mod
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -38,16 +38,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p reports/ci
-          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test | tee reports/ci/envcheck_setA.txt
-          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt | tee reports/ci/envcheck_setB.txt
-          go run ./cmd/envcheck --compare .env.test .env.test.alt | tee reports/ci/envcheck_compare.txt
+          go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env.test" | tee reports/ci/envcheck_setA.txt
+          go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env.test.alt" | tee reports/ci/envcheck_setB.txt
+          go -C backend run ./cmd/envcheck --compare "${PWD}/.env.test" "${PWD}/.env.test.alt" | tee reports/ci/envcheck_compare.txt
 
       - name: Verifikasi sqlc generate bebas drift
         run: |
           set -euo pipefail
-          sqlc version | tee reports/ci/sqlc_version.txt
-          sqlc generate
-          git diff --exit-code internal/db
+          (cd backend && sqlc version | tee ../reports/ci/sqlc_version.txt && sqlc generate && git diff --exit-code internal/db)
 
       - name: Pindai Secret dengan Gitleaks
         run: |
@@ -57,7 +55,7 @@ jobs:
       - name: Hadolint Dockerfile
         run: |
           set +e
-          docker run --rm -i hadolint/hadolint < Dockerfile > reports/ci/hadolint.txt 2>&1
+          docker run --rm -i hadolint/hadolint < backend/Dockerfile > reports/ci/hadolint.txt 2>&1
           rc=$?
           set -e
           cat reports/ci/hadolint.txt
@@ -149,7 +147,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: backend/go.mod
 
       - name: Install PostgreSQL 16 client, age, Trivy, & Go SAST tools
         run: |
@@ -170,8 +168,8 @@ jobs:
             set -a
             source "$envfile"
             set +a
-            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-            for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f backend/db/docker-init/01_roles.sql
+            for mf in $(ls backend/db/migrations/*_*.up.sql | sort -V); do
               PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
             done
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
@@ -181,24 +179,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p reports/ci
-          go build ./...
-          go build ./cmd/kopdes
-          go vet ./...
-          go test -v -count=1 ./internal -run TestArchitecture | tee reports/ci/arch_ci.txt
+          go -C backend build ./...
+          go -C backend build ./cmd/kopdes
+          go -C backend vet ./...
+          go -C backend test -v -count=1 ./internal -run TestArchitecture | tee reports/ci/arch_ci.txt
 
       - name: Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
         run: |
           set -euo pipefail
-          go test -count=1 -race -p 1 -timeout 300s ./... 2>&1 | tee reports/ci/go_test_race_pg16.txt
+          go -C backend test -count=1 -race -p 1 -timeout 300s ./... 2>&1 | tee reports/ci/go_test_race_pg16.txt
 
       - name: Smoke Test Seeder, CLI Admin/Storage, Worker, & Backup age Drill
         run: |
           set -euo pipefail
-          go run ./cmd/seed_test_accounts --env-file .env.test
-          go run ./cmd/kopdes --env-file .env.test worker --once
-          go run ./cmd/kopdes --env-file .env.test storage migrate-files
-          go run ./cmd/kopdes --env-file .env.test pdp purge
-          go run ./cmd/kopdes --env-file .env.test bukti purge
+          go -C backend run ./cmd/seed_test_accounts --env-file "${PWD}/.env.test"
+          go -C backend run ./cmd/kopdes --env-file "${PWD}/.env.test" worker --once
+          go -C backend run ./cmd/kopdes --env-file "${PWD}/.env.test" storage migrate-files
+          go -C backend run ./cmd/kopdes --env-file "${PWD}/.env.test" pdp purge
+          go -C backend run ./cmd/kopdes --env-file "${PWD}/.env.test" bukti purge
           AGE_TMP_DIR=$(mktemp -d)
           KEYFILE="${AGE_TMP_DIR}/ci-age-private.key"
           age-keygen -o "$KEYFILE" 2>/dev/null
@@ -214,14 +212,14 @@ jobs:
       - name: SAST (staticcheck, gosec, govulncheck)
         run: |
           set -euo pipefail
-          staticcheck ./... 2>&1 | tee reports/ci/staticcheck.txt
-          gosec ./... 2>&1 | tee reports/ci/gosec.txt
-          govulncheck ./... 2>&1 | tee reports/ci/govulncheck.txt
+          (cd backend && staticcheck ./... 2>&1 | tee ../reports/ci/staticcheck.txt)
+          (cd backend && gosec ./... 2>&1 | tee ../reports/ci/gosec.txt)
+          (cd backend && govulncheck ./... 2>&1 | tee ../reports/ci/govulncheck.txt)
 
       - name: Build Docker Image & Trivy Image Scan (FAIL fixable HIGH/CRITICAL)
         run: |
           set -euo pipefail
-          docker build -t kopdes-ci:latest .
+          docker build -f backend/Dockerfile -t kopdes-ci:latest .
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output reports/ci/trivy_image.json kopdes-ci:latest
           trivy image --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_image.txt kopdes-ci:latest
           head -n 80 reports/ci/trivy_image.txt
@@ -259,7 +257,7 @@ jobs:
       - name: Setup Go & Python
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: backend/go.mod
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -280,13 +278,13 @@ jobs:
           set -a
           source .env.test
           set +a
-          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f backend/db/docker-init/01_roles.sql
+          for mf in $(ls backend/db/migrations/*_*.up.sql | sort -V); do
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
           done
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
-          go build -o /tmp/kopdes ./cmd/kopdes
-          go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
+          go -C backend build -o /tmp/kopdes ./cmd/kopdes
+          go -C backend run ./cmd/seed_test_accounts --env-file "${PWD}/.env.test" -password "kopdes_ci_test_pass_123!"
           nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_perf.log 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && break
@@ -458,7 +456,7 @@ jobs:
       - name: Setup Go & Python
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: backend/go.mod
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -483,13 +481,13 @@ jobs:
           set +a
           export RATE_LIMIT_RPS="${ZAP_RATE_LIMIT_RPS}"
 
-          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f backend/db/docker-init/01_roles.sql
+          for mf in $(ls backend/db/migrations/*_*.up.sql | sort -V); do
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
           done
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
-          go build -o /tmp/kopdes ./cmd/kopdes
-          go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
+          go -C backend build -o /tmp/kopdes ./cmd/kopdes
+          go -C backend run ./cmd/seed_test_accounts --env-file "${PWD}/.env.test" -password "kopdes_ci_test_pass_123!"
           nohup /tmp/kopdes --env-file .env.test serve > reports/zap/api_dast.log 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && break
@@ -565,58 +563,58 @@ jobs:
       - name: Setup Go & Node.js
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: backend/go.mod
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: frontend-wireframe/package-lock.json
+          cache-dependency-path: frontend/wireframe/package-lock.json
 
-      - name: Install postgresql-client, Build frontend-wireframe & Playwright Chromium
+      - name: Install postgresql-client, Build frontend/wireframe & Playwright Chromium
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
-          cd frontend-wireframe
+          cd frontend/wireframe
           npm ci
           npx tsc --noEmit
           npm run build
           npx playwright install chromium --with-deps
 
-      - name: Siapkan PG16 Set B, Seed Akun, & Jalankan Server API + UI + Playwright Suite 01..05
+      - name: Siapkan PG16 Set B, Seed Akun, & Jalankan Server API + UI + Playwright Suite
         run: |
           set -euo pipefail
           set -a
           source .env.test.alt
           set +a
-          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f backend/db/docker-init/01_roles.sql
+          for mf in $(ls backend/db/migrations/*_*.up.sql | sort -V); do
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
           done
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
 
           mkdir -p reports/wireframe
-          go build -o /tmp/kopdes ./cmd/kopdes
-          go run ./cmd/seed_test_accounts --env-file .env.test.alt -password "kopdes_ci_wireframe_pass_123!"
+          go -C backend build -o /tmp/kopdes ./cmd/kopdes
+          go -C backend run ./cmd/seed_test_accounts --env-file "${PWD}/.env.test.alt" -password "kopdes_ci_wireframe_pass_123!"
           nohup /tmp/kopdes --env-file .env.test.alt serve > /tmp/api_wf.log 2>&1 &
-          nohup /tmp/kopdes --env-file .env.test.alt uiserve -ui-dir frontend-wireframe/dist > /tmp/ui_wf.log 2>&1 &
+          nohup /tmp/kopdes --env-file .env.test.alt uiserve -ui-dir frontend/wireframe/dist > /tmp/ui_wf.log 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:${UI_PORT}/config.json" >/dev/null 2>&1 && break
             sleep 1
           done
 
-          cd frontend-wireframe
+          cd frontend/wireframe
           set +e
-          UI_BASE_URL="http://127.0.0.1:${UI_PORT}" E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list > ../reports/wireframe/playwright_ci.txt 2>&1
+          UI_BASE_URL="http://127.0.0.1:${UI_PORT}" E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list > ../../reports/wireframe/playwright_ci.txt 2>&1
           rc=$?
           set -e
-          cat ../reports/wireframe/playwright_ci.txt
+          cat ../../reports/wireframe/playwright_ci.txt
           if [ "$rc" -ne 0 ]; then
-            ERR_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✘|✓|passed|failed' | tr '\r\n' ' ')
-            ERR_STACK=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -A 10 'Error:' | head -n 40 | tr '\r\n' ' ')
+            ERR_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../../reports/wireframe/playwright_ci.txt | grep -E '✘|✓|passed|failed' | tr '\r\n' ' ')
+            ERR_STACK=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../../reports/wireframe/playwright_ci.txt | grep -A 10 'Error:' | head -n 40 | tr '\r\n' ' ')
             CLEAN_MSG=$(printf '%s || %s' "${ERR_SUMMARY}" "${ERR_STACK}" | sed 's/%/%25/g')
             echo "::error title=Playwright E2E Failed (exit=${rc})::${CLEAN_MSG}"
             exit "$rc"
           fi
-          PW_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✓|passed' | tr '\r\n' ' ' | sed 's/%/%25/g')
+          PW_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../../reports/wireframe/playwright_ci.txt | grep -E '✓|passed' | tr '\r\n' ' ' | sed 's/%/%25/g')
           echo "::notice title=Playwright 19-Frame E2E::${PW_SUMMARY}"
 
       - name: Upload Artifact Playwright & Tangkapan Layar Wireframe
@@ -626,4 +624,4 @@ jobs:
           name: ci-wireframe-playwright-e2e
           path: |
             reports/wireframe/
-            frontend-wireframe/test-results/
+            frontend/wireframe/test-results/

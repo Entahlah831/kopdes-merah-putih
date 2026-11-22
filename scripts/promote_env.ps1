@@ -66,5 +66,7 @@ foreach ($line in Get-Content $Template) {
 $outLines | Set-Content -Path $Target -Encoding UTF8
 Write-Host "Berkas $Target diperbarui dari $Template (nilai eksisting dipertahankan; rahasia tidak dicetak ke konsol)."
 if (Get-Command go -ErrorAction SilentlyContinue) {
-    go run ./cmd/envcheck --compare $Template $Target
+    $absTpl = [System.IO.Path]::GetFullPath($Template)
+    $absTgt = [System.IO.Path]::GetFullPath($Target)
+    go -C backend run ./cmd/envcheck --compare $absTpl $absTgt
 }

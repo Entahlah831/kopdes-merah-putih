@@ -9,11 +9,12 @@ WORKDIR /app
 RUN apk add --no-cache git ca-certificates tzdata
 
 # Cache layer untuk go.mod dan go.sum
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
-# Salin sumber aplikasi
-COPY . .
+# Salin sumber backend & aset tester non-produksi (dibangun dari root repositori)
+COPY backend/ ./
+COPY frontend/tester /app/frontend/tester
 
 # Kompilasi binary statis dengan strip simbol
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/kopdes-api ./cmd/server && \
@@ -39,7 +40,7 @@ COPY --from=builder /app/kopdes-api /app/kopdes-api
 COPY --from=builder /app/kopdes /app/kopdes
 COPY --from=builder /app/envcheck /app/envcheck
 COPY --from=builder /app/uitester /app/uitester
-COPY --from=builder /app/frontend-tester /app/frontend-tester
+COPY --from=builder /app/frontend/tester /app/frontend/tester
 COPY --from=builder /app/db/migrations /app/db/migrations
 
 USER 10001:10001

@@ -23,8 +23,8 @@ services:
       - "127.0.0.1:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_PORT:?DB_PORT wajib disetel}"
     volumes:
       - pg_test_data:/var/lib/postgresql/data
-      - ./db/docker-init:/docker-entrypoint-initdb.d:ro
-      - ./db/migrations:/docker-migrations:ro
+      - ./backend/db/docker-init:/docker-entrypoint-initdb.d:ro
+      - ./backend/db/migrations:/docker-migrations:ro
     networks:
       - kopdes_test_internal
     security_opt:
@@ -38,7 +38,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     depends_on:
@@ -106,7 +106,7 @@ services:
   worker:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     depends_on:
@@ -174,14 +174,14 @@ services:
   uitester:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     depends_on:
       api:
         condition: service_healthy
     entrypoint: ["/app/kopdes"]
-    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend-tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT}"]
+    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend/tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT}"]
     environment:
       APP_ENV: ${APP_ENV:-test}
       UI_PORT: ${UI_PORT:?UI_PORT wajib disetel}

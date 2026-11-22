@@ -15,7 +15,7 @@ import (
 	"github.com/kopdes/merah-putih/internal/config"
 )
 
-func repoRootDir(t *testing.T) string {
+func backendRootDir(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
@@ -24,8 +24,17 @@ func repoRootDir(t *testing.T) string {
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
 }
 
+func repoRootDir(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(wd, "..", "..", ".."))
+}
+
 func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
-	root := repoRootDir(t)
+	bRoot := backendRootDir(t)
 
 	// 1. Maksimal 45 variabel env di AppConfig Catalog
 	if n := len(config.Catalog()); n > 45 {
@@ -33,7 +42,7 @@ func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 	}
 
 	// 2. Maksimal 22 tabel PostgreSQL lintas migrasi *.up.sql
-	migPaths, err := filepath.Glob(filepath.Join(root, "db", "migrations", "*_*.up.sql"))
+	migPaths, err := filepath.Glob(filepath.Join(bRoot, "db", "migrations", "*_*.up.sql"))
 	if err != nil || len(migPaths) == 0 {
 		t.Fatalf("glob migrasi: err=%v count=%d", err, len(migPaths))
 	}
@@ -51,7 +60,7 @@ func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 	}
 
 	// 3. Maksimal 36 endpoint HTTP
-	routesBytes, err := os.ReadFile(filepath.Join(root, "internal", "api", "routes.go"))
+	routesBytes, err := os.ReadFile(filepath.Join(bRoot, "internal", "api", "routes.go"))
 	if err != nil {
 		t.Fatalf("baca routes.go: %v", err)
 	}
@@ -62,8 +71,8 @@ func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 }
 
 func TestStructural_FileAndFunctionSizes_NoRawSQL(t *testing.T) {
-	root := repoRootDir(t)
-	internalDir := filepath.Join(root, "internal")
+	bRoot := backendRootDir(t)
+	internalDir := filepath.Join(bRoot, "internal")
 	fset := token.NewFileSet()
 	rawSQLPattern := regexp.MustCompile(`(?i)(pool\.(Exec|Query|QueryRow)|dbtx\.(Exec|Query|QueryRow)|"\s*(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b)`)
 

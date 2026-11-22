@@ -40,6 +40,15 @@ func NewHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir, apiURL string) 
 	if err != nil {
 		return nil, fmt.Errorf("direktori UI tidak valid: %w", err)
 	}
+	if !filepath.IsAbs(uiDir) {
+		if _, statErr := os.Stat(absUIDir); os.IsNotExist(statErr) {
+			if altDir, altErr := filepath.Abs(filepath.Join("..", uiDir)); altErr == nil {
+				if _, altStatErr := os.Stat(altDir); altStatErr == nil {
+					absUIDir = altDir
+				}
+			}
+		}
+	}
 	apiBase := resolveAPIBase(cfg, apiURL)
 	mux := http.NewServeMux()
 	registerRoutes(mux, cfg, pool, apiBase, absUIDir)

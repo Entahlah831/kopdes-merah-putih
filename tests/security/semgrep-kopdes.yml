@@ -7,11 +7,11 @@ rules:
           - pattern: $POOL.QueryRow($CTX, $SQL, ...)
     paths:
       include:
-        - internal/
+        - backend/internal/
       exclude:
-        - internal/db/
-        - internal/api/runtime.go
-        - internal/**/*_test.go
+        - backend/internal/db/
+        - backend/internal/api/runtime.go
+        - backend/internal/**/*_test.go
     message: "Query database di internal/ wajib menggunakan sqlc, bukan SQL mentah."
     languages: [go]
     severity: ERROR
@@ -23,12 +23,12 @@ rules:
           - pattern: float64
     paths:
       include:
-        - internal/iuran/
-        - internal/katalog/
-        - internal/pesanan/
-        - internal/pembayaran/
+        - backend/internal/iuran/
+        - backend/internal/katalog/
+        - backend/internal/pesanan/
+        - backend/internal/pembayaran/
       exclude:
-        - internal/**/*_test.go
+        - backend/internal/**/*_test.go
     message: "Perhitungan nominal Rupiah wajib memakai integer int64, dilarang float32/float64."
     languages: [go]
     severity: WARNING
@@ -37,9 +37,9 @@ rules:
     pattern: json.NewDecoder($R)
     paths:
       include:
-        - internal/
+        - backend/internal/
       exclude:
-        - internal/**/*_test.go
+        - backend/internal/**/*_test.go
     message: "Pastikan decoder JSON memakai DisallowUnknownFields() via DecodeStrictJSON untuk anti-mass-assignment."
     languages: [go]
     severity: INFO
@@ -48,8 +48,8 @@ rules:
     pattern: $EL.innerHTML = $VAL
     paths:
       include:
-        - frontend-wireframe/src/
-        - frontend-tester/
+        - frontend/wireframe/src/
+        - frontend/tester/
     message: "Gunakan textContent atau DOM builder aman untuk mencegah DOM XSS."
     languages: [ts, js]
     severity: ERROR
@@ -65,12 +65,12 @@ rules:
           - pattern: $DB.QueryRow($CTX, $A + $B, ...)
     paths:
       include:
-        - internal/
-        - cmd/
+        - backend/internal/
+        - backend/cmd/
       exclude:
-        - internal/db/
-        - internal/**/*_test.go
-        - cmd/**/*_test.go
+        - backend/internal/db/
+        - backend/internal/**/*_test.go
+        - backend/cmd/**/*_test.go
     message: "Dilarang membentuk query SQL dinamis dengan fmt.Sprintf atau penggabungan string; wajib query berparameter sqlc."
     languages: [go]
     severity: ERROR

@@ -86,7 +86,7 @@ func TestAdminRecoveryCLI_ResetMFAAndResetPassword(t *testing.T) {
 	if testing.Short() {
 		t.Skip("melewati uji CLI DB pada mode -short")
 	}
-	envPath := filepath.Clean(filepath.Join("..", "..", ".env.test"))
+	envPath := filepath.Clean(filepath.Join("..", "..", "..", ".env.test"))
 	cfg, err := config.LoadFromEnvAndFile(envPath)
 	if err != nil {
 		t.Fatalf("LoadFromEnvAndFile: %v", err)

@@ -426,7 +426,7 @@ func RenderEnvReferenceMarkdown() string {
 	specs := Catalog()
 	var b strings.Builder
 	b.WriteString("# Referensi Variabel Environment — Kopdes Merah Putih\n\n")
-	b.WriteString("> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.\n")
+	b.WriteString("> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `backend/internal/config/config.go`.\n")
 	b.WriteString("> Total variabel: **" + strconv.Itoa(len(specs)) + "** (target ramping <= 45 variabel).\n\n")
 
 	b.WriteString("## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)\n\n")

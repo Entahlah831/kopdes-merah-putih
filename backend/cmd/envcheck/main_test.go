@@ -38,7 +38,7 @@ func TestEnvCheck_Compare_AndNeverLeaksSecrets(t *testing.T) {
 
 func TestEnvCheck_StrictAndPortConflictDetection(t *testing.T) {
 	// Uji --strict terhadap .env.test yang lengkap dan valid
-	root, _ := filepath.Abs("../..")
+	root, _ := filepath.Abs("../../..")
 	var out bytes.Buffer
 	code := runCLI([]string{"--strict", "--env-file", filepath.Join(root, ".env.test")}, &out, &out)
 	if code != 0 {

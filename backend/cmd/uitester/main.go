@@ -21,7 +21,7 @@ func newUITesterHandler(cfg config.AppConfig, pool *pgxpool.Pool, uiDir, apiURL 
 
 func main() {
 	envFileFlag := flag.String("env-file", "", "Path berkas konfigurasi (.env.test atau .env.test.alt)")
-	uiDirFlag := flag.String("ui-dir", "frontend-tester", "Direktori berkas statis Frontend Tester")
+	uiDirFlag := flag.String("ui-dir", "frontend/tester", "Direktori berkas statis Frontend Tester")
 	bindFlag := flag.String("bind", "127.0.0.1", "Alamat bind HTTP Frontend Tester")
 	apiURLFlag := flag.String("api-url", "", "Override URL publik API untuk Frontend Tester")
 	flag.Parse()

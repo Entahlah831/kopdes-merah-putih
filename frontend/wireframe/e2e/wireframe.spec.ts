@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const seedPassword = process.env.E2E_SEED_PASSWORD || "";
-const screenshotDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../reports/wireframe");
+const screenshotDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../reports/wireframe");
 
 function ensureScreenshotDir(): void {
   fs.mkdirSync(screenshotDir, { recursive: true });

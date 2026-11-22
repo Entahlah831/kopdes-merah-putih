@@ -113,7 +113,7 @@ func handleDaemonCommands(cfg config.AppConfig, args []string) bool {
 
 func runUIServeCommand(ctx context.Context, cfg config.AppConfig, args []string) error {
 	fs := flag.NewFlagSet("uiserve", flag.ContinueOnError)
-	uiDir := fs.String("ui-dir", "frontend-tester", "Direktori berkas statis UI non-produksi")
+	uiDir := fs.String("ui-dir", "frontend/tester", "Direktori berkas statis UI non-produksi")
 	bind := fs.String("bind", "127.0.0.1", "Alamat bind HTTP UI")
 	apiURL := fs.String("api-url", "", "Override URL publik API")
 	if err := fs.Parse(args); err != nil {

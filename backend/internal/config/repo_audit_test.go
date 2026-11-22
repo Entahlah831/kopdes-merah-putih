@@ -17,12 +17,12 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("Getwd gagal: %v", err)
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, ".env.example")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("go.mod tidak ditemukan")
+			t.Fatalf(".env.example tidak ditemukan")
 		}
 		dir = parent
 	}
@@ -91,7 +91,7 @@ func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 		"ENV_FILE": true, "TEST_ENV_FILE": true, "TEST_DATABASE_URL": true, "DATABASE_URL": true,
 	}
 	reEnvCall := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\(\s*"([A-Z0-9_]+)"\s*\)`)
-	for _, sub := range []string{"cmd", "internal"} {
+	for _, sub := range []string{"backend/cmd", "backend/internal"} {
 		err := filepath.WalkDir(filepath.Join(root, sub), func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return err
@@ -132,9 +132,12 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 
 	requiredFiles := []string{
 		".dockerignore",
+		"Caddyfile",
 		"docker-compose.yml",
 		"docker-compose.test.yml",
-		"cmd/envcheck/main.go",
+		"backend/go.mod",
+		"backend/Dockerfile",
+		"backend/cmd/envcheck/main.go",
 		"scripts/promote_env.ps1",
 		"scripts/promote_env.sh",
 		"scripts/port_check.ps1",
@@ -148,7 +151,8 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 	}
 
 	hardcodedTargets := []string{
-		"Dockerfile",
+		"backend/Dockerfile",
+		"Caddyfile",
 		"docker-compose.yml",
 		"docker-compose.test.yml",
 		"scripts/backup.sh",
@@ -156,11 +160,11 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"scripts/restore_test.sh",
 		"scripts/seed_test_accounts.ps1",
 		"scripts/seed_test_accounts.sh",
-		"cmd/server/main.go",
-		"cmd/uitester/main.go",
-		"cmd/seed_test_accounts/main.go",
-		"frontend-tester/index.html",
-		"frontend-tester/app.js",
+		"backend/cmd/server/main.go",
+		"backend/cmd/uitester/main.go",
+		"backend/cmd/seed_test_accounts/main.go",
+		"frontend/tester/index.html",
+		"frontend/tester/app.js",
 	}
 	portRe := regexp.MustCompile(`\b(?:8080|8081|8082|18080|18081|18082|5432|5433|9090|9100)\b`)
 	for _, rel := range hardcodedTargets {
@@ -181,11 +185,11 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		}
 	}
 
-	rolesBytes, err := os.ReadFile(filepath.Join(root, "db", "docker-init", "01_roles.sql"))
+	rolesBytes, err := os.ReadFile(filepath.Join(root, "backend", "db", "docker-init", "01_roles.sql"))
 	if err != nil {
 		t.Fatalf("Gagal membaca 01_roles.sql: %v", err)
 	}
 	if strings.Contains(string(rolesBytes), "v_pass := 'kopdes_dev_password'") {
-		t.Errorf("db/docker-init/01_roles.sql masih mengandung fallback password dev!")
+		t.Errorf("backend/db/docker-init/01_roles.sql masih mengandung fallback password dev!")
 	}
 }

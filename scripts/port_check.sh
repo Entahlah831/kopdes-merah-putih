@@ -3,4 +3,5 @@
 set -euo pipefail
 
 ENV_FILE="${1:-.env.test}"
-go run ./cmd/envcheck --ports --strict --env-file "${ENV_FILE}"
+ABS_ENV="$(cd "$(dirname "${ENV_FILE}")" && pwd)/$(basename "${ENV_FILE}")"
+go -C backend run ./cmd/envcheck --ports --strict --env-file "${ABS_ENV}"

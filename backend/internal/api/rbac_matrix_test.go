@@ -72,23 +72,24 @@ func matchesExpectedCode(got int, rawExp interface{}) bool {
 
 func TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries(t *testing.T) {
 	root := repoRootDir(t)
+	bRoot := backendRootDir(t)
 	docBytes, err := os.ReadFile(filepath.Join(root, "docs", "roles_matrix.json"))
 	if err != nil {
 		t.Fatalf("read docs/roles_matrix.json: %v", err)
 	}
-	testerBytes, err := os.ReadFile(filepath.Join(root, "frontend-tester", "roles_matrix.json"))
+	testerBytes, err := os.ReadFile(filepath.Join(root, "frontend", "tester", "roles_matrix.json"))
 	if err != nil {
-		t.Fatalf("read frontend-tester/roles_matrix.json: %v", err)
+		t.Fatalf("read frontend/tester/roles_matrix.json: %v", err)
 	}
 	if !bytes.Equal(bytes.ReplaceAll(docBytes, []byte("\r\n"), []byte("\n")), bytes.ReplaceAll(testerBytes, []byte("\r\n"), []byte("\n"))) {
-		t.Fatal("docs/roles_matrix.json and frontend-tester/roles_matrix.json are out of sync")
+		t.Fatal("docs/roles_matrix.json and frontend/tester/roles_matrix.json are out of sync")
 	}
 
 	var doc rolesMatrixDoc
 	if err := json.Unmarshal(docBytes, &doc); err != nil {
 		t.Fatalf("parse roles_matrix.json: %v", err)
 	}
-	liveRoutes := extractLiveRoutePatterns(t, root)
+	liveRoutes := extractLiveRoutePatterns(t, bRoot)
 	catSet := make(map[string]bool, len(doc.RouteCatalog))
 	for _, rc := range doc.RouteCatalog {
 		catSet[rc.Pattern] = true

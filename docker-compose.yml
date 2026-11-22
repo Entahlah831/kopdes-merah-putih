@@ -8,6 +8,8 @@ volumes:
   pg_data:
   kyc_storage:
   bukti_storage:
+  caddy_data:
+  caddy_config:
 
 services:
   postgres:
@@ -25,8 +27,8 @@ services:
       - "127.0.0.1:${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}:${DB_PORT:?DB_PORT wajib disetel}"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./db/docker-init:/docker-entrypoint-initdb.d:ro
-      - ./db/migrations:/docker-migrations:ro
+      - ./backend/db/docker-init:/docker-entrypoint-initdb.d:ro
+      - ./backend/db/migrations:/docker-migrations:ro
     networks:
       - kopdes_internal
     security_opt:
@@ -43,7 +45,7 @@ services:
     profiles: ["app", "tester", "proxy"]
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     restart: unless-stopped
@@ -59,6 +61,7 @@ services:
       WORKER_PORT: ${WORKER_PORT:?WORKER_PORT wajib disetel}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS wajib disetel}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-30}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:?DB_PORT wajib disetel}
       DB_HOST_PORT: ${DB_HOST_PORT:?DB_HOST_PORT wajib disetel}
@@ -116,7 +119,7 @@ services:
     profiles: ["worker"]
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     restart: unless-stopped
@@ -188,7 +191,7 @@ services:
     profiles: ["tester"]
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
       args:
         APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
     restart: unless-stopped
@@ -196,7 +199,7 @@ services:
       api:
         condition: service_healthy
     entrypoint: ["/app/kopdes"]
-    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend-tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT:?API_HOST_PORT wajib disetel}"]
+    command: ["uiserve", "-bind", "0.0.0.0", "-ui-dir", "/app/frontend/tester", "-api-url", "http://127.0.0.1:${API_HOST_PORT:?API_HOST_PORT wajib disetel}"]
     environment:
       APP_ENV: ${APP_ENV:-test}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
@@ -231,9 +234,18 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    command: ["caddy", "reverse-proxy", "--from", ":${API_HOST_PORT:?API_HOST_PORT wajib disetel}", "--to", "api:${API_PORT:?API_PORT wajib disetel}"]
-    expose:
-      - "${API_HOST_PORT:?API_HOST_PORT wajib disetel}"
+    environment:
+      API_PORT: ${API_PORT:?API_PORT wajib disetel}
+      KOPDES_SITE_ADDRESS: ${KOPDES_SITE_ADDRESS:-http://localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend/wireframe/dist:/srv/frontend:ro
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
       - kopdes_edge
       - kopdes_internal

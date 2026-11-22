@@ -1,6 +1,6 @@
 # Referensi Variabel Environment — Kopdes Merah Putih
 
-> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.
+> **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `backend/internal/config/config.go`.
 > Total variabel: **44** (target ramping <= 45 variabel).
 
 ## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)

@@ -24,7 +24,7 @@ func setupWorkerTestPool(t *testing.T) (config.AppConfig, *pgxpool.Pool) {
 	if testing.Short() {
 		t.Skip("melewati uji worker DB pada mode -short")
 	}
-	cfg, err := config.LoadFromEnvAndFile(filepath.Clean(filepath.Join("..", "..", ".env.test")))
+	cfg, err := config.LoadFromEnvAndFile(filepath.Clean(filepath.Join("..", "..", "..", ".env.test")))
 	if err != nil {
 		t.Fatalf("LoadFromEnvAndFile: %v", err)
 	}

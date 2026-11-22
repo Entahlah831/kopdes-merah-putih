@@ -30,14 +30,14 @@ func ValidateTestDatabaseDSN(dsn string) error {
 	return nil
 }
 
-// findRepoRoot mencari direktori akar repositori yang memiliki go.mod.
+// findRepoRoot mencari direktori akar repositori yang memiliki .env.example.
 func findRepoRoot() string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "."
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, ".env.example")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)

@@ -268,7 +268,7 @@ func TestE2E_SetA_PublicConfig_MFA_SetupReplay_And_CGNATLockout(t *testing.T) {
 
 	// 3. CGNAT lockout: repeated wrong attempts for one user behind shared IP must not block anggota2
 	sharedHdr := map[string]string{"X-Forwarded-For": "203.0.113.77"}
-	for i := 0; i < e.appCfg.LoginMaxAttempts+1; i++ {
+	for i := 0; i < DefaultConfig().LoginMaxAttempts+1; i++ {
 		doJSONReq(t, http.MethodPost, e.httpSrv.URL+"/api/v1/auth/login", "", map[string]string{
 			"identifier": "anggota1@kopdes-test.local", "password": "wrong-password-123",
 		}, sharedHdr)

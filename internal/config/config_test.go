@@ -124,11 +124,11 @@ func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.
 	if cfg.SessionIdleTTL != 20*time.Minute || cfg.SessionAbsTTL != 8*time.Hour {
 		t.Errorf("Session TTL mismatch: idle=%v abs=%v", cfg.SessionIdleTTL, cfg.SessionAbsTTL)
 	}
-	if len(cfg.MFARequiredRoles) != 3 || cfg.LoginMaxAttempts != 3 || cfg.LoginLockoutDuration != 5*time.Minute {
-		t.Errorf("Auth/MFA params mismatch: roles=%v attempts=%d", cfg.MFARequiredRoles, cfg.LoginMaxAttempts)
+	if len(cfg.MFARequiredRoles) != 3 {
+		t.Errorf("Auth/MFA params mismatch: roles=%v", cfg.MFARequiredRoles)
 	}
-	if cfg.QRISUniqueDigits != 4 || cfg.PendingLimitPerMember != 3 || cfg.PendingLimitGlobal != 30 {
-		t.Errorf("QRIS/pending params mismatch: digits=%d perMember=%d global=%d", cfg.QRISUniqueDigits, cfg.PendingLimitPerMember, cfg.PendingLimitGlobal)
+	if cfg.QRISUniqueDigits != 4 {
+		t.Errorf("QRIS params mismatch: digits=%d", cfg.QRISUniqueDigits)
 	}
 	if cfg.PDPRejectedRetentionDays != 45 || cfg.PilotMaxPerTx != 750000 || cfg.PilotMaxPerDay != 2500000 {
 		t.Errorf("Operational params mismatch")
@@ -137,11 +137,16 @@ func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.
 
 func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 	specs := config.Catalog()
-	if len(specs) != 51 {
-		t.Fatalf("Expected exact 51 lean env vars, got %d", len(specs))
+	if len(specs) != 43 {
+		t.Fatalf("Expected exact 43 lean env vars (<= 45), got %d", len(specs))
+	}
+	for _, s := range specs {
+		if strings.TrimSpace(s.Rationale) == "" {
+			t.Errorf("Variabel %s wajib memiliki alasan tertulis (tag rationale)", s.Name)
+		}
 	}
 	md := config.RenderEnvReferenceMarkdown()
-	if !strings.Contains(md, "| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | CONTOH NILAI SINTETIS |") {
+	if !strings.Contains(md, "| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | ALASAN DIPERTAHANKAN | CONTOH NILAI SINTETIS |") {
 		t.Errorf("Generated markdown missing expected header table")
 	}
 	if !strings.Contains(md, "pengaturan") {

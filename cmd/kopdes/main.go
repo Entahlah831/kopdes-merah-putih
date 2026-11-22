@@ -314,11 +314,7 @@ func runPesananExpire(ctx context.Context, pool *pgxpool.Pool, cfg config.AppCon
 
 func runWorkerCommand(ctx context.Context, pool *pgxpool.Pool, cfg config.AppConfig, args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
-	defaultTick := cfg.WorkerTickInterval
-	if defaultTick <= 0 {
-		defaultTick = 60 * time.Second
-	}
-	tick := fs.Duration("tick", defaultTick, "Interval penjadwalan tugas worker")
+	tick := fs.Duration("tick", 60*time.Second, "Interval penjadwalan tugas worker")
 	once := fs.Bool("once", false, "Jalankan satu kali lalu keluar")
 	if err := fs.Parse(args); err != nil {
 		return err

@@ -18,7 +18,7 @@ func openMiddlewareTestPool(t *testing.T) *pgxpool.Pool {
 	if testing.Short() {
 		t.Skip("melewati uji rate_limits DB pada mode -short")
 	}
-	cfg, err := config.LoadFromEnvAndFile(filepath.Clean(filepath.Join("..", "..", "..", ".env.test")))
+	cfg, err := config.LoadFromEnvAndFile(filepath.Clean(filepath.Join("..", "..", "..", "..", ".env.test")))
 	if err != nil {
 		t.Fatalf("LoadFromEnvAndFile: %v", err)
 	}

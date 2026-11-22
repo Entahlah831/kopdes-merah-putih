@@ -313,6 +313,7 @@ jobs:
           set -a; source .env.test; set +a
           API_BASE="http://127.0.0.1:${API_HOST_PORT}"
           TOKEN=$(API_BASE="${API_BASE}" python3 -c 'import json,os,urllib.request; r=urllib.request.urlopen(urllib.request.Request(os.environ["API_BASE"]+"/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          set +e
           schemathesis run docs/openapi.yaml \
             --url "${API_BASE}" \
             -H "Authorization: Bearer ${TOKEN}" \
@@ -321,8 +322,15 @@ jobs:
             --checks not_a_server_error \
             --max-examples 8 \
             --workers 1 \
-            --wait-for-schema 10 \
-            2>&1 | tee reports/ci/schemathesis.txt
+            --wait-for-schema 10 > reports/ci/schemathesis.txt 2>&1
+          rc=$?
+          set -e
+          cat reports/ci/schemathesis.txt
+          if [ "$rc" -ne 0 ]; then
+            ERR_SCH=$(grep -E 'FAILED|ERROR|500|Summary|checks|operations|Response' reports/ci/schemathesis.txt | sed -E 's/\?[^ ]+//g' | head -n 25 | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=Schemathesis Failed (exit=${rc})::${ERR_SCH}"
+            exit "$rc"
+          fi
 
       - name: OWASP ZAP Baseline + OpenAPI API Scan (FAIL pada High risk)
         run: |

@@ -29,6 +29,9 @@ async function generateTestPNG(page: Page, label: string): Promise<Buffer> {
 }
 
 async function loginUI(page: Page, identifier: string, password: string, mfaEmail?: string): Promise<void> {
+  if (!page.url().startsWith("http")) {
+    await page.goto("/");
+  }
   await page.getByTestId("nav-masuk").click();
   await page.getByTestId("login-identifier").fill(identifier);
   await page.getByTestId("login-password").fill(password);
@@ -475,6 +478,7 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
 
   test("05. Cakupan Lengkap 19 Frame: Stok Habis, Perbaikan/Tolak KYC, Tolak Bukti, Diantar, & RBAC Petugas Toko", async ({ page }) => {
     test.setTimeout(120_000);
+    await page.goto("/");
     const rt = await (await page.request.get("/config.json")).json() as { api_public_url: string };
     const apiBase = rt.api_public_url;
     const uniq = Date.now().toString().slice(-6);

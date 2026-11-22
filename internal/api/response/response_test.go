@@ -2,9 +2,13 @@ package response
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestJSONResponse(t *testing.T) {
@@ -74,6 +78,53 @@ func TestErrorHelpers(t *testing.T) {
 			}
 			if got.Error.Code != tc.wantCode || got.Error.Message != "pesan uji" {
 				t.Fatalf("error=%+v, ingin code=%s message=pesan uji", got.Error, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestWriteServiceError_PgErrors(t *testing.T) {
+	cases := []struct {
+		code       string
+		wantStatus int
+		wantErr    string
+	}{
+		{"23505", http.StatusConflict, "CONFLICT"},
+		{"22021", http.StatusBadRequest, "BAD_REQUEST"},
+		{"22001", http.StatusBadRequest, "BAD_REQUEST"},
+		{"22P02", http.StatusBadRequest, "BAD_REQUEST"},
+		{"23503", http.StatusBadRequest, "BAD_REQUEST"},
+		{"23514", http.StatusBadRequest, "BAD_REQUEST"},
+		{"53300", http.StatusInternalServerError, "INTERNAL_SERVER_ERROR"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			pgErr := &pgconn.PgError{
+				Code:           tc.code,
+				Message:        "SECRET_PG_INTERNAL_MSG",
+				Detail:         "SECRET_PG_DETAIL_ROW",
+				TableName:      "users",
+				ConstraintName: "uq_users_email",
+			}
+			WriteServiceError(rec, fmt.Errorf("wrap: %w", pgErr))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("code=%s status=%d, ingin %d", tc.code, rec.Code, tc.wantStatus)
+			}
+			body := rec.Body.String()
+			for _, leak := range []string{"SECRET_PG_INTERNAL_MSG", "SECRET_PG_DETAIL_ROW", "uq_users_email"} {
+				if strings.Contains(body, leak) {
+					t.Fatalf("detail internal PostgreSQL %q bocor ke respons HTTP: %s", leak, body)
+				}
+			}
+			var got APIResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("gagal decode JSON: %v", err)
+			}
+			if got.Error == nil || got.Error.Code != tc.wantErr {
+				t.Fatalf("error=%+v, ingin code=%s", got.Error, tc.wantErr)
 			}
 		})
 	}

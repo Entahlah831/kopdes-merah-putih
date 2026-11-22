@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -51,7 +52,24 @@ func WriteServiceError(w http.ResponseWriter, err error) {
 		NotFound(w, "Data tidak ditemukan")
 		return
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && writePGError(w, pgErr) {
+		return
+	}
 	InternalServerError(w, "Terjadi kesalahan pada server")
+}
+
+func writePGError(w http.ResponseWriter, pgErr *pgconn.PgError) bool {
+	switch pgErr.Code {
+	case "23505":
+		Conflict(w, "Data sudah terdaftar atau bentrok dengan entri lain")
+		return true
+	case "22001", "22003", "22007", "22008", "22021", "22P02", "23502", "23503", "23514":
+		BadRequest(w, "Masukan tidak memenuhi format atau batasan skema")
+		return true
+	default:
+		return false
+	}
 }
 
 // DecodeJSON mendekode body JSON dengan batas ukuran, melarang field tak dikenal (anti-mass-assignment),

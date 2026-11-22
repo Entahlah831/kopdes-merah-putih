@@ -92,6 +92,8 @@ func TestWriteServiceError_PgErrors(t *testing.T) {
 		{"23505", http.StatusConflict, "CONFLICT"},
 		{"22021", http.StatusBadRequest, "BAD_REQUEST"},
 		{"22001", http.StatusBadRequest, "BAD_REQUEST"},
+		{"2201W", http.StatusBadRequest, "BAD_REQUEST"},
+		{"2201X", http.StatusBadRequest, "BAD_REQUEST"},
 		{"22P02", http.StatusBadRequest, "BAD_REQUEST"},
 		{"23503", http.StatusBadRequest, "BAD_REQUEST"},
 		{"23514", http.StatusBadRequest, "BAD_REQUEST"},
@@ -125,6 +127,30 @@ func TestWriteServiceError_PgErrors(t *testing.T) {
 			}
 			if got.Error == nil || got.Error.Code != tc.wantErr {
 				t.Fatalf("error=%+v, ingin code=%s", got.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParsePagination_PreventsInt32OverflowAndNegativeOffset(t *testing.T) {
+	cases := []struct {
+		name    string
+		query   string
+		wantLim int32
+		wantOff int32
+	}{
+		{"schemathesis_UvRnwj_overflow", "?offset=1000000000000000000&limit=69566447", 100, 1000000},
+		{"int64_overflow", "?offset=9999999999999999999999999999&limit=9999999999999999999999999999", 20, 0},
+		{"negative_values", "?offset=-10&limit=-5", 20, 0},
+		{"normal_values", "?offset=40&limit=50", 50, 40},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/pesanan"+tc.query, nil)
+			lim, off := ParsePagination(req, 20, 100)
+			if lim != tc.wantLim || off != tc.wantOff || off < 0 {
+				t.Fatalf("%s: got limit=%d offset=%d, want limit=%d offset=%d", tc.name, lim, off, tc.wantLim, tc.wantOff)
 			}
 		})
 	}

@@ -64,7 +64,7 @@ func writePGError(w http.ResponseWriter, pgErr *pgconn.PgError) bool {
 	case "23505":
 		Conflict(w, "Data sudah terdaftar atau bentrok dengan entri lain")
 		return true
-	case "22001", "22003", "22007", "22008", "22021", "22P02", "23502", "23503", "23514":
+	case "22001", "22003", "22007", "22008", "2201W", "2201X", "22021", "22P02", "23502", "23503", "23514":
 		BadRequest(w, "Masukan tidak memenuhi format atau batasan skema")
 		return true
 	default:
@@ -144,24 +144,23 @@ func ToPGDate(t time.Time) pgtype.Date {
 	return pgtype.Date{Time: t, Valid: true}
 }
 
-// ParsePagination membaca query limit dan offset dengan batas aman.
+const maxPaginationOffset int64 = 1_000_000
+
+// ParsePagination membaca query limit dan offset dengan batas aman anti-overflow int32.
 func ParsePagination(r *http.Request, defLim, maxLim int) (int32, int32) {
-	if defLim <= 0 {
+	if defLim <= 0 || defLim > 1000 {
 		defLim = 20
 	}
-	if maxLim < defLim {
-		maxLim = 100
+	if maxLim < defLim || maxLim > 1000 {
+		maxLim = max(defLim, 100)
 	}
-	lim := defLim
-	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		lim = v
+	lim := int64(defLim)
+	if v, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("limit")), 10, 64); err == nil && v > 0 {
+		lim = min(v, int64(maxLim))
 	}
-	if lim > maxLim {
-		lim = maxLim
+	var off int64
+	if v, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("offset")), 10, 64); err == nil && v >= 0 {
+		off = min(v, maxPaginationOffset)
 	}
-	off := 0
-	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
-		off = v
-	}
-	return int32(lim), int32(off) // #nosec G115 -- dibatasi maxLim <= 100 dan off >= 0
+	return int32(lim), int32(off) // #nosec G115 -- dibatasi eksplisit 1<=lim<=1000 dan 0<=off<=1_000_000
 }

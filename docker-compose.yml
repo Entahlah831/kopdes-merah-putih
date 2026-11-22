@@ -100,6 +100,8 @@ services:
     networks:
       - kopdes_internal
       - kopdes_edge
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${API_PORT}/healthz >/dev/null"]
       interval: 10s
@@ -175,6 +177,8 @@ services:
       - bukti_storage:/app/storage/bukti
     networks:
       - kopdes_internal
+    security_opt:
+      - no-new-privileges:true
     cpus: "0.5"
     mem_limit: 256m
 
@@ -213,6 +217,8 @@ services:
       - "127.0.0.1:${UI_PORT:?UI_PORT wajib disetel}:${UI_PORT:?UI_PORT wajib disetel}"
     networks:
       - kopdes_internal
+    security_opt:
+      - no-new-privileges:true
     cpus: "0.25"
     mem_limit: 128m
 
@@ -229,5 +235,7 @@ services:
     networks:
       - kopdes_edge
       - kopdes_internal
+    security_opt:
+      - no-new-privileges:true
     cpus: "0.25"
     mem_limit: 128m

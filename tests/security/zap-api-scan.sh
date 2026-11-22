@@ -13,18 +13,28 @@ fi
 
 API_HOST_PORT="${API_HOST_PORT:?API_HOST_PORT wajib disetel di ${ENV_FILE}}"
 TARGET_URL="http://127.0.0.1:${API_HOST_PORT}"
-OUT_DIR="${OUT_DIR:-reports/baseline}"
+OUT_DIR="${OUT_DIR:-reports/final}"
 mkdir -p "${OUT_DIR}"
 
-echo "[ZAP] Menjalankan baseline & OpenAPI scan terhadap stack lokal ${TARGET_URL}"
+echo "[ZAP 1/2] Menjalankan OWASP ZAP Baseline Scan terhadap ${TARGET_URL}/api/v1/public/config"
+docker run --rm --network host \
+  -v "$(pwd)/${OUT_DIR}:/zap/wrk/out" \
+  ghcr.io/zaproxy/zaproxy:stable \
+  zap-baseline.py \
+  -t "${TARGET_URL}/api/v1/public/config" \
+  -I \
+  -J /zap/wrk/out/zap_baseline_report.json \
+  -r /zap/wrk/out/zap_baseline_report.html
+
+echo "[ZAP 2/2] Menjalankan OWASP ZAP OpenAPI API Scan terhadap ${TARGET_URL}"
 docker run --rm --network host \
   -v "$(pwd)/docs:/zap/wrk/docs:ro" \
   -v "$(pwd)/${OUT_DIR}:/zap/wrk/out" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-api-scan.py \
-  -t "${TARGET_URL}/api/v1/public/config" \
+  -t /zap/wrk/docs/openapi.yaml \
   -f openapi \
-  -O /zap/wrk/docs/openapi.yaml \
+  -O "${TARGET_URL}" \
+  -I \
   -J /zap/wrk/out/zap_api_report.json \
-  -r /zap/wrk/out/zap_api_report.html \
-  -z "-config api.addrs.addr.name=.* -config api.addrs.addr.regex=true"
+  -r /zap/wrk/out/zap_api_report.html

@@ -1,4 +1,4 @@
-name: CI Kopdes Merah Putih (Lean Backend)
+name: CI Kopdes Merah Putih (Modular Monolith)
 
 on:
   push:
@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  env-sqlc-and-secrets:
-    name: Validasi Env (51 Var), sqlc, & Secret Scan
+  env-sqlc-and-static-scans:
+    name: Env (43 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -19,21 +19,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Go
+      - name: Setup Go & Python
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - name: Install sqlc & gitleaks
+      - name: Install sqlc, gitleaks, trivy, & semgrep
         run: |
           go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          python3 -m pip install --quiet semgrep
 
-      - name: Validasi Konfigurasi Uji Set A & Set B + Paritas Kunci
+      - name: Validasi Konfigurasi Uji Set A & Set B + Paritas Kunci (<= 45 Var)
         run: |
-          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
-          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
-          go run ./cmd/envcheck --compare .env.test .env.test.alt
+          mkdir -p reports/ci
+          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test | tee reports/ci/envcheck_setA.txt
+          go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt | tee reports/ci/envcheck_setB.txt
+          go run ./cmd/envcheck --compare .env.test .env.test.alt | tee reports/ci/envcheck_compare.txt
 
       - name: Verifikasi sqlc generate bebas drift
         run: |
@@ -41,10 +47,33 @@ jobs:
           git diff --exit-code internal/db
 
       - name: Pindai Secret dengan Gitleaks
-        run: gitleaks git --config .gitleaks.toml --verbose --redact
+        run: gitleaks git --config .gitleaks.toml --verbose --redact 2>&1 | tee reports/ci/gitleaks.txt
+
+      - name: Hadolint Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint < Dockerfile 2>&1 | tee reports/ci/hadolint.txt
+
+      - name: Trivy Config / IaC Scan (FAIL pada HIGH/CRITICAL)
+        run: |
+          trivy config --severity HIGH,CRITICAL --exit-code 1 --format json --output reports/ci/trivy_config.json .
+          trivy config --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_config.txt .
+          cat reports/ci/trivy_config.txt
+
+      - name: Semgrep Go + OWASP + Ruleset Kopdes (FAIL pada ERROR/HIGH)
+        run: |
+          set -o pipefail
+          semgrep scan --config p/golang --config p/owasp-top-ten --config tests/security/semgrep-kopdes.yml --severity ERROR --error --json --output reports/ci/semgrep.json .
+          python3 -c "import json; d=json.load(open('reports/ci/semgrep.json')); print('Semgrep errors:', len(d.get('errors',[])), 'results:', len(d.get('results',[])))"
+
+      - name: Upload Artifact Laporan Statis & IaC
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-static-iac-reports
+          path: reports/ci/
 
   test-build-and-security:
-    name: Build, Vet, Race Test (Set A & Set B), Backup Age Drill, & SAST
+    name: PG16 Build, Race Test, SAST, age Drill, & Trivy Image
     runs-on: ubuntu-latest
     services:
       postgres_set_a:
@@ -81,84 +110,334 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install PostgreSQL client, age, & Go security linters
+      - name: Install PostgreSQL 16 client, age, Trivy, & Go SAST tools
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client age
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends curl ca-certificates gnupg age lsb-release
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client-16
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Inisialisasi Seluruh Migrasi (21 Tabel) & Role Non-Superuser kopdes_app (Set A & Set B)
+      - name: Inisialisasi Seluruh Migrasi (21 Tabel) & Role kopdes_app pada PostgreSQL 16 (Set A & Set B)
         run: |
           set -euo pipefail
+          psql --version
           for envfile in .env.test .env.test.alt; do
             set -a
             source "$envfile"
             set +a
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
-            for mf in $(ls db/migrations/*_*.up.sql | sort); do
+            for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
               PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
             done
             PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
           done
 
-      - name: Build & Vet
+      - name: Build, Vet, & TestArchitecture
         run: |
+          mkdir -p reports/ci
           go build ./...
           go build ./cmd/kopdes
           go vet ./...
+          go test -v -count=1 ./internal -run TestArchitecture | tee reports/ci/arch_ci.txt
 
-      - name: Tes Batas Arsitektur Modular Monolith
-        run: go test -count=1 ./internal -run TestArchitecture
+      - name: Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
+        run: go test -count=1 -race -p 1 -timeout 300s ./... 2>&1 | tee reports/ci/go_test_race_pg16.txt
 
-      - name: Jalankan Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
-        run: go test -count=1 -race -p 1 ./...
-
-      - name: Smoke Test Seeder, CLI Admin/Storage, & Worker Kopdes
+      - name: Smoke Test Seeder, CLI Admin/Storage, Worker, & Backup age Drill
         run: |
+          set -euo pipefail
           go run ./cmd/seed_test_accounts --env-file .env.test
           go run ./cmd/kopdes --env-file .env.test worker --once
           go run ./cmd/kopdes --env-file .env.test storage migrate-files
           go run ./cmd/kopdes --env-file .env.test pdp purge
           go run ./cmd/kopdes --env-file .env.test bukti purge
-
-      - name: Uji Backup Terautentikasi (age) + Tamper Rejection + Restore Drill
-        run: |
-          set -euo pipefail
           KEYFILE=$(mktemp)
           age-keygen -o "$KEYFILE" 2>/dev/null
           PUB=$(grep '^# public key: ' "$KEYFILE" | awk '{print $4}')
           mkdir -p ./storage/kyc_test_setA ./storage/bukti_test_setA
           echo "dummy-enc-kyc" > ./storage/kyc_test_setA/ci-sample.enc
           echo "dummy-enc-bukti" > ./storage/bukti_test_setA/ci-sample.enc
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh | tee reports/ci/age_backup.txt
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh | tee -a reports/ci/age_backup.txt
+          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh | tee -a reports/ci/age_backup.txt
           rm -rf "$KEYFILE" ./backups ./storage/kyc_test_setA ./storage/bukti_test_setA
 
-      - name: SAST & Vulnerability Check
+      - name: SAST (staticcheck, gosec, govulncheck)
         run: |
-          staticcheck ./...
-          gosec ./...
-          govulncheck ./...
+          staticcheck ./... 2>&1 | tee reports/ci/staticcheck.txt
+          gosec ./... 2>&1 | tee reports/ci/gosec.txt
+          govulncheck ./... 2>&1 | tee reports/ci/govulncheck.txt
 
-  frontend-wireframe-build:
-    name: Build & Typecheck Frontend Wireframe (Vite + TS)
+      - name: Build Docker Image & Trivy Image Scan (FAIL fixable HIGH/CRITICAL)
+        run: |
+          docker build -t kopdes-ci:latest .
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output reports/ci/trivy_image.json kopdes-ci:latest
+          trivy image --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_image.txt kopdes-ci:latest
+          head -n 80 reports/ci/trivy_image.txt
+
+      - name: Upload Artifact Go Race, Age & Trivy Image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-go-race-and-image-reports
+          path: reports/ci/
+
+  dast-perf-and-chaos:
+    name: OWASP ZAP, Schemathesis, k6, & Toxiproxy Chaos (PG16)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend-wireframe
+    services:
+      postgres_set_a:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: kopdes_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kopdes_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+
+      - name: Setup Go & Python
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Postgres client, k6, & schemathesis
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends curl ca-certificates gnupg postgresql-client lsb-release
+          sudo gpg -k >/dev/null 2>&1 || true
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+          python3 -m pip install --quiet schemathesis
+
+      - name: Siapkan DB PG16, Seed Set A, & Start kopdes serve
+        run: |
+          set -euo pipefail
+          mkdir -p reports/ci
+          set -a
+          source .env.test
+          set +a
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
+          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
+          done
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
+          go build -o /tmp/kopdes ./cmd/kopdes
+          go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
+          nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_dast.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/readyz
+
+      - name: k6 Smoke + Load Benchmark (SLO Terukur)
+        run: |
+          set -euo pipefail
+          k6 run --env API_BASE_URL=http://127.0.0.1:8080 \
+            --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
+            --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
+            --env SCENARIO=smoke \
+            --summary-export reports/ci/k6_smoke_summary.json \
+            tests/perf/k6_mixed.js
+          k6 run --env API_BASE_URL=http://127.0.0.1:8080 \
+            --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
+            --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
+            --env SCENARIO=load \
+            --env K6_LOAD_DURATION=20s \
+            --env K6_LOAD_VUS=50 \
+            --summary-export reports/ci/k6_load_summary.json \
+            tests/perf/k6_mixed.js
+
+      - name: Schemathesis OpenAPI Fuzzing
+        run: |
+          set -euo pipefail
+          TOKEN=$(python3 -c 'import json,urllib.request; r=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8080/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          schemathesis run docs/openapi.yaml \
+            --url http://127.0.0.1:8080 \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "X-Requested-With: schemathesis" \
+            -H "X-Forwarded-For: 10.20.30.40" \
+            --checks not_a_server_error \
+            --max-examples 8 \
+            --workers 1 \
+            --wait-for-schema 10 \
+            2>&1 | tee reports/ci/schemathesis.txt
+
+      - name: OWASP ZAP Baseline + OpenAPI API Scan (FAIL pada High risk)
+        run: |
+          set -euo pipefail
+          TOKEN=$(python3 -c 'import json,urllib.request; r=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8080/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          chmod -R a+rwx reports/ci
+          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk/out" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8080/api/v1/public/config -I \
+            -J /zap/wrk/out/zap_baseline.json -r /zap/wrk/out/zap_baseline.html
+          docker run --rm --network host -v "$(pwd)/docs:/zap/wrk/docs:ro" -v "$(pwd)/reports/ci:/zap/wrk/out" ghcr.io/zaproxy/zaproxy:stable \
+            zap-api-scan.py -t /zap/wrk/docs/openapi.yaml -f openapi -O http://127.0.0.1:8080 -I \
+            -J /zap/wrk/out/zap_api.json -r /zap/wrk/out/zap_api.html \
+            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Authorization -config replacer.full_list(0).regex=false -config 'replacer.full_list(0).replacement=Bearer ${TOKEN}' -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41"
+          python3 -c 'import json
+          for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
+              data = json.load(open(fname))
+              highs = [a for s in data.get("site", []) for a in s.get("alerts", []) if str(a.get("riskcode")) == "3"]
+              print(f"{fname}: total_alerts={sum(len(s.get(\"alerts\",[])) for s in data.get(\"site\",[]))} high={len(highs)}")
+              if highs:
+                  for h in highs: print("HIGH:", h.get("name"), h.get("desc"))
+                  raise SystemExit(1)'
+
+      - name: Toxiproxy Chaos (Latensi DB + Putus TCP -> 503 + Auto Recovery -> 200)
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-toxiproxy --network host ghcr.io/shopify/toxiproxy:2.9.0
+          trap 'docker rm -f ci-toxiproxy >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8474/version >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS -X POST http://127.0.0.1:8474/proxies -H 'Content-Type: application/json' \
+            -d '{"name":"pg_proxy","listen":"127.0.0.1:25433","upstream":"127.0.0.1:5433","enabled":true}' | tee reports/ci/toxiproxy_chaos.txt
+
+          API_PORT=18088 API_HOST_PORT=18088 DB_PORT=25433 DB_HOST=127.0.0.1 \
+            nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_toxi.log 2>&1 &
+          TOXI_API_PID=$!
+          trap 'kill $TOXI_API_PID >/dev/null 2>&1 || true; docker rm -f ci-toxiproxy >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:18088/readyz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy/toxics -H 'Content-Type: application/json' \
+            -d '{"name":"pg_latency","type":"latency","stream":"downstream","attributes":{"latency":120,"jitter":20}}' >> reports/ci/toxiproxy_chaos.txt
+          LAT_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          echo "Under 120ms latency /readyz -> HTTP ${LAT_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
+          [ "${LAT_CODE}" = "200" ]
+
+          curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy -H 'Content-Type: application/json' \
+            -d '{"enabled":false}' >/dev/null
+          DOWN_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          echo "DB proxy disabled /readyz -> HTTP ${DOWN_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
+          [ "${DOWN_CODE}" = "503" ]
+
+          curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy -H 'Content-Type: application/json' \
+            -d '{"enabled":true}' >/dev/null
+          sleep 1
+          REC_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          echo "DB proxy restored /readyz -> HTTP ${REC_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
+          [ "${REC_CODE}" = "200" ]
+
+      - name: Upload Artifact DAST, k6, & Toxiproxy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-dast-perf-chaos-reports
+          path: reports/ci/
+
+  docker-compose-deploy-e2e:
+    name: Uji Deployment Nyata Compose (.env.test.alt, Worker, Pembayaran, & age Drill)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install postgresql-client & age
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends age postgresql-client python3 curl
+
+      - name: Jalankan Deploy Nyata dari Nol & Backup/Restore Drill
+        run: |
+          mkdir -p reports/ci_deploy
+          OUT_DIR=reports/ci_deploy bash scripts/ci_deploy_e2e.sh
+
+      - name: Upload Artifact Deploy Compose & Drill
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-docker-compose-deploy-e2e
+          path: reports/ci_deploy/
+
+  frontend-wireframe-e2e:
+    name: Build & Playwright E2E 19 Frame (Set B Cookie-Primary + PG16)
+    runs-on: ubuntu-latest
+    services:
+      postgres_set_b:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: kopdes_alt_test
+        ports:
+          - 15433:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kopdes_alt_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go & Node.js
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend-wireframe/package-lock.json
-      - name: Install & Verifikasi TypeScript + Build
+
+      - name: Install postgresql-client, Build frontend-wireframe & Playwright Chromium
         run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          cd frontend-wireframe
           npm ci
           npx tsc --noEmit
           npm run build
+          npx playwright install chromium --with-deps
+
+      - name: Siapkan PG16 Set B, Seed Akun, & Jalankan Server API + UI + Playwright Suite 01..05
+        run: |
+          set -euo pipefail
+          set -a
+          source .env.test.alt
+          set +a
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
+          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
+          done
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
+
+          go build -o /tmp/kopdes ./cmd/kopdes
+          go run ./cmd/seed_test_accounts --env-file .env.test.alt -password "kopdes_ci_wireframe_pass_123!"
+          nohup /tmp/kopdes --env-file .env.test.alt serve > /tmp/api_wf.log 2>&1 &
+          nohup /tmp/kopdes --env-file .env.test.alt uiserve -ui-dir frontend-wireframe/dist > /tmp/ui_wf.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && curl -fsS http://127.0.0.1:18081/config.json >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          cd frontend-wireframe
+          UI_BASE_URL=http://127.0.0.1:18081 E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list
+
+      - name: Upload Artifact Playwright & Tangkapan Layar Wireframe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-wireframe-playwright-e2e
+          path: |
+            reports/wireframe/
+            frontend-wireframe/test-results/

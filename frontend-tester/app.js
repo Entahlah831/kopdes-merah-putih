@@ -273,7 +273,7 @@
 
   function populateAccountSelect() {
     const sel = el("accountSelect");
-    sel.innerHTML = "";
+    sel.textContent = "";
     const accounts = (state.uiConfig && state.uiConfig.seeded_accounts) || [];
     accounts.forEach(function (acc) {
       const opt = document.createElement("option");
@@ -327,7 +327,7 @@
 
   function populateEndpointExplorer() {
     const sel = el("endpointSelect");
-    sel.innerHTML = "";
+    sel.textContent = "";
     const paths = (state.openapi && state.openapi.paths) || {};
     Object.keys(paths).forEach(function (pathKey) {
       const methods = paths[pathKey];

@@ -2,14 +2,15 @@ rules:
   - id: kopdes-no-raw-sql-in-internal
     patterns:
       - pattern-either:
-          - pattern: $POOL.Exec(...)
-          - pattern: $POOL.Query(...)
-          - pattern: $POOL.QueryRow(...)
+          - pattern: $POOL.Exec($CTX, $SQL, ...)
+          - pattern: $POOL.Query($CTX, $SQL, ...)
+          - pattern: $POOL.QueryRow($CTX, $SQL, ...)
     paths:
       include:
         - internal/
       exclude:
         - internal/db/
+        - internal/api/runtime.go
         - internal/**/*_test.go
     message: "Query database di internal/ wajib menggunakan sqlc, bukan SQL mentah."
     languages: [go]

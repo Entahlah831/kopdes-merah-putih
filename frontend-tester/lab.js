@@ -8,7 +8,7 @@
   }
 
   function clearResultsTable() {
-    window.KopdesApp.el("labResultsBody").innerHTML = "";
+    window.KopdesApp.el("labResultsBody").textContent = "";
     window.KopdesApp.el("labDetailOutput").textContent = "";
   }
 

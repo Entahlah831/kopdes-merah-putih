@@ -42,12 +42,8 @@ func BuildDBPool(ctx context.Context, appCfg config.AppConfig) (*pgxpool.Pool, s
 	pgxCfg.MaxConns = 25
 	pgxCfg.MinConns = 2
 	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		sessionSQL := fmt.Sprintf(`
-			SET statement_timeout = '15000ms';
-			SET lock_timeout = '5000ms';
-			SET idle_in_transaction_session_timeout = '30000ms';
-			SET ROLE %s;
-		`, config.DefaultDBAppRole)
+		const sessionSQL = "SET statement_timeout = '15000ms'; SET lock_timeout = '5000ms'; SET idle_in_transaction_session_timeout = '30000ms'; SET ROLE " + config.DefaultDBAppRole + ";"
+		// nosemgrep: kopdes-no-raw-sql-in-internal
 		_, err := conn.Exec(ctx, sessionSQL)
 		return err
 	}

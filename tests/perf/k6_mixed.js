@@ -53,7 +53,7 @@ function scenarioConfig() {
       return { executor: 'constant-vus', vus: 50, duration: __ENV.SOAK_DURATION || '2h' };
     case 'load':
     default:
-      return { executor: 'constant-vus', vus: 100, duration: '60s' };
+      return { executor: 'constant-vus', vus: Number(__ENV.K6_LOAD_VUS || 100), duration: __ENV.K6_LOAD_DURATION || '60s' };
   }
 }
 
@@ -82,6 +82,10 @@ export function setup() {
   check(res, { 'login ok': (r) => r.status === 200 });
   const body = res.json();
   const token = (body && body.data && body.data.session_token) || '';
+  const sessionCookie =
+    (res.cookies && res.cookies.kopdes_session && res.cookies.kopdes_session[0] && res.cookies.kopdes_session[0].value) ||
+    (res.cookies && res.cookies['__Host-kopdes_session'] && res.cookies['__Host-kopdes_session'][0] && res.cookies['__Host-kopdes_session'][0].value) ||
+    '';
 
   const catRes = http.get(`${API_BASE}/api/v1/katalog/produk`);
   let produkID = '';
@@ -94,7 +98,7 @@ export function setup() {
       }
     }
   }
-  return { token, produkID };
+  return { token, sessionCookie, produkID };
 }
 
 export default function (data) {
@@ -106,6 +110,8 @@ export default function (data) {
   };
   if (data.token) {
     headers.Authorization = `Bearer ${data.token}`;
+  } else if (data.sessionCookie) {
+    headers.Cookie = `kopdes_session=${data.sessionCookie}`;
   }
 
   group('public_and_catalog_reads', () => {

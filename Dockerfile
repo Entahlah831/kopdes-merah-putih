@@ -4,6 +4,7 @@ FROM golang:1.27.4-alpine3.23 AS builder
 WORKDIR /app
 
 # Dependensi build minimal (termasuk sertifikat Root CA & data zona waktu)
+# Alasan DL3018: base golang:1.27.4-alpine3.23 sudah di-pin ke Alpine 3.23 dan paket apk mengikuti security patch minor Alpine; seluruh CVE paket diaudit oleh Trivy Image Scan di CI.
 # hadolint ignore=DL3018
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -28,6 +29,7 @@ WORKDIR /app
 ARG APP_TIMEZONE=UTC
 ENV TZ=${APP_TIMEZONE}
 
+# Alasan DL3018: base image alpine:3.23 sudah di-pin dan paket apk mengikuti security patch minor Alpine; seluruh CVE paket diaudit oleh Trivy Image Scan di CI.
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata curl && \
     addgroup -S kopdes && adduser -S -G kopdes kopdesuser && \
@@ -44,7 +46,7 @@ USER kopdesuser
 
 # Healthcheck membaca variabel API_PORT runtime (tanpa hardcoded port)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD sh -c 'test -n "${API_PORT:-}" && curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null'
+  CMD test -n "${API_PORT:-}" && curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null
 
 ENTRYPOINT ["/app/kopdes"]
 CMD ["serve"]

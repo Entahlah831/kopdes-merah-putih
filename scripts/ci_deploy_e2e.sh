@@ -24,7 +24,7 @@ cleanup() {
   rc=$?
   docker compose --env-file "${ENV_FILE}" --profile app --profile worker logs --no-color > "${OUT_DIR}/compose_logs.txt" 2>&1 || true
   if [ "${rc}" -ne 0 ] && [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f "${LOG_FILE:-}" ]; then
-    ERR_TAIL=$(tail -n 25 "${LOG_FILE}" | tr '\r\n' ' ' | sed 's/%/%25/g')
+    ERR_TAIL=$(tail -n 35 "${LOG_FILE}" | tr '\r\n' ' ' | sed 's/%/%25/g')
     echo "::error title=ci_deploy_e2e failed (exit=${rc})::${ERR_TAIL}"
   fi
   docker compose --env-file "${ENV_FILE}" --profile app --profile worker down -v --remove-orphans >/dev/null 2>&1 || true
@@ -65,9 +65,9 @@ echo "Worker /healthz: ${WORKER_HEALTH}"
 echo "${WORKER_HEALTH}" | grep -q '"status":"UP"'
 
 ROLE_CHECK=$(docker compose --env-file "${ENV_FILE}" --profile app --profile worker exec -T postgres \
-  psql -p "${DB_PORT}" -U kopdes_migrator -d "${DB_NAME}" -t -A -c "SELECT rolname || '|super=' || rolsuper || '|bypassrls=' || rolbypassrls FROM pg_roles WHERE rolname = 'kopdes_app';")
+  psql -p "${DB_PORT}" -U kopdes_migrator -d "${DB_NAME}" -tA -c "SELECT rolname || '|super=' || CASE WHEN rolsuper THEN 'true' ELSE 'false' END || '|bypassrls=' || CASE WHEN rolbypassrls THEN 'true' ELSE 'false' END || '|createdb=' || CASE WHEN rolcreatedb THEN 'true' ELSE 'false' END || '|createrole=' || CASE WHEN rolcreaterole THEN 'true' ELSE 'false' END FROM pg_roles WHERE rolname = 'kopdes_app';")
 echo "Role DB Runtime: ${ROLE_CHECK}"
-[ "${ROLE_CHECK}" = "kopdes_app|super=f|bypassrls=f" ]
+[ "${ROLE_CHECK}" = "kopdes_app|super=false|bypassrls=false|createdb=false|createrole=false" ]
 
 echo "=== [3/6] Bootstrap Admin Pertama & Verifikasi Alur Pembayaran Penuh (Cookie HttpOnly + MFA) ==="
 ADMIN_EMAIL="ketua@kopdes-deploy.local"

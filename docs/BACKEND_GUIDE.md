@@ -1,6 +1,6 @@
 # Panduan Developer Backend — Kopdes Merah Putih (Ramping)
 
-Target Runtime: `Go 1.27+` | `PostgreSQL 16` | Kontrak API: `v2.1.0-lean` (`36` endpoint, `21` tabel, `43` variabel env).  
+Target Runtime: `Go 1.27+` | `PostgreSQL 16` | `sqlc v1.31.1` (pinned) | Kontrak API: `v2.1.0-lean` (`36` endpoint, `21` tabel, `43` variabel env).  
 Arsitektur Modular Monolith terdokumentasi di [ARCHITECTURE.md](ARCHITECTURE.md), [adr/0001-modular-monolith.md](adr/0001-modular-monolith.md), dan [MODULAR_REPORT.md](MODULAR_REPORT.md).
 
 > **Catatan Kepatuhan & Akuntansi**: Backend ini menerapkan kontrol keamanan teknis sesuai baseline OWASP dan prinsip minimalisasi data (`tanggal_lahir` opsional). Penetapan masa retensi dokumen calon anggota yang ditolak (`PDP_REJECTED_RETENTION_DAYS=30`) dan bukti non-lunas (`BUKTI_RETENTION_DAYS=365`) ditandai **PERLU VERIFIKASI HUKUM**, dan kolom `klasifikasi_akuntansi` / selisih kode unik / koreksi refund ditandai **KEPUTUSAN AKUNTAN**.
@@ -11,7 +11,7 @@ Arsitektur Modular Monolith terdokumentasi di [ARCHITECTURE.md](ARCHITECTURE.md)
 
 Backend dirancang **khusus untuk 1 koperasi di 1 lokasi** (tanpa multi-tenant RLS, tanpa SIMKOPDES, tanpa simpanan/pinjaman/SHU, tanpa double-entry ledger, tanpa keranjang server, dan tanpa impor CSV mutasi bank):
 
-1. **Basis Data**: `21` tabel lintas migrasi [000001_init_kopdes_schema.up.sql](../db/migrations/000001_init_kopdes_schema.up.sql) dan [000002_decision_audit_enhancements.up.sql](../db/migrations/000002_decision_audit_enhancements.up.sql). Seluruh query diketik via **`sqlc`** ke [internal/db/](../internal/db/) dengan kepemilikan tabel per modul yang dijaga `TestArchitecture_*`. Dilarang menulis SQL mentah atau mengedit `internal/db/*.go` manual.
+1. **Basis Data**: `21` tabel lintas migrasi [000001_init_kopdes_schema.up.sql](../db/migrations/000001_init_kopdes_schema.up.sql) dan [000002_decision_audit_enhancements.up.sql](../db/migrations/000002_decision_audit_enhancements.up.sql). Seluruh query diketik via **`sqlc v1.31.1`** (`go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`, sama dengan versi yang di-pin di `.github/workflows/ci.yml`) ke [internal/db/](../internal/db/) dengan kepemilikan tabel per modul yang dijaga `TestArchitecture_*`. Dilarang menulis SQL mentah atau mengedit `internal/db/*.go` manual.
 2. **Keamanan Role Database**: Koneksi aplikasi wajib memakai role non-superuser `kopdes_app` (`NOSUPERUSER NOBYPASSRLS`) yang dicek saat startup.
 3. **Batas Ukuran Kode & Batas Modul**: Setiap berkas handler `<= 400` baris, setiap fungsi non-test `<= 60` baris, maks `45` env var (**43 aktif**), `22` tabel, `36` endpoint (`TestStructural_*` & `TestArchitecture_*`). Modul hanya boleh mengimpor `internal/<modul>/api`, bukan paket internal modul lain.
 4. **Dependensi Minimal**: Hanya `github.com/google/uuid`, `github.com/jackc/pgx/v5`, dan `golang.org/x/crypto` plus Go standard library `net/http`.
@@ -56,6 +56,7 @@ Backend dirancang **khusus untuk 1 koperasi di 1 lokasi** (tanpa multi-tenant RL
 ## 4. Verifikasi Harian & Keamanan
 
 ```powershell
+sqlc version # wajib v1.31.1
 sqlc generate
 git diff --exit-code internal/db
 go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test

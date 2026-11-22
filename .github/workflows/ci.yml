@@ -54,22 +54,55 @@ jobs:
 
       - name: Hadolint Dockerfile
         run: |
-          set -o pipefail
-          docker run --rm -i hadolint/hadolint < Dockerfile 2>&1 | tee reports/ci/hadolint.txt
+          set +e
+          docker run --rm -i hadolint/hadolint < Dockerfile > reports/ci/hadolint.txt 2>&1
+          rc=$?
+          set -e
+          cat reports/ci/hadolint.txt
+          if [ "$rc" -ne 0 ]; then
+            MSG=$(tr '\r\n' ' ' < reports/ci/hadolint.txt | sed 's/%/%25/g')
+            echo "::error title=Hadolint Dockerfile (exit=${rc})::${MSG}"
+            exit "$rc"
+          fi
 
       - name: Trivy Config / IaC Scan (FAIL pada HIGH/CRITICAL)
         run: |
+          set +e
           trivy config --severity HIGH,CRITICAL --exit-code 1 --format json --output reports/ci/trivy_config.json .
+          rc=$?
+          set -e
           trivy config --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_config.txt .
           cat reports/ci/trivy_config.txt
+          if [ "$rc" -ne 0 ]; then
+            MSG=$(grep -E 'HIGH|CRITICAL|AVD-|DS-|KSV-' reports/ci/trivy_config.txt | head -n 20 | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=Trivy Config HIGH/CRITICAL (exit=${rc})::${MSG}"
+            exit "$rc"
+          fi
 
       - name: Semgrep Go + OWASP + Ruleset Kopdes (FAIL pada ERROR/HIGH)
         run: |
-          set -o pipefail
-          semgrep scan --config p/golang --config p/owasp-top-ten --config tests/security/semgrep-kopdes.yml --severity ERROR --error --json --output reports/ci/semgrep.json .
-          SEMGREP_SUMMARY=$(python3 -c "import json; d=json.load(open('reports/ci/semgrep.json')); print(f\"errors={len(d.get('errors',[]))} results={len(d.get('results',[]))}\")")
-          echo "Semgrep: ${SEMGREP_SUMMARY}"
-          echo "::notice title=Static & IaC Scans::envcheck=43_vars(PASS) | sqlc=v1.31.1(drift=0) | gitleaks=0_leaks | hadolint=PASS | trivy_config=0_HIGH_CRITICAL | semgrep=(${SEMGREP_SUMMARY})"
+          set +e
+          semgrep scan --config p/golang --config p/owasp-top-ten --config tests/security/semgrep-kopdes.yml --severity ERROR --error --json --output reports/ci/semgrep.json . > reports/ci/semgrep.stderr.log 2>&1
+          rc=$?
+          set -e
+          SEMGREP_SUMMARY=$(python3 - <<'PY'
+          import json
+          d = json.load(open("reports/ci/semgrep.json", encoding="utf-8"))
+          res = d.get("results", [])
+          errs = d.get("errors", [])
+          print(f"errors={len(errs)} results={len(res)}")
+          for r in res[:20]:
+              print(f"FINDING: {r.get('check_id')} {r.get('path')}:{r.get('start',{}).get('line')}")
+          PY
+          )
+          echo "${SEMGREP_SUMMARY}"
+          if [ "$rc" -ne 0 ]; then
+            MSG=$(printf '%s' "${SEMGREP_SUMMARY}" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=Semgrep ERROR (exit=${rc})::${MSG}"
+            exit "$rc"
+          fi
+          ONE_LINE=$(printf '%s' "${SEMGREP_SUMMARY}" | head -n 1)
+          echo "::notice title=Static & IaC Scans::envcheck=43_vars(PASS) | sqlc=v1.31.1(drift=0) | gitleaks=0_leaks | hadolint=PASS | trivy_config=0_HIGH_CRITICAL | semgrep=(${ONE_LINE})"
 
       - name: Upload Artifact Laporan Statis & IaC
         if: always()
@@ -310,30 +343,63 @@ jobs:
           open("reports/ci/openapi_runtime.yaml", "w", encoding="utf-8").write(rendered)
           PY
           chmod -R a+rwx reports/ci
+          set +e
           docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py -t "${API_BASE}/api/v1/public/config" -I \
-            -J zap_baseline.json -r zap_baseline.html
+            -J zap_baseline.json -r zap_baseline.html > reports/ci/zap_baseline.log 2>&1
+          rc_base=$?
+          set -e
+          cat reports/ci/zap_baseline.log
+          if [ "$rc_base" -ne 0 ]; then
+            MSG=$(tail -n 20 reports/ci/zap_baseline.log | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=ZAP Baseline exit=${rc_base}::${MSG}"
+            exit "$rc_base"
+          fi
+
+          set +e
           docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
             zap-api-scan.py -t /zap/wrk/openapi_runtime.yaml -f openapi -I \
             -J zap_api.json -r zap_api.html \
-            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41"
+            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41" > reports/ci/zap_api.log 2>&1
+          rc_api=$?
+          set -e
+          cat reports/ci/zap_api.log
+          if [ "$rc_api" -ne 0 ]; then
+            MSG=$(grep -E 'FAIL-NEW|WARN-NEW|ERROR|Exception|usage:|unrecognized|TypeError|ValueError|PASS:' reports/ci/zap_api.log | tail -n 25 | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
+            if [ -z "$MSG" ]; then
+              MSG=$(tail -n 20 reports/ci/zap_api.log | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
+            fi
+            echo "::error title=ZAP API Scan exit=${rc_api}::${MSG}"
+            exit "$rc_api"
+          fi
+
           python3 - <<'PY'
-          import json
+          import json, urllib.parse
           lines = []
+          med_plus = []
           has_high = False
           for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
               data = json.load(open(fname, encoding="utf-8"))
               alerts = [a for s in data.get("site", []) for a in s.get("alerts", [])]
               highs = [a for a in alerts if str(a.get("riskcode")) == "3"]
-              lines.append(f"{fname}: total_alerts={len(alerts)} high={len(highs)}")
+              meds = [a for a in alerts if str(a.get("riskcode")) == "2"]
+              lines.append(f"{fname}: total_alerts={len(alerts)} high={len(highs)} med={len(meds)}")
               for a in alerts:
-                  lines.append(f"  - [{a.get('riskcode')}:{a.get('riskdesc')}] {a.get('name')} (count={a.get('count')})")
-              if highs:
-                  has_high = True
+                  rc = str(a.get("riskcode"))
+                  paths = sorted({urllib.parse.urlparse(i.get("uri", "")).path or "/" for i in a.get("instances", [])})[:8]
+                  pstr = ",".join(paths)
+                  lines.append(f"  - [risk={rc}:{a.get('riskdesc')}] plugin={a.get('pluginid')} {a.get('name')} (count={a.get('count')}) paths=[{pstr}]")
+                  if rc in ("2", "3"):
+                      med_plus.append(f"[risk={rc}] {a.get('pluginid')}:{a.get('name')}(count={a.get('count')},paths={pstr})")
+                  if rc == "3":
+                      has_high = True
           summary = "\n".join(lines)
           open("reports/ci/zap_summary.txt", "w", encoding="utf-8").write(summary + "\n")
           print(summary)
+          med_msg = " | ".join(med_plus) if med_plus else "NONE (0 Medium, 0 High)"
+          print(f"::notice title=OWASP ZAP Findings (Medium+)::{med_msg}")
           if has_high:
+              print(f"::error title=OWASP ZAP HIGH::{med_msg}")
               raise SystemExit(1)
           PY
 
@@ -485,9 +551,17 @@ jobs:
           done
 
           cd frontend-wireframe
-          set -o pipefail
-          UI_BASE_URL="http://127.0.0.1:${UI_PORT}" E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list | tee ../reports/wireframe/playwright_ci.txt
-          PW_SUMMARY=$(grep -E 'passed|failed' ../reports/wireframe/playwright_ci.txt | tail -n 1 || echo "done")
+          set +e
+          UI_BASE_URL="http://127.0.0.1:${UI_PORT}" E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list > ../reports/wireframe/playwright_ci.txt 2>&1
+          rc=$?
+          set -e
+          cat ../reports/wireframe/playwright_ci.txt
+          if [ "$rc" -ne 0 ]; then
+            ERR_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✘|✓|Error:|expect\(|TimeoutError|ReferenceError|failed|passed' | head -n 30 | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=Playwright E2E Failed (exit=${rc})::${ERR_SUMMARY}"
+            exit "$rc"
+          fi
+          PW_SUMMARY=$(sed -r 's/\x1B\[[0-9;]*[mK]//g' ../reports/wireframe/playwright_ci.txt | grep -E '✓|passed' | tr '\r\n' ' ' | sed 's/%/%25/g')
           echo "::notice title=Playwright 19-Frame E2E::${PW_SUMMARY}"
 
       - name: Upload Artifact Playwright & Tangkapan Layar Wireframe

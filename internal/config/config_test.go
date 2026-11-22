@@ -137,8 +137,8 @@ func TestLoadConfig_ReadsLeanSecurityAndOperationalParametersFromEnv(t *testing.
 
 func TestCatalogAndEnvReferenceMarkdown(t *testing.T) {
 	specs := config.Catalog()
-	if len(specs) != 43 {
-		t.Fatalf("Expected exact 43 lean env vars (<= 45), got %d", len(specs))
+	if len(specs) != 44 {
+		t.Fatalf("Expected exact 44 lean env vars (<= 45), got %d", len(specs))
 	}
 	for _, s := range specs {
 		if strings.TrimSpace(s.Rationale) == "" {
@@ -272,5 +272,45 @@ func TestAuditEnvVarsAndProductionGuards(t *testing.T) {
 	badAge["BACKUP_AGE_RECIPIENT"] = "not-an-age-pubkey"
 	if _, err := config.Load(func(k string) (string, bool) { return badAge[k], true }); err == nil {
 		t.Fatal("expected Load to reject invalid BACKUP_AGE_RECIPIENT prefix")
+	}
+}
+
+func TestValidateProduction_RateLimitRPS(t *testing.T) {
+	baseProd := map[string]string{
+		"APP_ENV":              "production",
+		"DB_HOST":              "10.20.1.5",
+		"DB_PORT":              "5432",
+		"DB_NAME":              "kopdes_prod",
+		"DB_USER":              "kopdes_app",
+		"DB_PASSWORD":          "ProdStrongPass123!@#",
+		"DB_SSLMODE":           "require",
+		"BLIND_INDEX_SECRET":   strings.Repeat("b2", 32),
+		"AES_MASTER_KEY":       strings.Repeat("c3", 32),
+		"BACKUP_AGE_RECIPIENT": "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+		"ALLOWED_ORIGINS":      "https://koperasi.example.id",
+		"RATE_LIMIT_RPS":       "30",
+	}
+	cfgOK, err := config.Load(func(k string) (string, bool) { v, ok := baseProd[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("Load valid RATE_LIMIT_RPS failed: %v", err)
+	}
+	if cfgOK.RateLimitRPS != 30 {
+		t.Fatalf("expected RateLimitRPS=30, got %v", cfgOK.RateLimitRPS)
+	}
+	if err := cfgOK.ValidateProduction(); err != nil {
+		t.Fatalf("ValidateProduction rejected RATE_LIMIT_RPS=30: %v", err)
+	}
+
+	tooHigh := make(map[string]string, len(baseProd))
+	for k, v := range baseProd {
+		tooHigh[k] = v
+	}
+	tooHigh["RATE_LIMIT_RPS"] = "600"
+	cfgHigh, err := config.Load(func(k string) (string, bool) { v, ok := tooHigh[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("Load failed unexpectedly: %v", err)
+	}
+	if err := cfgHigh.ValidateProduction(); err == nil {
+		t.Fatal("expected ValidateProduction to reject RATE_LIMIT_RPS=600 (> 120)")
 	}
 }

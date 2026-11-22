@@ -81,8 +81,17 @@ func defaultBcryptCost(appEnv string) int {
 	return 10
 }
 
+func resolveRateLimits(c config.AppConfig, def Config) (float64, int) {
+	rps := c.RateLimitRPS
+	if rps <= 0 {
+		rps = def.RateLimitRPS
+	}
+	return rps, maxInt(def.RateLimitBurst, int(rps*2))
+}
+
 func ConfigFromAppConfig(c config.AppConfig) Config {
 	def := DefaultConfig()
+	rps, burst := resolveRateLimits(c, def)
 	return Config{
 		AppEnv:                    c.AppEnv,
 		AppTimezone:               c.AppTimezone,
@@ -92,8 +101,8 @@ func ConfigFromAppConfig(c config.AppConfig) Config {
 		AESPreviousKeys:           c.AESPreviousKeys,
 		AllowedOrigins:            c.AllowedOrigins,
 		TrustedProxies:            c.TrustedProxies,
-		RateLimitRPS:              def.RateLimitRPS,
-		RateLimitBurst:            def.RateLimitBurst,
+		RateLimitRPS:              rps,
+		RateLimitBurst:            burst,
 		MaxRateLimitClients:       def.MaxRateLimitClients,
 		MaxBodyBytes:              def.MaxBodyBytes,
 		HTTPReadHeaderTimeout:     def.HTTPReadHeaderTimeout,

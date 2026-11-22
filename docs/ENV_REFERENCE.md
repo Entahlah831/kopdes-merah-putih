@@ -1,7 +1,7 @@
 # Referensi Variabel Environment — Kopdes Merah Putih
 
 > **Dokumen ini di-generate otomatis** dari struct `AppConfig` di `internal/config/config.go`.
-> Total variabel: **43** (target ramping <= 45 variabel).
+> Total variabel: **44** (target ramping <= 45 variabel).
 
 ## 1. Pemisahan Konfigurasi: Environment vs Database (`pengaturan`)
 
@@ -21,7 +21,7 @@
 | `host` | `DB_PORT` | Port koneksi PostgreSQL yang dituju API/skrip |
 | `host` | `DB_HOST_PORT` | Port host PostgreSQL yang dipetakan Compose ke kontainer |
 
-## 3. Variabel yang Dihapus untuk Ramping (51 -> 43 Variabel <= 45)
+## 3. Variabel yang Dihapus untuk Ramping (51 -> 44 Variabel <= 45)
 
 | Variabel Dihapus | Nilai Bawaan Aman / Pengganti | Alasan Penghapusan |
 |---|---|---|
@@ -34,7 +34,7 @@
 | `PENDING_LIMIT_PER_MEMBER` | Default aman `2` di `api.DefaultConfig()` | Kebijakan internal aman koperasi tunggal tanpa perlu knob opsional |
 | `PENDING_LIMIT_GLOBAL` | Default aman `50` di `api.DefaultConfig()` | Kapasitas aman ruang kode unik (3/4 digit) di `api.DefaultConfig()` |
 
-## 4. Katalog Lengkap 43 Variabel Environment & Alasan Tertulis
+## 4. Katalog Lengkap 44 Variabel Environment & Alasan Tertulis
 
 | NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | ALASAN DIPERTAHANKAN | CONTOH NILAI SINTETIS |
 |---|---|---|---|---|---|---|---|---|
@@ -46,6 +46,7 @@
 | `WORKER_PORT` | `int` | `8082` | `optional` | Tidak | `worker,compose,envcheck` | Port loopback healthcheck worker (0 = nonaktif) | Menyediakan /healthz proses kopdes worker terpantau Compose tanpa bentrok port | `8082` |
 | `ALLOWED_ORIGINS` | `[]string` | _(kosong)_ | `prod,staging` | Tidak | `api` | Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production) | Membatasi sumber browser sah untuk cookie HttpOnly + CSRFGuard di tiap VPS | `http://127.0.0.1:8081` |
 | `TRUSTED_PROXIES` | `[]string` | `127.0.0.1/32` | `prod` | Tidak | `api` | Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For | Mencegah spoofing IP limiter & memercayai X-Forwarded-Proto hanya dari Caddy/Cloudflare | `127.0.0.1/32` |
+| `RATE_LIMIT_RPS` | `float64` | `30` | `optional` | Tidak | `api` | Batas request per detik per IP (default aman 30 rps; hanya dilonggarkan pada APP_ENV=test) | Mengontrol pembatas laju global & penskalaan uji ZAP penuh secara eksplisit dari .env | `30` |
 | `DB_HOST` | `string` | `127.0.0.1` | `all` | Tidak | `api,scripts` | Hostname server PostgreSQL | Menghubungkan biner lokal (127.0.0.1) maupun kontainer Compose (postgres) | `127.0.0.1` |
 | `DB_PORT` | `int` | `5433` | `all` | Tidak | `api,scripts` | Port koneksi PostgreSQL yang dituju API/skrip | Portabilitas port DB non-standar antar stack uji & produksi tanpa ubah kode | `5433` |
 | `DB_HOST_PORT` | `int` | `5433` | `compose` | Tidak | `compose` | Port host PostgreSQL yang dipetakan Compose ke kontainer | Mengisolasi port binding PostgreSQL pada 127.0.0.1 host Docker | `5433` |

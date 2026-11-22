@@ -31,8 +31,8 @@ func repoRoot(t *testing.T) string {
 func TestRepoAudit_EnvCatalogConsistency_AndEnvReferenceFresh(t *testing.T) {
 	root := repoRoot(t)
 	specs := config.Catalog()
-	if len(specs) != 43 {
-		t.Fatalf("Jumlah variabel env harus tepat 43 (<= 45), ditemukan %d", len(specs))
+	if len(specs) != 44 {
+		t.Fatalf("Jumlah variabel env harus tepat 44 (<= 45), ditemukan %d", len(specs))
 	}
 	specMap := make(map[string]config.EnvVarSpec, len(specs))
 	for _, s := range specs {

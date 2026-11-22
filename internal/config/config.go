@@ -27,9 +27,9 @@ type EnvVarSpec struct {
 }
 
 // AppConfig merupakan satu-satunya sumber kebenaran (single source of truth)
-// untuk 43 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
+// untuk 44 variabel konfigurasi environment aplikasi Kopdes Merah Putih.
 type AppConfig struct {
-	// --- Runtime, Network, & Worker (8) ---
+	// --- Runtime, Network, & Worker (9) ---
 	AppEnv         string   `env:"APP_ENV" type:"string" default:"development" required:"all" secret:"false" component:"api,db-init" desc:"Lingkungan runtime (development|test|staging|production)" rationale:"Membedakan guard ketat produksi (SSL, CORS non-wildcard, age) vs test/dev" example:"test"`
 	AppTimezone    string   `env:"APP_TIMEZONE" type:"string" default:"Asia/Jakarta" required:"all" secret:"false" component:"api,Dockerfile" desc:"Zona waktu operasional (perhitungan batas harian & log)" rationale:"Menyelaraskan batas harian pilot, laporan, dan timestamp kontainer dengan zona koperasi" example:"Asia/Jakarta"`
 	APIPort        int      `env:"API_PORT" type:"int" default:"8080" required:"all" secret:"false" port:"internal" component:"api,Dockerfile,compose" desc:"Port internal HTTP API di dalam proses/kontainer" rationale:"Mengikat listener API tanpa literal port agar portabel antar lingkungan" example:"8080"`
@@ -38,6 +38,7 @@ type AppConfig struct {
 	WorkerPort     int      `env:"WORKER_PORT" type:"int" default:"8082" required:"optional" secret:"false" port:"host" component:"worker,compose,envcheck" desc:"Port loopback healthcheck worker (0 = nonaktif)" rationale:"Menyediakan /healthz proses kopdes worker terpantau Compose tanpa bentrok port" example:"8082"`
 	AllowedOrigins []string `env:"ALLOWED_ORIGINS" type:"[]string" default:"" required:"prod,staging" secret:"false" component:"api" desc:"Daftar origin CORS yang diizinkan (dipisah koma; dilarang * di production)" rationale:"Membatasi sumber browser sah untuk cookie HttpOnly + CSRFGuard di tiap VPS" example:"http://127.0.0.1:8081"`
 	TrustedProxies []string `env:"TRUSTED_PROXIES" type:"[]string" default:"127.0.0.1/32" required:"prod" secret:"false" component:"api" desc:"Daftar CIDR reverse proxy tepercaya untuk X-Forwarded-For" rationale:"Mencegah spoofing IP limiter & memercayai X-Forwarded-Proto hanya dari Caddy/Cloudflare" example:"127.0.0.1/32"`
+	RateLimitRPS   float64  `env:"RATE_LIMIT_RPS" type:"float64" default:"30" required:"optional" secret:"false" component:"api" desc:"Batas request per detik per IP (default aman 30 rps; hanya dilonggarkan pada APP_ENV=test)" rationale:"Mengontrol pembatas laju global & penskalaan uji ZAP penuh secara eksplisit dari .env" example:"30"`
 
 	// --- Database PostgreSQL (8) ---
 	DBHost           string `env:"DB_HOST" type:"string" default:"127.0.0.1" required:"all" secret:"false" component:"api,scripts" desc:"Hostname server PostgreSQL" rationale:"Menghubungkan biner lokal (127.0.0.1) maupun kontainer Compose (postgres)" example:"127.0.0.1"`
@@ -82,7 +83,7 @@ type AppConfig struct {
 	BackupAgeRecipient       string `env:"BACKUP_AGE_RECIPIENT" type:"string" default:"" required:"prod" secret:"false" component:"scripts" desc:"Public key penerima age (age1...) untuk enkripsi backup terautentikasi; private key WAJIB disimpan di luar server" rationale:"Menghindari penempatan private key di VPS dengan enkripsi asimetris age" example:"age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"`
 	BackupRetentionDays      int    `env:"BACKUP_RETENTION_DAYS" type:"int" default:"30" required:"scripts" secret:"false" component:"scripts" desc:"Jumlah hari retensi arsip backup lokal" rationale:"Mengatur jumlah hari arsip .tar.age sebelum rotasi otomatis oleh backup.sh" example:"30"`
 
-	// DatabaseURL opsional dari OS env/PaaS (tidak masuk daftar 43 var .env) untuk deteksi konflik DSN.
+	// DatabaseURL opsional dari OS env/PaaS (tidak masuk daftar 44 var .env) untuk deteksi konflik DSN.
 	DatabaseURL string
 }
 
@@ -252,11 +253,17 @@ func (c AppConfig) validateSessionAndLimits() error {
 	if rec := strings.TrimSpace(c.BackupAgeRecipient); rec != "" && !strings.HasPrefix(rec, "age1") {
 		return fmt.Errorf("BACKUP_AGE_RECIPIENT harus berupa public key age berawalan age1")
 	}
+	if c.RateLimitRPS <= 0 {
+		return fmt.Errorf("RATE_LIMIT_RPS wajib > 0 (dapat %v)", c.RateLimitRPS)
+	}
 	return nil
 }
 
 // ValidateProduction memvalidasi kesiapan konfigurasi ketat untuk lingkungan produksi.
 func (c AppConfig) ValidateProduction() error {
+	if c.RateLimitRPS < 1 || c.RateLimitRPS > 120 {
+		return fmt.Errorf("RATE_LIMIT_RPS produksi wajib dalam rentang 1..120 (dapat %v)", c.RateLimitRPS)
+	}
 	if strings.EqualFold(c.DBSSLMode, "disable") {
 		return fmt.Errorf("DB_SSLMODE tidak boleh disable di produksi")
 	}
@@ -374,7 +381,7 @@ func (c AppConfig) validateDatabaseURLConsistency() error {
 	return nil
 }
 
-// Catalog mengembalikan daftar spesifikasi 43 variabel environment secara otomatis dari tag struct AppConfig.
+// Catalog mengembalikan daftar spesifikasi 44 variabel environment secara otomatis dari tag struct AppConfig.
 func Catalog() []EnvVarSpec {
 	t := reflect.TypeOf(AppConfig{})
 	specs := make([]EnvVarSpec, 0, t.NumField())
@@ -401,7 +408,7 @@ func Catalog() []EnvVarSpec {
 }
 
 func renderRemovedEnvVarsSection(b *strings.Builder) {
-	b.WriteString("## 3. Variabel yang Dihapus untuk Ramping (51 -> 43 Variabel <= 45)\n\n")
+	b.WriteString("## 3. Variabel yang Dihapus untuk Ramping (51 -> 44 Variabel <= 45)\n\n")
 	b.WriteString("| Variabel Dihapus | Nilai Bawaan Aman / Pengganti | Alasan Penghapusan |\n")
 	b.WriteString("|---|---|---|\n")
 	b.WriteString("| `SLO_READ_P95_MS` | Default `300` ms (`tools/loadtest`, `tests/perf/k6_mixed.js`) | Tidak dibaca biner API/worker produksi; cukup diatur perkakas uji |\n")
@@ -439,7 +446,7 @@ func RenderEnvReferenceMarkdown() string {
 	b.WriteString("\n")
 	renderRemovedEnvVarsSection(&b)
 
-	b.WriteString("## 4. Katalog Lengkap 43 Variabel Environment & Alasan Tertulis\n\n")
+	b.WriteString("## 4. Katalog Lengkap 44 Variabel Environment & Alasan Tertulis\n\n")
 	b.WriteString("| NAMA | TIPE | DEFAULT AMAN | WAJIB DI | RAHASIA? | DIBACA OLEH | PENJELASAN | ALASAN DIPERTAHANKAN | CONTOH NILAI SINTETIS |\n")
 	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 	for _, s := range specs {

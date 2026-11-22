@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   env-sqlc-and-static-scans:
-    name: Env (43 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep
+    name: Env (44 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -102,7 +102,7 @@ jobs:
             exit "$rc"
           fi
           ONE_LINE=$(printf '%s' "${SEMGREP_SUMMARY}" | head -n 1)
-          echo "::notice title=Static & IaC Scans::envcheck=43_vars(PASS) | sqlc=v1.31.1(drift=0) | gitleaks=0_leaks | hadolint=PASS | trivy_config=0_HIGH_CRITICAL | semgrep=(${ONE_LINE})"
+          echo "::notice title=Static & IaC Scans::envcheck=44_vars(PASS) | sqlc=v1.31.1(drift=0) | gitleaks=0_leaks | hadolint=PASS | trivy_config=0_HIGH_CRITICAL | semgrep=(${ONE_LINE})"
 
       - name: Upload Artifact Laporan Statis & IaC
         if: always()
@@ -229,8 +229,8 @@ jobs:
           name: ci-go-race-and-image-reports
           path: reports/ci/
 
-  dast-perf-and-chaos:
-    name: OWASP ZAP, Schemathesis, k6, & Toxiproxy Chaos (PG16)
+  perf-fuzz-and-chaos:
+    name: k6 200-VU Per-Endpoint, Schemathesis, & Toxiproxy Chaos (PG16)
     runs-on: ubuntu-latest
     services:
       postgres_set_a:
@@ -281,31 +281,45 @@ jobs:
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
           go build -o /tmp/kopdes ./cmd/kopdes
           go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
-          nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_dast.log 2>&1 &
+          nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_perf.log 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && break
             sleep 1
           done
           curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
 
-      - name: k6 Smoke + Load Benchmark (SLO Terukur)
+      - name: k6 Smoke + 200-VU Load Benchmark (Per-Endpoint p50/p95/p99 & Write Mix)
         run: |
           set -euo pipefail
           set -a; source .env.test; set +a
-          k6 run --env API_BASE_URL="http://127.0.0.1:${API_HOST_PORT}" \
-            --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
-            --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
+          API_BASE="http://127.0.0.1:${API_HOST_PORT}"
+          python3 tests/security/auth_helper.py \
+            --api-base "${API_BASE}" \
+            --env-file .env.test \
+            --password "kopdes_ci_test_pass_123!" \
+            --roles admin,bendahara,anggota \
+            --out-json reports/ci/k6_sessions.json
+          export K6_ADMIN_TOKEN=$(python3 -c 'import json; print(json.load(open("reports/ci/k6_sessions.json"))["admin"]["cookie_value"])')
+          export K6_BENDAHARA_TOKEN=$(python3 -c 'import json; print(json.load(open("reports/ci/k6_sessions.json"))["bendahara"]["cookie_value"])')
+          export K6_ANGGOTA_TOKEN=$(python3 -c 'import json; print(json.load(open("reports/ci/k6_sessions.json"))["anggota"]["cookie_value"])')
+          export TEST_USER_PASSWORD="kopdes_ci_test_pass_123!"
+          rm -f reports/ci/k6_sessions.json
+
+          k6 run --env API_BASE_URL="${API_BASE}" \
             --env SCENARIO=smoke \
             --summary-export reports/ci/k6_smoke_summary.json \
             tests/perf/k6_mixed.js
-          k6 run --env API_BASE_URL="http://127.0.0.1:${API_HOST_PORT}" \
-            --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
-            --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
+          k6 run --env API_BASE_URL="${API_BASE}" \
             --env SCENARIO=load \
-            --env K6_LOAD_DURATION=20s \
-            --env K6_LOAD_VUS=50 \
+            --env K6_LOAD_READ_VUS=180 \
+            --env K6_LOAD_WRITE_VUS=20 \
+            --env K6_LOAD_DURATION=35s \
             --summary-export reports/ci/k6_load_summary.json \
             tests/perf/k6_mixed.js
+          python3 tests/perf/summarize_k6.py \
+            --summary-json reports/ci/k6_load_summary.json \
+            --out-md reports/ci/k6_per_endpoint.md \
+            --out-txt reports/ci/k6_per_endpoint.txt
 
       - name: Schemathesis OpenAPI Fuzzing
         run: |
@@ -331,183 +345,6 @@ jobs:
             echo "::error title=Schemathesis Failed (exit=${rc})::${ERR_SCH}"
             exit "$rc"
           fi
-
-      - name: OWASP ZAP Baseline + OpenAPI API Scan (FAIL pada High risk)
-        run: |
-          set -euo pipefail
-          set -a; source .env.test; set +a
-          API_BASE="http://127.0.0.1:${API_HOST_PORT}"
-          TOKEN=$(API_BASE="${API_BASE}" python3 -c 'import json,os,urllib.request; r=urllib.request.urlopen(urllib.request.Request(os.environ["API_BASE"]+"/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
-          API_BASE="${API_BASE}" python3 - <<'PY'
-          import os, re
-          raw = open("docs/openapi.yaml", "r", encoding="utf-8").read()
-          rendered = re.sub(
-              r"^servers:\n.*?(?=^[a-zA-Z0-9_-]+:)",
-              f"servers:\n- url: {os.environ['API_BASE']}\n",
-              raw,
-              count=1,
-              flags=re.M | re.S,
-          )
-          open("reports/ci/openapi_runtime.yaml", "w", encoding="utf-8").write(rendered)
-          PY
-          chmod -R a+rwx reports/ci
-          set +e
-          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py -t "${API_BASE}/api/v1/public/config" -I \
-            -J zap_baseline.json -r zap_baseline.html > reports/ci/zap_baseline.log 2>&1
-          rc_base=$?
-          set -e
-          cat reports/ci/zap_baseline.log
-          if [ "$rc_base" -ne 0 ]; then
-            MSG=$(tail -n 20 reports/ci/zap_baseline.log | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
-            echo "::error title=ZAP Baseline exit=${rc_base}::${MSG}"
-            exit "$rc_base"
-          fi
-
-          set +e
-          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-            zap-api-scan.py -t /zap/wrk/openapi_runtime.yaml -f openapi -I \
-            -J zap_api.json -r zap_api.html \
-            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41 -config scanner.threadPerHost=1 -config scanner.delayInMs=50" > reports/ci/zap_api.log 2>&1
-          rc_api=$?
-          set -e
-          cat reports/ci/zap_api.log
-          if [ "$rc_api" -ne 0 ]; then
-            MSG=$(grep -E 'FAIL-NEW|WARN-NEW|ERROR|Exception|usage:|unrecognized|TypeError|ValueError|PASS:' reports/ci/zap_api.log | tail -n 25 | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
-            if [ -z "$MSG" ]; then
-              MSG=$(tail -n 20 reports/ci/zap_api.log | sed -E 's/\?[^ ]+//g' | tr '\r\n' ' ' | sed 's/%/%25/g')
-            fi
-            echo "::error title=ZAP API Scan exit=${rc_api}::${MSG}"
-            exit "$rc_api"
-          fi
-
-          PG_CID=$(docker ps -q --filter ancestor=postgres:16-alpine | head -n 1 || true)
-          if [ -n "$PG_CID" ]; then
-            docker logs "$PG_CID" > reports/ci/pg_dast.log 2>&1 || true
-          fi
-
-          python3 - <<'PY'
-          import json, os, re, urllib.parse
-          lines = []
-          med_plus = []
-          triage_rows = []
-          triaged_fps = []
-          unexcluded_high = []
-          low_alerts = 0
-          info_alerts = 0
-
-          fp_cfg = json.load(open("tests/security/zap_false_positives.json", encoding="utf-8"))
-          guard = fp_cfg.get("guard", {})
-          exclusions = fp_cfg.get("exclusions", [])
-
-          pg_err_cnt = 0
-          pg_syntax_cnt = 0
-          if os.path.exists("reports/ci/pg_dast.log"):
-              for ln in open("reports/ci/pg_dast.log", encoding="utf-8", errors="replace"):
-                  lo = ln.lower()
-                  if "error:" in lo or "fatal:" in lo:
-                      pg_err_cnt += 1
-                  if "syntax error" in lo or "sqlstate" in lo:
-                      pg_syntax_cnt += 1
-
-          api_500_cnt = 0
-          api_sql_err_cnt = 0
-          if os.path.exists("reports/ci/api_dast.log"):
-              for ln in open("reports/ci/api_dast.log", encoding="utf-8", errors="replace"):
-                  lo = ln.lower()
-                  if " 500 " in lo or "internal_server_error" in lo:
-                      api_500_cnt += 1
-                  if "sqlstate" in lo or "syntax error" in lo:
-                      api_sql_err_cnt += 1
-
-          guard_ok = (
-              (not guard.get("require_zero_pg_syntax_errors", True) or pg_syntax_cnt == 0)
-              and (not guard.get("require_zero_api_sql_errors", True) or api_sql_err_cnt == 0)
-          )
-
-          def clean_otherinfo(raw: str) -> str:
-              s = re.sub(r"\[[^\]]*\]", "[REDACTED]", raw or "")
-              s = re.sub(r"'[^']*'|\"[^\"]*\"", "[REDACTED]", s)
-              return " ".join(s.split())[:120]
-
-          def match_fp(pluginid: str, method: str, path: str, otherinfo: str):
-              if not guard_ok:
-                  return None
-              for ex in exclusions:
-                  if (
-                      str(ex.get("pluginid", "")) == str(pluginid)
-                      and ex.get("method", "").upper() == method.upper()
-                      and ex.get("path", "") == path
-                      and ex.get("otherinfo_contains", "") in (otherinfo or "")
-                  ):
-                      return ex
-              return None
-
-          for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
-              data = json.load(open(fname, encoding="utf-8"))
-              alerts = [a for s in data.get("site", []) for a in s.get("alerts", [])]
-              highs = [a for a in alerts if str(a.get("riskcode")) == "3"]
-              meds = [a for a in alerts if str(a.get("riskcode")) == "2"]
-              lines.append(f"{fname}: total_alerts={len(alerts)} high={len(highs)} med={len(meds)}")
-              for a in alerts:
-                  rc = str(a.get("riskcode"))
-                  if rc == "1":
-                      low_alerts += 1
-                  elif rc == "0":
-                      info_alerts += 1
-                  pid = str(a.get("pluginid", ""))
-                  insts = a.get("instances", [])
-                  paths = sorted({urllib.parse.urlparse(i.get("uri", "")).path or "/" for i in insts})[:8]
-                  pstr = ",".join(paths)
-                  lines.append(f"  - [risk={rc}:{a.get('riskdesc')}] plugin={pid} {a.get('name')} (count={a.get('count')}) paths=[{pstr}]")
-                  if rc == "2":
-                      med_plus.append(f"[risk=2] {pid}:{a.get('name')}(count={a.get('count')},paths={pstr})")
-                      for inst in insts:
-                          m = inst.get("method", "?")
-                          p = urllib.parse.urlparse(inst.get("uri", "")).path or "/"
-                          prm = inst.get("param", "") or "-"
-                          oi = clean_otherinfo(inst.get("otherinfo", ""))
-                          triage_rows.append(f"{fname} plugin={pid} risk=2 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
-                  elif rc == "3":
-                      if not insts:
-                          unexcluded_high.append(f"{fname} plugin={pid}:{a.get('name')} (no instances)")
-                          med_plus.append(f"[risk=3] {pid}:{a.get('name')}(count={a.get('count')},paths={pstr})")
-                      for inst in insts:
-                          m = inst.get("method", "?")
-                          p = urllib.parse.urlparse(inst.get("uri", "")).path or "/"
-                          prm = inst.get("param", "") or "-"
-                          raw_oi = inst.get("otherinfo", "") or ""
-                          oi = clean_otherinfo(raw_oi)
-                          matched = match_fp(pid, m, p, raw_oi)
-                          if matched is not None:
-                              triaged_fps.append(f"plugin={pid} {m} {p} param={prm} guard_ok={guard_ok}")
-                              triage_rows.append(f"[TRIAGED-FP] {fname} plugin={pid} risk=3 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
-                          else:
-                              unexcluded_high.append(f"{fname} plugin={pid} {m} {p} param={prm}")
-                              med_plus.append(f"[risk=3] {pid}:{a.get('name')}(method={m},path={p},param={prm})")
-                              triage_rows.append(f"[UNEXCLUDED-HIGH] {fname} plugin={pid} risk=3 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
-
-          summary = "\n".join(lines)
-          open("reports/ci/zap_summary.txt", "w", encoding="utf-8").write(summary + "\n")
-          triage_header = f"pg_log_errors={pg_err_cnt} pg_syntax_errors={pg_syntax_cnt} api_500={api_500_cnt} api_sql_errors={api_sql_err_cnt} guard_ok={guard_ok}"
-          open("reports/ci/zap_triage_evidence.txt", "w", encoding="utf-8").write(triage_header + "\n" + "\n".join(triage_rows) + "\n")
-          print(summary)
-          print("TRIAGE:", triage_header)
-          print("TRIAGED_FP_COUNT:", len(triaged_fps), "UNEXCLUDED_HIGH_COUNT:", len(unexcluded_high))
-          for row in triage_rows:
-              print(" ", row)
-          base_med = " | ".join(med_plus) if med_plus else "NONE (0 Unexcluded High, 0 Medium)"
-          med_msg = f"{base_med} | triaged_fp={len(triaged_fps)} low_alerts={low_alerts} info_alerts={info_alerts}".replace("%", "%25")
-          fp_msg = (" | ".join(triaged_fps) if triaged_fps else "NONE (0 triaged FP)").replace("%", "%25")
-          triage_notice = (triage_header + " | " + (" || ".join(triage_rows[:12]) if triage_rows else "no-med-high-instances")).replace("%", "%25")
-          print(f"::notice title=OWASP ZAP Findings (Medium+)::{med_msg}")
-          print(f"::notice title=OWASP ZAP Triaged FP::{fp_msg}")
-          print(f"::notice title=ZAP Triage Evidence (No Payloads)::{triage_notice}")
-          if unexcluded_high:
-              err_msg = " | ".join(unexcluded_high).replace("%", "%25")
-              print(f"::error title=OWASP ZAP HIGH (Unexcluded)::{err_msg}")
-              raise SystemExit(1)
-          PY
 
       - name: Toxiproxy Chaos (Latensi DB + Putus TCP -> 503 + Auto Recovery -> 200)
         run: |
@@ -552,38 +389,122 @@ jobs:
           echo "DB proxy restored /readyz -> HTTP ${REC_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
           [ "${REC_CODE}" = "200" ]
 
-          K6_LINE=$(python3 - <<'PY'
-          import json
-          d = json.load(open("reports/ci/k6_load_summary.json", encoding="utf-8"))["metrics"]
-          def mvals(name):
-              m = d.get(name, {})
-              return m.get("values", m) if isinstance(m, dict) else {}
-          dur = mvals("http_req_duration")
-          reqs = mvals("http_reqs")
-          fails = mvals("http_req_failed")
-          read_m = mvals("kopdes_read_duration")
-          write_m = mvals("kopdes_write_duration")
-          unexp = mvals("kopdes_unexpected_error")
-          req_cnt = int(reqs.get("count", 0))
-          assert req_cnt > 0, f"k6 http_reqs.count harus > 0, dapat {req_cnt}"
-          fail_rate = fails.get("rate", fails.get("value", 0))
-          unexp_rate = unexp.get("rate", unexp.get("value", 0))
-          print(
-              f"reqs={req_cnt} p50={dur.get('med', 0):.1f}ms p95={dur.get('p(95)', 0):.1f}ms "
-              f"read_p95={read_m.get('p(95)', 0):.1f}ms write_p95={write_m.get('p(95)', 0):.1f}ms "
-              f"err={fail_rate*100:.2f}% unexp={unexp_rate*100:.2f}%"
-          )
-          PY
-          )
-          ZAP_LINE=$(grep -E '^reports/ci/zap_' reports/ci/zap_summary.txt | tr '\n' ' ')
-          echo "::notice title=DAST, k6, Schemathesis & Toxiproxy::k6_load=(${K6_LINE}) | ${ZAP_LINE}| schemathesis=PASS | toxiproxy=(lat=${LAT_CODE}->down=${DOWN_CODE}->rec=${REC_CODE})"
+          K6_LINE=$(head -n 1 reports/ci/k6_per_endpoint.txt | sed 's/%/%25/g')
+          echo "::notice title=Perf, Fuzz & Chaos::k6=(${K6_LINE}) | schemathesis=PASS | toxiproxy=(lat=${LAT_CODE}->down=${DOWN_CODE}->rec=${REC_CODE})"
 
-      - name: Upload Artifact DAST, k6, & Toxiproxy
+      - name: Upload Artifact Perf, Fuzz, & Chaos
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-dast-perf-chaos-reports
+          name: ci-perf-fuzz-chaos-reports
           path: reports/ci/
+
+  zap-per-role-matrix:
+    name: OWASP ZAP Per-Role (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: admin
+            role: admin
+            rate_limit_rps: "30"
+            zap_mode: paced
+            run_baseline: "true"
+          - profile: bendahara
+            role: bendahara
+            rate_limit_rps: "30"
+            zap_mode: paced
+            run_baseline: "false"
+          - profile: petugas_toko
+            role: petugas_toko
+            rate_limit_rps: "30"
+            zap_mode: paced
+            run_baseline: "false"
+          - profile: anggota
+            role: anggota
+            rate_limit_rps: "30"
+            zap_mode: paced
+            run_baseline: "false"
+          - profile: admin_relaxed
+            role: admin
+            rate_limit_rps: "1500"
+            zap_mode: full
+            run_baseline: "false"
+    services:
+      postgres_set_a:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: kopdes_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kopdes_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go & Python
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Postgres client & PyYAML
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends curl postgresql-client
+          python3 -m pip install --quiet pyyaml
+
+      - name: Siapkan DB PG16, Seed Set A, & Jalankan ZAP (${{ matrix.profile }})
+        run: |
+          set -euo pipefail
+          mkdir -p reports/zap
+          set -a
+          source .env.test
+          set +a
+          export RATE_LIMIT_RPS="${{ matrix.rate_limit_rps }}"
+
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
+          for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
+            PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$mf"
+          done
+          PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
+          go build -o /tmp/kopdes ./cmd/kopdes
+          go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
+          nohup /tmp/kopdes --env-file .env.test serve > reports/zap/api_dast.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
+
+          python3 tests/security/zap_role_scan.py \
+            --profile "${{ matrix.profile }}" \
+            --role "${{ matrix.role }}" \
+            --api-base "http://127.0.0.1:${API_HOST_PORT}" \
+            --env-file .env.test \
+            --password "kopdes_ci_test_pass_123!" \
+            --out-dir reports/zap \
+            --openapi docs/openapi.yaml \
+            --fp-config tests/security/zap_false_positives.json \
+            --zap-mode "${{ matrix.zap_mode }}" \
+            --run-baseline "${{ matrix.run_baseline }}" \
+            --rate-limit-rps "${{ matrix.rate_limit_rps }}" \
+            --api-log reports/zap/api_dast.log
+
+      - name: Upload Artifact ZAP (${{ matrix.profile }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-zap-${{ matrix.profile }}
+          path: reports/zap/
 
   docker-compose-deploy-e2e:
     name: Uji Deployment Nyata Compose (.env.test.alt, Worker, Pembayaran, & age Drill)

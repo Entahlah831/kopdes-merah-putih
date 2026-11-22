@@ -145,9 +145,10 @@ def login_role(
         "X-Forwarded-For": client_ip,
     }
 
-    mfa_verified = not bool(data.get("mfa_required", False))
+    mfa_required = bool(data.get("mfa_required", False))
+    mfa_verified = False
     mfa_status: int | None = None
-    if data.get("mfa_required"):
+    if mfa_required:
         if not aes_master_key:
             raise RuntimeError(f"AES_MASTER_KEY wajib disetel untuk TOTP MFA akun {email}")
         secret_bytes = deterministic_totp_secret_bytes(aes_master_key, email)
@@ -175,6 +176,7 @@ def login_role(
     if me_status != 200 or me_data.get("scope") != "full":
         raise RuntimeError(f"Validasi /api/v1/auth/me gagal untuk {email}: status={me_status} body={me_body}")
 
+    mfa_state = "verified" if mfa_verified else "not_required"
     return {
         "email": email,
         "role": me_data.get("peran") or data.get("peran") or "",
@@ -183,6 +185,7 @@ def login_role(
         "scope": me_data.get("scope"),
         "mfa_enabled": bool(me_data.get("mfa_enabled", False)),
         "mfa_verified": mfa_verified,
+        "mfa_status": mfa_state,
         "mfa_verify_status": mfa_status,
         "cookie_name": cookie_name,
         "cookie_value": cookie_val,

@@ -36,6 +36,7 @@ jobs:
 
       - name: Validasi Konfigurasi Uji Set A & Set B + Paritas Kunci (<= 45 Var)
         run: |
+          set -euo pipefail
           mkdir -p reports/ci
           go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test | tee reports/ci/envcheck_setA.txt
           go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt | tee reports/ci/envcheck_setB.txt
@@ -43,13 +44,14 @@ jobs:
 
       - name: Verifikasi sqlc generate bebas drift
         run: |
+          set -euo pipefail
           sqlc version | tee reports/ci/sqlc_version.txt
           sqlc generate
           git diff --exit-code internal/db
 
       - name: Pindai Secret dengan Gitleaks
         run: |
-          set -o pipefail
+          set -euo pipefail
           gitleaks git --config .gitleaks.toml --verbose --redact 2>&1 | tee reports/ci/gitleaks.txt
 
       - name: Hadolint Dockerfile
@@ -177,6 +179,7 @@ jobs:
 
       - name: Build, Vet, & TestArchitecture
         run: |
+          set -euo pipefail
           mkdir -p reports/ci
           go build ./...
           go build ./cmd/kopdes
@@ -184,7 +187,9 @@ jobs:
           go test -v -count=1 ./internal -run TestArchitecture | tee reports/ci/arch_ci.txt
 
       - name: Full Race Test Suite (Semua Paket Termasuk internal/db & internal/worker)
-        run: go test -count=1 -race -p 1 -timeout 300s ./... 2>&1 | tee reports/ci/go_test_race_pg16.txt
+        run: |
+          set -euo pipefail
+          go test -count=1 -race -p 1 -timeout 300s ./... 2>&1 | tee reports/ci/go_test_race_pg16.txt
 
       - name: Smoke Test Seeder, CLI Admin/Storage, Worker, & Backup age Drill
         run: |
@@ -208,13 +213,14 @@ jobs:
 
       - name: SAST (staticcheck, gosec, govulncheck)
         run: |
-          set -o pipefail
+          set -euo pipefail
           staticcheck ./... 2>&1 | tee reports/ci/staticcheck.txt
           gosec ./... 2>&1 | tee reports/ci/gosec.txt
           govulncheck ./... 2>&1 | tee reports/ci/govulncheck.txt
 
       - name: Build Docker Image & Trivy Image Scan (FAIL fixable HIGH/CRITICAL)
         run: |
+          set -euo pipefail
           docker build -t kopdes-ci:latest .
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output reports/ci/trivy_image.json kopdes-ci:latest
           trivy image --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_image.txt kopdes-ci:latest
@@ -463,13 +469,19 @@ jobs:
           python3 -m pip install --quiet pyyaml
 
       - name: Siapkan DB PG16, Seed Set A, & Jalankan ZAP (${{ matrix.profile }})
+        env:
+          ZAP_PROFILE: ${{ matrix.profile }}
+          ZAP_ROLE: ${{ matrix.role }}
+          ZAP_RATE_LIMIT_RPS: ${{ matrix.rate_limit_rps }}
+          ZAP_MODE: ${{ matrix.zap_mode }}
+          ZAP_RUN_BASELINE: ${{ matrix.run_baseline }}
         run: |
           set -euo pipefail
           mkdir -p reports/zap
           set -a
           source .env.test
           set +a
-          export RATE_LIMIT_RPS="${{ matrix.rate_limit_rps }}"
+          export RATE_LIMIT_RPS="${ZAP_RATE_LIMIT_RPS}"
 
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f db/docker-init/01_roles.sql
           for mf in $(ls db/migrations/*_*.up.sql | sort -V); do
@@ -486,17 +498,17 @@ jobs:
           curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
 
           python3 tests/security/zap_role_scan.py \
-            --profile "${{ matrix.profile }}" \
-            --role "${{ matrix.role }}" \
+            --profile "${ZAP_PROFILE}" \
+            --role "${ZAP_ROLE}" \
             --api-base "http://127.0.0.1:${API_HOST_PORT}" \
             --env-file .env.test \
             --password "kopdes_ci_test_pass_123!" \
             --out-dir reports/zap \
             --openapi docs/openapi.yaml \
             --fp-config tests/security/zap_false_positives.json \
-            --zap-mode "${{ matrix.zap_mode }}" \
-            --run-baseline "${{ matrix.run_baseline }}" \
-            --rate-limit-rps "${{ matrix.rate_limit_rps }}" \
+            --zap-mode "${ZAP_MODE}" \
+            --run-baseline "${ZAP_RUN_BASELINE}" \
+            --rate-limit-rps "${ZAP_RATE_LIMIT_RPS}" \
             --api-log reports/zap/api_dast.log
 
       - name: Upload Artifact ZAP (${{ matrix.profile }})

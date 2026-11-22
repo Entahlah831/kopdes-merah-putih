@@ -184,21 +184,6 @@ func sessionOptsFromConfig(cfg Config, dh *domainHandlers) middleware.SessionAut
 	}
 }
 
-func testHybridScale(cfg Config) int32 {
-	if !strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "test") || cfg.RateLimitRPS <= 30 {
-		return 1
-	}
-	ratio := cfg.RateLimitRPS / 30
-	if ratio >= 100 {
-		return 100
-	}
-	scale := int32(ratio)
-	if scale < 1 {
-		return 1
-	}
-	return scale
-}
-
 func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config, dh *domainHandlers) {
 	sesOpts := sessionOptsFromConfig(cfg, dh)
 	limSes := middleware.RequireSessionWithOptions(pool, sesOpts, true)
@@ -206,13 +191,12 @@ func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config
 	fullSes := middleware.RequireSessionWithOptions(pool, sesOpts, false)
 	staffRoles := middleware.RequireRoles("admin", "bendahara")
 	adminOnly := middleware.RequireRoles("admin")
-	scale := testHybridScale(cfg)
 
 	mux.HandleFunc("GET /healthz", dh.health.HandleHealthz)
 	mux.HandleFunc("GET /readyz", dh.health.HandleReadyz)
 	mux.HandleFunc("GET /api/v1/public/config", dh.publicConfig.HandleGetPublicConfig)
-	mux.Handle("POST /api/v1/public/pendaftaran", hybridLimit(dh.hybridLimiter, "registration", 20*scale, 3600)(http.HandlerFunc(dh.anggota.HandlePublicRegister)))
-	mux.Handle("POST /api/v1/public/pendaftaran/{id}/dokumen", hybridLimit(dh.hybridLimiter, "kyc_upload", 40*scale, 3600)(http.HandlerFunc(dh.anggota.HandleUploadDokumen)))
+	mux.Handle("POST /api/v1/public/pendaftaran", hybridLimit(dh.hybridLimiter, "registration", 20, 3600)(http.HandlerFunc(dh.anggota.HandlePublicRegister)))
+	mux.Handle("POST /api/v1/public/pendaftaran/{id}/dokumen", hybridLimit(dh.hybridLimiter, "kyc_upload", 40, 3600)(http.HandlerFunc(dh.anggota.HandleUploadDokumen)))
 	mux.HandleFunc("POST /api/v1/auth/login", dh.auth.HandleLogin)
 	mux.Handle("POST /api/v1/auth/mfa/setup", limSes(http.HandlerFunc(dh.auth.HandleMFASetup)))
 	mux.Handle("POST /api/v1/auth/mfa/verify", limSes(http.HandlerFunc(dh.auth.HandleMFAVerify)))

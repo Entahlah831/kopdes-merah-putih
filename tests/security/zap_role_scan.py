@@ -326,7 +326,9 @@ def main() -> int:
     reach_summary = {
         "profile": args.profile,
         "role": args.role,
+        "mfa_enabled": session["mfa_enabled"],
         "mfa_verified": session["mfa_verified"],
+        "mfa_status": session["mfa_status"],
         "rate_limit_rps": args.rate_limit_rps,
         "zap_mode": args.zap_mode,
         "post_scan_session_ok": post_scan_ok,
@@ -354,7 +356,7 @@ def main() -> int:
     analysis = analyze_zap_reports(report_files, fp_cfg, log_counts)
 
     notice_summary = (
-        f"role={args.role} mfa={session['mfa_verified']} rps={args.rate_limit_rps} mode={args.zap_mode} "
+        f"role={args.role} mfa={session['mfa_status']} rps={args.rate_limit_rps} mode={args.zap_mode} "
         f"reachable={len(reachable_ops)}/{len(reach)} denied={len(denied_ops)} err500={len(err_ops)} "
         f"post_session_ok={post_scan_ok} | " + " | ".join(analysis["lines"])
     ).replace("%", "%25")

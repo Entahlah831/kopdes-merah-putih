@@ -29,6 +29,8 @@ services:
       - ./db/migrations:/docker-migrations:ro
     networks:
       - kopdes_internal
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kopdes_migrator -d ${DB_NAME} -p ${DB_PORT}"]
       interval: 5s

@@ -40,11 +40,14 @@ async function loginUI(page: Page, identifier: string, password: string, mfaEmai
       page.getByTestId("user-badge").waitFor({ state: "visible", timeout: 10_000 }).then(() => "ok" as const)
     ]);
     if (firstShown === "ok") return;
-    let loggedIn = false;
     const tryOffsets = async (): Promise<boolean> => {
-      for (const offset of [-30, 0, 30]) {
+      const bodyText = (await page.locator("body").textContent()) || "";
+      const secretMatch = bodyText.match(/Secret TOTP:\s*([A-Z2-7]+)/);
+      for (const offset of [0, 30]) {
         const totpRes = await page.request.post("/api/totp-helper", {
-          data: { account_email: mfaEmail, offset_seconds: offset }
+          data: secretMatch
+            ? { secret_base32: secretMatch[1], offset_seconds: offset }
+            : { account_email: mfaEmail, offset_seconds: offset }
         });
         expect(totpRes.ok()).toBeTruthy();
         const { code } = (await totpRes.json()) as { code: string };
@@ -54,15 +57,21 @@ async function loginUI(page: Page, identifier: string, password: string, mfaEmai
           await expect(page.getByTestId("user-badge")).toBeVisible({ timeout: 2_500 });
           return true;
         } catch {
-          // Retry with next TOTP step if prior step was consumed
+          // Retry next 30s offset without exhausting MFAMaxAttempts=3
         }
       }
       return false;
     };
-    loggedIn = await tryOffsets();
+    let loggedIn = await tryOffsets();
     if (!loggedIn) {
       const waitSec = 31 - (Math.floor(Date.now() / 1000) % 30);
       await page.waitForTimeout(waitSec * 1000);
+      await page.goto("/");
+      await page.getByTestId("nav-masuk").click();
+      await page.getByTestId("login-identifier").fill(identifier);
+      await page.getByTestId("login-password").fill(password);
+      await page.getByTestId("btn-login").click();
+      await page.getByTestId("mfa-code").waitFor({ state: "visible", timeout: 10_000 });
       loggedIn = await tryOffsets();
     }
     expect(loggedIn).toBeTruthy();
@@ -338,7 +347,9 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await page.getByTestId("nav-pesanan").click();
     await page.locator("table tr", { hasText: "dibayar" }).first().locator("button", { hasText: "Detail" }).click();
     await page.getByTestId("btn-status-diproses").click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toContainText("diproses");
     await page.getByTestId("btn-status-siap_diambil").click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toContainText("siap_diambil");
     await page.getByTestId("btn-status-selesai").click();
     await expect(page.getByTestId("detail-pesanan-judul")).toContainText("selesai");
     await page.screenshot({ path: path.join(screenshotDir, "08b_pesanan_selesai.png"), fullPage: true });
@@ -470,7 +481,7 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await loginUI(page, "admin@kopdes-test.local", seedPassword, "admin@kopdes-test.local");
     const zeroSKU = `HABIS-${uniq}`;
     const okSKU = `ANTAR-${uniq}`;
-    const setupOK = await page.evaluate(async ({ base, zeroSKU, okSKU }) => {
+    const setupOK = await page.evaluate(async ({ base, zeroSKU, okSKU, uniq }) => {
       const postProd = async (sku: string, nama: string, stok: number) => {
         const r = await fetch(`${base}/api/v1/katalog/produk`, {
           method: "POST", credentials: "include",
@@ -480,7 +491,7 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
         return r.ok;
       };
       return (await postProd(zeroSKU, `Produk Kosong ${uniq}`, 0)) && (await postProd(okSKU, `Produk Antar ${uniq}`, 5));
-    }, { base: apiBase, zeroSKU, okSKU });
+    }, { base: apiBase, zeroSKU, okSKU, uniq });
     expect(setupOK).toBeTruthy();
     await logoutUI(page);
 
@@ -515,14 +526,17 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await page.getByTestId("search-reg").fill(`Calon Tolak ${uniq}`);
     await expect(page.locator("table")).toContainText("*");
     await page.locator("table button", { hasText: "Tinjau" }).first().click();
-    const kycImgOk = await page.locator(".preview-img").first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0);
-    expect(kycImgOk).toBeTruthy();
+    await expect(page.locator(".preview-img").first()).toBeVisible({ timeout: 10_000 });
+    await expect.poll(async () =>
+      page.locator(".preview-img").first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)
+    ).toBeTruthy();
 
     await page.getByTestId("reg-catatan").fill("Foto KTP buram");
     await page.getByTestId("btn-reg-perbaikan").click();
     await expect(page.getByTestId("reg-decision-ok")).toContainText("perlu_perbaikan");
 
     await page.getByTestId("filter-reg-status").selectOption("perlu_perbaikan");
+    await expect(page.locator("table tbody tr").first()).toContainText("perlu_perbaikan");
     await page.locator("table button", { hasText: "Tinjau" }).first().click();
     await page.getByTestId("reg-catatan").fill("Melampaui batas kelayakan");
     await page.getByTestId("btn-reg-tolak").click();
@@ -556,8 +570,8 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     // Bendahara tolak bukti pertama via sidebar Dashboard
     await loginUI(page, "bendahara@kopdes-test.local", seedPassword, "bendahara@kopdes-test.local");
     await page.locator("#sb-ver-pay").click();
-    await expect(page.locator("body")).toContainText("BLOCKED: butuh keputusan pemilik");
     await page.getByTestId(`ver-pay-${payNomor1}`).click();
+    await expect(page.locator("body")).toContainText("BLOCKED: butuh keputusan pemilik");
     await page.locator(".preview-img").first().waitFor({ state: "visible" });
     await page.getByTestId("ver-pay-alasan").fill("Nominal buram tidak terbaca");
     await page.getByTestId("btn-pay-tolak").click();
@@ -599,7 +613,9 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await page.getByTestId("nav-pesanan").click();
     await page.getByTestId(`detail-ord-${ordNomor}`).click();
     await page.getByTestId("btn-status-diproses").click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toContainText("diproses");
     await page.getByTestId("btn-status-diantar").click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toContainText("diantar");
     await page.getByTestId("btn-status-selesai").click();
     await expect(page.getByTestId("detail-pesanan-judul")).toContainText("selesai");
     await logoutUI(page);

@@ -21,7 +21,12 @@ AGE_KEYFILE="${TMP_ROOT}/ci-age-private.key"
 mkdir -p "${KYC_TMP}" "${BUKTI_TMP}" "${BACKUP_TMP}"
 
 cleanup() {
+  rc=$?
   docker compose --env-file "${ENV_FILE}" --profile app --profile worker logs --no-color > "${OUT_DIR}/compose_logs.txt" 2>&1 || true
+  if [ "${rc}" -ne 0 ] && [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f "${LOG_FILE:-}" ]; then
+    ERR_TAIL=$(tail -n 25 "${LOG_FILE}" | tr '\r\n' ' ' | sed 's/%/%25/g')
+    echo "::error title=ci_deploy_e2e failed (exit=${rc})::${ERR_TAIL}"
+  fi
   docker compose --env-file "${ENV_FILE}" --profile app --profile worker down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "${TMP_ROOT}"
 }
@@ -60,7 +65,7 @@ echo "Worker /healthz: ${WORKER_HEALTH}"
 echo "${WORKER_HEALTH}" | grep -q '"status":"UP"'
 
 ROLE_CHECK=$(docker compose --env-file "${ENV_FILE}" --profile app --profile worker exec -T postgres \
-  psql -U kopdes_migrator -d "${DB_NAME}" -t -A -c "SELECT rolname || '|super=' || rolsuper || '|bypassrls=' || rolbypassrls FROM pg_roles WHERE rolname = 'kopdes_app';")
+  psql -p "${DB_PORT}" -U kopdes_migrator -d "${DB_NAME}" -t -A -c "SELECT rolname || '|super=' || rolsuper || '|bypassrls=' || rolbypassrls FROM pg_roles WHERE rolname = 'kopdes_app';")
 echo "Role DB Runtime: ${ROLE_CHECK}"
 [ "${ROLE_CHECK}" = "kopdes_app|super=f|bypassrls=f" ]
 
@@ -242,7 +247,7 @@ _, ver = bend.req("POST", f"/api/v1/pembayaran/{pay_id}/verifikasi", {
     "nominal_dibayar": pay_obj["nominal_total"],
     "alasan": "Transfer QRIS cocok di deploy CI",
 })
-assert ver["data"]["pembayaran"]["status"] == "lunas", ver
+assert ver["data"]["status"] == "lunas", ver
 
 for next_st in ("diproses", "siap_diambil", "selesai"):
     _, upd = admin.req("PATCH", f"/api/v1/pesanan/{ord_id}/status", {"status": next_st})
@@ -251,12 +256,14 @@ for next_st in ("diproses", "siap_diambil", "selesai"):
 _, cat = member.req("GET", "/api/v1/katalog/produk")
 matched = [p for p in cat["data"] if p["id"] == prod_id][0]
 assert matched["stok"] == 8 and matched["stok_tertahan"] == 0, matched
-print(f"DEPLOY E2E PASS: order={co['data']['nomor_pesanan']} payment={pay_obj['nomor_pembayaran']} total={pay_obj['nominal_total']} status=lunas->selesai stok=10->8")
+summary_line = f"order={co['data']['nomor_pesanan']} payment={pay_obj['nomor_pembayaran']} total={pay_obj['nominal_total']} status=lunas->selesai stok=10->8"
+print(f"DEPLOY E2E PASS: {summary_line}")
 PY
 
 echo "=== [4/6] Menyalin Blob Storage Terenkripsi dari Volume Compose & Mengecek Ciphertext ==="
 docker compose --env-file "${ENV_FILE}" --profile app --profile worker cp api:/app/storage/kyc/. "${KYC_TMP}/"
 docker compose --env-file "${ENV_FILE}" --profile app --profile worker cp api:/app/storage/bukti/. "${BUKTI_TMP}/"
+chmod -R u+rX "${KYC_TMP}" "${BUKTI_TMP}" 2>/dev/null || true
 KYC_FILES=$(find "${KYC_TMP}" -type f | wc -l)
 BUKTI_FILES=$(find "${BUKTI_TMP}" -type f | wc -l)
 echo "Berkas .enc ditemukan: KYC=${KYC_FILES} Bukti=${BUKTI_FILES}"
@@ -264,6 +271,8 @@ echo "Berkas .enc ditemukan: KYC=${KYC_FILES} Bukti=${BUKTI_FILES}"
 [ "${BUKTI_FILES}" -ge 1 ]
 
 echo "=== [5/6] Backup Terenkripsi age Asli & Restore Drill ==="
+pg_dump --version
+age --version
 age-keygen -o "${AGE_KEYFILE}" 2>/dev/null
 AGE_PUB=$(grep '^# public key: ' "${AGE_KEYFILE}" | awk '{print $4}')
 ENV_FILE="${ENV_FILE}" DB_HOST=127.0.0.1 POSTGRES_USER=kopdes_migrator \
@@ -278,4 +287,9 @@ ENV_FILE="${ENV_FILE}" DB_HOST=127.0.0.1 POSTGRES_USER=kopdes_migrator \
 
 echo "=== [6/6] Status Akhir Kontainer ==="
 docker compose --env-file "${ENV_FILE}" --profile app --profile worker ps
+DEPLOY_PASS_LINE=$(grep -E '^DEPLOY E2E PASS:' "${LOG_FILE}" | tail -n 1 || true)
+DRILL_PASS_LINE=$(grep -E '^RESTORE DRILL BERHASIL:' "${LOG_FILE}" | tail -n 1 || true)
 echo "CI DEPLOY E2E + AGE BACKUP/RESTORE PASS"
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  echo "::notice title=Docker Compose Deploy E2E + age Drill::role=${ROLE_CHECK} | ${DEPLOY_PASS_LINE} | enc_files=(kyc=${KYC_FILES},bukti=${BUKTI_FILES}) | ${DRILL_PASS_LINE}"
+fi

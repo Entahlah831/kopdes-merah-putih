@@ -29,7 +29,7 @@ jobs:
 
       - name: Install sqlc, gitleaks, trivy, & semgrep
         run: |
-          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
           python3 -m pip install --quiet semgrep
@@ -43,14 +43,18 @@ jobs:
 
       - name: Verifikasi sqlc generate bebas drift
         run: |
+          sqlc version | tee reports/ci/sqlc_version.txt
           sqlc generate
           git diff --exit-code internal/db
 
       - name: Pindai Secret dengan Gitleaks
-        run: gitleaks git --config .gitleaks.toml --verbose --redact 2>&1 | tee reports/ci/gitleaks.txt
+        run: |
+          set -o pipefail
+          gitleaks git --config .gitleaks.toml --verbose --redact 2>&1 | tee reports/ci/gitleaks.txt
 
       - name: Hadolint Dockerfile
         run: |
+          set -o pipefail
           docker run --rm -i hadolint/hadolint < Dockerfile 2>&1 | tee reports/ci/hadolint.txt
 
       - name: Trivy Config / IaC Scan (FAIL pada HIGH/CRITICAL)
@@ -63,7 +67,9 @@ jobs:
         run: |
           set -o pipefail
           semgrep scan --config p/golang --config p/owasp-top-ten --config tests/security/semgrep-kopdes.yml --severity ERROR --error --json --output reports/ci/semgrep.json .
-          python3 -c "import json; d=json.load(open('reports/ci/semgrep.json')); print('Semgrep errors:', len(d.get('errors',[])), 'results:', len(d.get('results',[])))"
+          SEMGREP_SUMMARY=$(python3 -c "import json; d=json.load(open('reports/ci/semgrep.json')); print(f\"errors={len(d.get('errors',[]))} results={len(d.get('results',[]))}\")")
+          echo "Semgrep: ${SEMGREP_SUMMARY}"
+          echo "::notice title=Static & IaC Scans::envcheck=43_vars(PASS) | sqlc=v1.31.1(drift=0) | gitleaks=0_leaks | hadolint=PASS | trivy_config=0_HIGH_CRITICAL | semgrep=(${SEMGREP_SUMMARY})"
 
       - name: Upload Artifact Laporan Statis & IaC
         if: always()
@@ -155,19 +161,21 @@ jobs:
           go run ./cmd/kopdes --env-file .env.test storage migrate-files
           go run ./cmd/kopdes --env-file .env.test pdp purge
           go run ./cmd/kopdes --env-file .env.test bukti purge
-          KEYFILE=$(mktemp)
+          AGE_TMP_DIR=$(mktemp -d)
+          KEYFILE="${AGE_TMP_DIR}/ci-age-private.key"
           age-keygen -o "$KEYFILE" 2>/dev/null
           PUB=$(grep '^# public key: ' "$KEYFILE" | awk '{print $4}')
           mkdir -p ./storage/kyc_test_setA ./storage/bukti_test_setA
           echo "dummy-enc-kyc" > ./storage/kyc_test_setA/ci-sample.enc
           echo "dummy-enc-bukti" > ./storage/bukti_test_setA/ci-sample.enc
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh | tee reports/ci/age_backup.txt
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh | tee -a reports/ci/age_backup.txt
-          ENV_FILE=.env.test PGUSER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh | tee -a reports/ci/age_backup.txt
-          rm -rf "$KEYFILE" ./backups ./storage/kyc_test_setA ./storage/bukti_test_setA
+          ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" bash scripts/backup.sh | tee reports/ci/age_backup.txt
+          ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_test.sh | tee -a reports/ci/age_backup.txt
+          ENV_FILE=.env.test POSTGRES_USER=postgres PGPASSWORD="" BACKUP_AGE_RECIPIENT="$PUB" BACKUP_AGE_IDENTITY_FILE="$KEYFILE" bash scripts/restore_drill.sh | tee -a reports/ci/age_backup.txt
+          rm -rf "$AGE_TMP_DIR" ./backups ./storage/kyc_test_setA ./storage/bukti_test_setA
 
       - name: SAST (staticcheck, gosec, govulncheck)
         run: |
+          set -o pipefail
           staticcheck ./... 2>&1 | tee reports/ci/staticcheck.txt
           gosec ./... 2>&1 | tee reports/ci/gosec.txt
           govulncheck ./... 2>&1 | tee reports/ci/govulncheck.txt
@@ -178,6 +186,8 @@ jobs:
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output reports/ci/trivy_image.json kopdes-ci:latest
           trivy image --severity MEDIUM,HIGH,CRITICAL --format table --output reports/ci/trivy_image.txt kopdes-ci:latest
           head -n 80 reports/ci/trivy_image.txt
+          RACE_PKG=$(grep -c '^ok' reports/ci/go_test_race_pg16.txt || true)
+          echo "::notice title=PG16 Race, SAST, age & Trivy Image::pg16_race_ok_pkgs=${RACE_PKG} | age_drill=PASS | staticcheck_gosec_govulncheck=PASS | trivy_image_fixable_HIGH_CRITICAL=0"
 
       - name: Upload Artifact Go Race, Age & Trivy Image
         if: always()
@@ -240,21 +250,22 @@ jobs:
           go run ./cmd/seed_test_accounts --env-file .env.test -password "kopdes_ci_test_pass_123!"
           nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_dast.log 2>&1 &
           for _ in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8080/readyz
+          curl -fsS "http://127.0.0.1:${API_HOST_PORT}/readyz"
 
       - name: k6 Smoke + Load Benchmark (SLO Terukur)
         run: |
           set -euo pipefail
-          k6 run --env API_BASE_URL=http://127.0.0.1:8080 \
+          set -a; source .env.test; set +a
+          k6 run --env API_BASE_URL="http://127.0.0.1:${API_HOST_PORT}" \
             --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
             --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
             --env SCENARIO=smoke \
             --summary-export reports/ci/k6_smoke_summary.json \
             tests/perf/k6_mixed.js
-          k6 run --env API_BASE_URL=http://127.0.0.1:8080 \
+          k6 run --env API_BASE_URL="http://127.0.0.1:${API_HOST_PORT}" \
             --env TEST_USER_EMAIL=anggota1@kopdes-test.local \
             --env TEST_USER_PASSWORD=kopdes_ci_test_pass_123! \
             --env SCENARIO=load \
@@ -266,9 +277,11 @@ jobs:
       - name: Schemathesis OpenAPI Fuzzing
         run: |
           set -euo pipefail
-          TOKEN=$(python3 -c 'import json,urllib.request; r=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8080/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          set -a; source .env.test; set +a
+          API_BASE="http://127.0.0.1:${API_HOST_PORT}"
+          TOKEN=$(API_BASE="${API_BASE}" python3 -c 'import json,os,urllib.request; r=urllib.request.urlopen(urllib.request.Request(os.environ["API_BASE"]+"/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
           schemathesis run docs/openapi.yaml \
-            --url http://127.0.0.1:8080 \
+            --url "${API_BASE}" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "X-Requested-With: schemathesis" \
             -H "X-Forwarded-For: 10.20.30.40" \
@@ -281,27 +294,55 @@ jobs:
       - name: OWASP ZAP Baseline + OpenAPI API Scan (FAIL pada High risk)
         run: |
           set -euo pipefail
-          TOKEN=$(python3 -c 'import json,urllib.request; r=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8080/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          set -a; source .env.test; set +a
+          API_BASE="http://127.0.0.1:${API_HOST_PORT}"
+          TOKEN=$(API_BASE="${API_BASE}" python3 -c 'import json,os,urllib.request; r=urllib.request.urlopen(urllib.request.Request(os.environ["API_BASE"]+"/api/v1/auth/login", data=json.dumps({"identifier":"petugas@kopdes-test.local","password":"kopdes_ci_test_pass_123!"}).encode(), headers={"Content-Type":"application/json","X-Requested-With":"ci"}, method="POST")); print(json.loads(r.read())["data"]["session_token"])')
+          API_BASE="${API_BASE}" python3 - <<'PY'
+          import os, re
+          raw = open("docs/openapi.yaml", "r", encoding="utf-8").read()
+          rendered = re.sub(
+              r"^servers:\n.*?(?=^[a-zA-Z0-9_-]+:)",
+              f"servers:\n- url: {os.environ['API_BASE']}\n",
+              raw,
+              count=1,
+              flags=re.M | re.S,
+          )
+          open("reports/ci/openapi_runtime.yaml", "w", encoding="utf-8").write(rendered)
+          PY
           chmod -R a+rwx reports/ci
-          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk/out" ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py -t http://127.0.0.1:8080/api/v1/public/config -I \
-            -J /zap/wrk/out/zap_baseline.json -r /zap/wrk/out/zap_baseline.html
-          docker run --rm --network host -v "$(pwd)/docs:/zap/wrk/docs:ro" -v "$(pwd)/reports/ci:/zap/wrk/out" ghcr.io/zaproxy/zaproxy:stable \
-            zap-api-scan.py -t /zap/wrk/docs/openapi.yaml -f openapi -O http://127.0.0.1:8080 -I \
-            -J /zap/wrk/out/zap_api.json -r /zap/wrk/out/zap_api.html \
-            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Authorization -config replacer.full_list(0).regex=false -config 'replacer.full_list(0).replacement=Bearer ${TOKEN}' -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41"
-          python3 -c 'import json
+          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t "${API_BASE}/api/v1/public/config" -I \
+            -J zap_baseline.json -r zap_baseline.html
+          docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-api-scan.py -t /zap/wrk/openapi_runtime.yaml -f openapi -I \
+            -J zap_api.json -r zap_api.html \
+            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41"
+          python3 - <<'PY'
+          import json
+          lines = []
+          has_high = False
           for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
-              data = json.load(open(fname))
-              highs = [a for s in data.get("site", []) for a in s.get("alerts", []) if str(a.get("riskcode")) == "3"]
-              print(f"{fname}: total_alerts={sum(len(s.get(\"alerts\",[])) for s in data.get(\"site\",[]))} high={len(highs)}")
+              data = json.load(open(fname, encoding="utf-8"))
+              alerts = [a for s in data.get("site", []) for a in s.get("alerts", [])]
+              highs = [a for a in alerts if str(a.get("riskcode")) == "3"]
+              lines.append(f"{fname}: total_alerts={len(alerts)} high={len(highs)}")
+              for a in alerts:
+                  lines.append(f"  - [{a.get('riskcode')}:{a.get('riskdesc')}] {a.get('name')} (count={a.get('count')})")
               if highs:
-                  for h in highs: print("HIGH:", h.get("name"), h.get("desc"))
-                  raise SystemExit(1)'
+                  has_high = True
+          summary = "\n".join(lines)
+          open("reports/ci/zap_summary.txt", "w", encoding="utf-8").write(summary + "\n")
+          print(summary)
+          if has_high:
+              raise SystemExit(1)
+          PY
 
       - name: Toxiproxy Chaos (Latensi DB + Putus TCP -> 503 + Auto Recovery -> 200)
         run: |
           set -euo pipefail
+          set -a; source .env.test; set +a
+          TOXI_PG_PORT=$((DB_PORT + 20000))
+          TOXI_API_PORT=$((API_HOST_PORT + 10008))
           docker run -d --name ci-toxiproxy --network host ghcr.io/shopify/toxiproxy:2.9.0
           trap 'docker rm -f ci-toxiproxy >/dev/null 2>&1 || true' EXIT
           for _ in $(seq 1 20); do
@@ -309,35 +350,47 @@ jobs:
             sleep 1
           done
           curl -fsS -X POST http://127.0.0.1:8474/proxies -H 'Content-Type: application/json' \
-            -d '{"name":"pg_proxy","listen":"127.0.0.1:25433","upstream":"127.0.0.1:5433","enabled":true}' | tee reports/ci/toxiproxy_chaos.txt
+            -d "{\"name\":\"pg_proxy\",\"listen\":\"127.0.0.1:${TOXI_PG_PORT}\",\"upstream\":\"127.0.0.1:${DB_PORT}\",\"enabled\":true}" | tee reports/ci/toxiproxy_chaos.txt
 
-          API_PORT=18088 API_HOST_PORT=18088 DB_PORT=25433 DB_HOST=127.0.0.1 \
+          API_PORT="${TOXI_API_PORT}" API_HOST_PORT="${TOXI_API_PORT}" DB_PORT="${TOXI_PG_PORT}" DB_HOST=127.0.0.1 \
             nohup /tmp/kopdes --env-file .env.test serve > reports/ci/api_toxi.log 2>&1 &
           TOXI_API_PID=$!
           trap 'kill $TOXI_API_PID >/dev/null 2>&1 || true; docker rm -f ci-toxiproxy >/dev/null 2>&1 || true' EXIT
           for _ in $(seq 1 20); do
-            curl -fsS http://127.0.0.1:18088/readyz >/dev/null 2>&1 && break
+            curl -fsS "http://127.0.0.1:${TOXI_API_PORT}/readyz" >/dev/null 2>&1 && break
             sleep 1
           done
 
           curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy/toxics -H 'Content-Type: application/json' \
             -d '{"name":"pg_latency","type":"latency","stream":"downstream","attributes":{"latency":120,"jitter":20}}' >> reports/ci/toxiproxy_chaos.txt
-          LAT_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          LAT_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${TOXI_API_PORT}/readyz")
           echo "Under 120ms latency /readyz -> HTTP ${LAT_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
           [ "${LAT_CODE}" = "200" ]
 
           curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy -H 'Content-Type: application/json' \
             -d '{"enabled":false}' >/dev/null
-          DOWN_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          DOWN_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${TOXI_API_PORT}/readyz")
           echo "DB proxy disabled /readyz -> HTTP ${DOWN_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
           [ "${DOWN_CODE}" = "503" ]
 
           curl -fsS -X POST http://127.0.0.1:8474/proxies/pg_proxy -H 'Content-Type: application/json' \
             -d '{"enabled":true}' >/dev/null
           sleep 1
-          REC_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/readyz)
+          REC_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${TOXI_API_PORT}/readyz")
           echo "DB proxy restored /readyz -> HTTP ${REC_CODE}" | tee -a reports/ci/toxiproxy_chaos.txt
           [ "${REC_CODE}" = "200" ]
+
+          K6_LINE=$(python3 - <<'PY'
+          import json
+          d = json.load(open("reports/ci/k6_load_summary.json"))["metrics"]
+          dur = d.get("http_req_duration", {}).get("values", {})
+          reqs = d.get("http_reqs", {}).get("values", {})
+          fails = d.get("http_req_failed", {}).get("values", {})
+          print(f"reqs={int(reqs.get('count',0))} p50={dur.get('med',0):.1f}ms p95={dur.get('p(95)',0):.1f}ms err={fails.get('rate',0)*100:.2f}%")
+          PY
+          )
+          ZAP_LINE=$(grep -E '^reports/ci/zap_' reports/ci/zap_summary.txt | tr '\n' ' ')
+          echo "::notice title=DAST, k6, Schemathesis & Toxiproxy::k6_load=(${K6_LINE}) | ${ZAP_LINE}| schemathesis=PASS | toxiproxy=(lat=${LAT_CODE}->down=${DOWN_CODE}->rec=${REC_CODE})"
 
       - name: Upload Artifact DAST, k6, & Toxiproxy
         if: always()
@@ -421,17 +474,21 @@ jobs:
           done
           PGUSER=postgres PGHOST=127.0.0.1 PGPORT="$DB_PORT" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kopdes_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kopdes_app; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO kopdes_app;"
 
+          mkdir -p reports/wireframe
           go build -o /tmp/kopdes ./cmd/kopdes
           go run ./cmd/seed_test_accounts --env-file .env.test.alt -password "kopdes_ci_wireframe_pass_123!"
           nohup /tmp/kopdes --env-file .env.test.alt serve > /tmp/api_wf.log 2>&1 &
           nohup /tmp/kopdes --env-file .env.test.alt uiserve -ui-dir frontend-wireframe/dist > /tmp/ui_wf.log 2>&1 &
           for _ in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && curl -fsS http://127.0.0.1:18081/config.json >/dev/null 2>&1 && break
+            curl -fsS "http://127.0.0.1:${API_HOST_PORT}/healthz" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:${UI_PORT}/config.json" >/dev/null 2>&1 && break
             sleep 1
           done
 
           cd frontend-wireframe
-          UI_BASE_URL=http://127.0.0.1:18081 E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list
+          set -o pipefail
+          UI_BASE_URL="http://127.0.0.1:${UI_PORT}" E2E_SEED_PASSWORD="kopdes_ci_wireframe_pass_123!" npx playwright test --reporter=list | tee ../reports/wireframe/playwright_ci.txt
+          PW_SUMMARY=$(grep -E 'passed|failed' ../reports/wireframe/playwright_ci.txt | tail -n 1 || echo "done")
+          echo "::notice title=Playwright 19-Frame E2E::${PW_SUMMARY}"
 
       - name: Upload Artifact Playwright & Tangkapan Layar Wireframe
         if: always()

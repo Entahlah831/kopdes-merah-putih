@@ -27,6 +27,8 @@ services:
       - ./db/migrations:/docker-migrations:ro
     networks:
       - kopdes_test_internal
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kopdes_migrator -d ${DB_NAME} -p ${DB_PORT}"]
       interval: 5s
@@ -93,6 +95,8 @@ services:
       - bukti_test_storage:/app/storage/bukti
     networks:
       - kopdes_test_internal
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${API_PORT}/healthz >/dev/null"]
       interval: 10s
@@ -164,6 +168,8 @@ services:
       - bukti_test_storage:/app/storage/bukti
     networks:
       - kopdes_test_internal
+    security_opt:
+      - no-new-privileges:true
 
   uitester:
     build:
@@ -196,3 +202,5 @@ services:
       - "127.0.0.1:${UI_PORT:?UI_PORT wajib disetel}:${UI_PORT:?UI_PORT wajib disetel}"
     networks:
       - kopdes_test_internal
+    security_opt:
+      - no-new-privileges:true

@@ -18,23 +18,35 @@ mkdir -p "${OUT_DIR}"
 
 echo "[ZAP 1/2] Menjalankan OWASP ZAP Baseline Scan terhadap ${TARGET_URL}/api/v1/public/config"
 docker run --rm --network host \
-  -v "$(pwd)/${OUT_DIR}:/zap/wrk/out" \
+  -v "$(pwd)/${OUT_DIR}:/zap/wrk:rw" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-baseline.py \
   -t "${TARGET_URL}/api/v1/public/config" \
   -I \
-  -J /zap/wrk/out/zap_baseline_report.json \
-  -r /zap/wrk/out/zap_baseline_report.html
+  -J zap_baseline_report.json \
+  -r zap_baseline_report.html
+
+TARGET_URL="${TARGET_URL}" OUT_DIR="${OUT_DIR}" python3 - <<'PY'
+import os, re
+raw = open("docs/openapi.yaml", "r", encoding="utf-8").read()
+rendered = re.sub(
+    r"^servers:\n.*?(?=^[a-zA-Z0-9_-]+:)",
+    f"servers:\n- url: {os.environ['TARGET_URL']}\n",
+    raw,
+    count=1,
+    flags=re.M | re.S,
+)
+with open(os.path.join(os.environ["OUT_DIR"], "openapi_runtime.yaml"), "w", encoding="utf-8") as f:
+    f.write(rendered)
+PY
 
 echo "[ZAP 2/2] Menjalankan OWASP ZAP OpenAPI API Scan terhadap ${TARGET_URL}"
 docker run --rm --network host \
-  -v "$(pwd)/docs:/zap/wrk/docs:ro" \
-  -v "$(pwd)/${OUT_DIR}:/zap/wrk/out" \
+  -v "$(pwd)/${OUT_DIR}:/zap/wrk:rw" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-api-scan.py \
-  -t /zap/wrk/docs/openapi.yaml \
+  -t /zap/wrk/openapi_runtime.yaml \
   -f openapi \
-  -O "${TARGET_URL}" \
   -I \
-  -J /zap/wrk/out/zap_api_report.json \
-  -r /zap/wrk/out/zap_api_report.html
+  -J zap_api_report.json \
+  -r zap_api_report.html

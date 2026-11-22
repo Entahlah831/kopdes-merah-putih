@@ -554,11 +554,25 @@ jobs:
 
           K6_LINE=$(python3 - <<'PY'
           import json
-          d = json.load(open("reports/ci/k6_load_summary.json"))["metrics"]
-          dur = d.get("http_req_duration", {}).get("values", {})
-          reqs = d.get("http_reqs", {}).get("values", {})
-          fails = d.get("http_req_failed", {}).get("values", {})
-          print(f"reqs={int(reqs.get('count',0))} p50={dur.get('med',0):.1f}ms p95={dur.get('p(95)',0):.1f}ms err={fails.get('rate',0)*100:.2f}%")
+          d = json.load(open("reports/ci/k6_load_summary.json", encoding="utf-8"))["metrics"]
+          def mvals(name):
+              m = d.get(name, {})
+              return m.get("values", m) if isinstance(m, dict) else {}
+          dur = mvals("http_req_duration")
+          reqs = mvals("http_reqs")
+          fails = mvals("http_req_failed")
+          read_m = mvals("kopdes_read_duration")
+          write_m = mvals("kopdes_write_duration")
+          unexp = mvals("kopdes_unexpected_error")
+          req_cnt = int(reqs.get("count", 0))
+          assert req_cnt > 0, f"k6 http_reqs.count harus > 0, dapat {req_cnt}"
+          fail_rate = fails.get("rate", fails.get("value", 0))
+          unexp_rate = unexp.get("rate", unexp.get("value", 0))
+          print(
+              f"reqs={req_cnt} p50={dur.get('med', 0):.1f}ms p95={dur.get('p(95)', 0):.1f}ms "
+              f"read_p95={read_m.get('p(95)', 0):.1f}ms write_p95={write_m.get('p(95)', 0):.1f}ms "
+              f"err={fail_rate*100:.2f}% unexp={unexp_rate*100:.2f}%"
+          )
           PY
           )
           ZAP_LINE=$(grep -E '^reports/ci/zap_' reports/ci/zap_summary.txt | tr '\n' ' ')

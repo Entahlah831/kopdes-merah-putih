@@ -83,3 +83,16 @@ Mengapa pemindai ZAP melaporkan `otherinfo: The page results were successfully m
    - `pg_syntax_errors == 0` di log container PostgreSQL selama rentang pemindaian;
    - `api_sql_errors == 0` dan `api_500 == 0` di log runtime server API selama rentang pemindaian.
 3. Apabila di masa depan salah satu dari kedua endpoint publik tersebut memicu `pg_syntax_errors > 0`, `api_sql_errors > 0`, atau varian error-based/time-based `40018` yang bukan `boolean conditions`, job CI akan tetap gagal.
+
+## 7. Verifikasi Empiris Pasca-Pacing (CI Run `44988458803`)
+
+Setelah pemindaian aktif ZAP diturunkan ke mode sekuensial (`-config scanner.threadPerHost=1 -config scanner.delayInMs=50`, tetap dengan aturan `40018` menyala penuh pada seluruh rute OpenAPI) pada commit [`5c3224a`](https://github.com/Entahlah831/kopdes-merah-putih/commit/5c3224a) — CI Run [`44988458803`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44988458803) lulus **5/5 job** dengan hasil empiris verbatim sebagai berikut:
+
+- `reports/ci/zap_baseline.json: total_alerts=2 high=0 med=0`
+- `reports/ci/zap_api.json: total_alerts=5 high=0 med=0`
+- `OWASP ZAP Findings (Medium+): NONE (0 Unexcluded High, 0 Medium) | triaged_fp=0 low_alerts=2 info_alerts=5`
+- `OWASP ZAP Triaged FP: NONE (0 triaged FP)`
+- `ZAP Triage Evidence (No Payloads): pg_log_errors=0 pg_syntax_errors=0 api_500=0 api_sql_errors=0 guard_ok=True | no-med-high-instances`
+
+Hasil empiris ini membuktikan bahwa seluruh 12 jalur yang sempat memicu `40018` pada dua run paralel sebelumnya memang murni artefak perbedaan status HTTP akibat `IPRateLimiter` (`30 rps`): ketika kecepatan pemindai berada di bawah ambang batas laju (`<=20 req/s`), ZAP menghasilkan **0 temuan High**, **0 temuan Medium**, bahkan daftar pengecualian terlingkup pada [`zap_false_positives.json`](../../tests/security/zap_false_positives.json) tidak perlu terpicu sama sekali (`triaged_fp=0`).
+

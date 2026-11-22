@@ -2,9 +2,9 @@
 
 Dokumen ini berisi langkah-langkah yang **wajib dilakukan langsung oleh pemilik sistem** pada `.env` asli, penyimpanan kunci backup off-server, dan keputusan kebijakan bisnis sebelum go-live (agen dilarang membaca, mengubah, atau mengomit `.env` asli).
 
-## 1. Sinkronisasi `.env` Asli dari `.env.example` (51 Variabel)
+## 1. Sinkronisasi `.env` Asli dari `.env.example` (43 Variabel <= 45)
 
-Jalankan skrip sinkronisasi agar seluruh 51 kunci variabel terbaru (termasuk `WORKER_PORT`, `WORKER_TICK_INTERVAL`, `SLO_READ_P95_MS`, `SLO_WRITE_P95_MS`, `SLO_MAX_ERROR_RATE`) hadir tanpa menimpa rahasia yang sudah Anda isi:
+Jalankan skrip sinkronisasi agar seluruh 43 kunci variabel terbaru hadir tanpa menimpa rahasia yang sudah Anda isi (termasuk `WORKER_PORT`; catatan penghapusan 8 var opsional & alasan lengkap ada di [ENV_REFERENCE.md](ENV_REFERENCE.md)):
 
 - **Windows (PowerShell):**
   ```powershell
@@ -49,7 +49,7 @@ Pastikan variabel berikut juga disetel unik dengan CSPRNG (`openssl rand -hex 32
 | `STOCK_HOLD_MINUTES` | `60` | **KEPUTUSAN PEMILIK** — lama tahanan stok tertahan saat checkout (`>= PAYMENT_EXPIRY_DURATION` dalam menit). |
 | `DUAL_CONTROL_BREAKGLASS_ENABLED` | `false` | **KEPUTUSAN PEMILIK** — aktifkan `true` hanya sementara jika koperasi sedang kekurangan staf (1 admin darurat); tetap butuh `mfa_code` TOTP terbaru & alasan >= 10 karakter + audit log khusus. |
 | `ALLOW_PERSONAL_PAYMENT_PILOT` | `false` | **KEPUTUSAN PEMILIK** & **PERLU VERIFIKASI HUKUM** — tetap `false` sampai QRIS badan hukum koperasi terbit; jika dipakai pilot, dikunci `PILOT_MAX_PER_TX=500000` & `PILOT_MAX_PER_DAY=2000000`. |
-| `QRIS_UNIQUE_DIGITS` | `3` | **KEPUTUSAN PEMILIK** — `3` digit (`1..999`, cukup untuk `PENDING_LIMIT_GLOBAL=50`) atau `4` digit (`1..9999`). |
+| `QRIS_UNIQUE_DIGITS` | `3` | **KEPUTUSAN PEMILIK** — `3` digit (`1..999`, cukup untuk batas default 50 transaksi pending global) atau `4` digit (`1..9999`). |
 | `PDP_REJECTED_RETENTION_DAYS` | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
 | `BUKTI_RETENTION_DAYS` | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
 | `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |

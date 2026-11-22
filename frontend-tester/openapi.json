@@ -4,7 +4,7 @@
   "info": {
     "title": "API Kopdes Merah Putih (Backend Ramping)",
     "version": "2.1.0-lean",
-    "description": "Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 51 variabel env).\nAutentikasi utama memakai cookie HttpOnly (__Host-kopdes_session / kopdes_session) dengan CSRFGuard (Origin + X-Requested-With) dan Bearer opsional bila ALLOW_BEARER_AUTH=true + MFA TOTP wajib untuk admin & bendahara.\nCatatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak & 365 hari bukti non-lunas ditandai PERLU VERIFIKASI HUKUM; klasifikasi iuran & koreksi refund ditandai KEPUTUSAN AKUNTAN.\n"
+    "description": "Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 43 variabel env).\nAutentikasi utama memakai cookie HttpOnly (__Host-kopdes_session / kopdes_session) dengan CSRFGuard (Origin + X-Requested-With) dan Bearer opsional bila ALLOW_BEARER_AUTH=true + MFA TOTP wajib untuk admin & bendahara.\nCatatan hukum/akuntansi: masa retensi 30 hari data pendaftaran ditolak & 365 hari bukti non-lunas ditandai PERLU VERIFIKASI HUKUM; klasifikasi iuran & koreksi refund ditandai KEPUTUSAN AKUNTAN.\n"
   },
   "servers": [
     {

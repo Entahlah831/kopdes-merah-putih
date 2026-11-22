@@ -1,7 +1,7 @@
 # Laporan Akhir Modular Monolith, Wireframe Figma, & Eksperimen Microservice (`Prompt v9`)
 
 - **Branch Kerja:** `modular-and-wireframe` *(bermula dari `decision-audit` / tag `pre-modular` = `448da13`)*
-- **Ringkasan Eksekutif:** Sistem **Kopdes Merah Putih** tetap berada dalam **Modular Monolith** terstruktur (`8` modul domain dengan kontrak `internal/<modul>/api`, `internal/filestore`, `internal/uiserve`, `internal/worker`, biner tunggal `kopdes`, satu `docker-compose.yml`, dan satu sumber `.env` tepat **51 variabel**), telah melewati pengujian ulang beban, chaos, keamanan, portabilitas Set C port acak, dan implementasi UI referensi Wireframe Figma end-to-end. Eksperimen microservice `spike/filesvc` (`ADR-0002`) terbukti cepat (`+1.013 ms` delta p95) dan terisolasi (`503` saat mati, pulih `200`), namun **ditolak sementara** agar operasional tetap ramping untuk 1 developer di 1 VPS.
+- **Ringkasan Eksekutif:** Sistem **Kopdes Merah Putih** tetap berada dalam **Modular Monolith** terstruktur (`8` modul domain dengan kontrak `internal/<modul>/api`, `internal/filestore`, `internal/uiserve`, `internal/worker`, biner tunggal `kopdes`, satu `docker-compose.yml`, dan satu sumber `.env` — dipangkas pasca audit dari 51 menjadi **43 variabel <= 45** dengan alasan tertulis di [ENV_REFERENCE.md](ENV_REFERENCE.md)), telah melewati pengujian ulang beban, chaos, keamanan, portabilitas Set C port acak, dan implementasi UI referensi Wireframe Figma end-to-end. Eksperimen microservice `spike/filesvc` (`ADR-0002`) terbukti cepat (`+1.013 ms` delta p95) dan terisolasi (`503` saat mati, pulih `200`), namun **ditolak sementara** agar operasional tetap ramping untuk 1 developer di 1 VPS.
 
 ---
 
@@ -55,7 +55,7 @@ Sumber: [perf_baseline.json](../reports/baseline/perf_baseline.json) & [perf_fin
 
 1. **Fase 1 — Modular Monolith (`869eb5c`)**:
    - Struktur **8 modul domain** (`auth`, `pengaturan`, `anggota` termasuk pendaftaran/KYC, `iuran`, `katalog`, `pesanan`, `pembayaran`, `laporan`) + paket bersama `filestore`, `uiserve`, dan `worker`.
-   - Satu biner `kopdes` (`serve`, `worker`, `uiserve`, `admin`/`bootstrap-admin`/`storage`/`pdp`/`bukti`) dan satu `docker-compose.yml` berprofil `app`, `worker`, `tester`, `proxy` dengan tepat **51 variabel `.env`** (divalidasi oleh `envcheck --strict --ports --no-listen`).
+   - Satu biner `kopdes` (`serve`, `worker`, `uiserve`, `admin`/`bootstrap-admin`/`storage`/`pdp`/`bukti`) dan satu `docker-compose.yml` berprofil `app`, `worker`, `tester`, `proxy` (saat Fase 1 memakai 51 variabel, lalu pada tindak lanjut v9 dipangkas menjadi **43 variabel <= 45** tervalidasi `envcheck`).
    - Keputusan lengkap terdokumentasi di [ADR-0001](adr/0001-modular-monolith.md) dan [ARCHITECTURE.md](ARCHITECTURE.md).
 2. **Fase 2 — Implementasi Wireframe Figma (`4b895f8`)**:
    - Inspeksi read-only Figma (`5RsPLIopItTEIp21N1VU2x`): **19 frame** diinventarisasi dalam [INVENTARIS_LAYAR.md](wireframe/INVENTARIS_LAYAR.md) dan dipetakan ke OpenAPI dalam [ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md).
@@ -64,7 +64,7 @@ Sumber: [perf_baseline.json](../reports/baseline/perf_baseline.json) & [perf_fin
    - Verifikasi Playwright Chromium Set B (`ALLOW_BEARER_AUTH=false`, `18080/18081/15433`): **4 / 4 suite PASS (`18,7s`)** mencakup beranda, mobile `375x812`, pendaftaran + 3 KYC, pencegahan XSS tersimpan, MFA Admin/Bendahara, checkout + QRIS + bukti + iuran + 7 skenario negatif + **10 tangkapan layar** di `reports/wireframe/` ([LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)).
 3. **Fase 3 — Eksperimen Terukur `spike/filesvc` (`848c2be`)**:
    - Pemisahan layanan `kopdes filesvc` diukur langsung (`100` iterasi `16 KB` PNG): delta p95 `SaveEncrypted = +1.013 ms`, `LoadDecrypted = -0.599 ms`, S2S bearer `401`, API server menyimpan `0` kunci dekripsi berkas (`phase_a_api_key_rejects_enc = true`), isolasi gangguan `200` endpoint inti / `503` endpoint berkas saat `filesvc` mati, dan pemulihan otomatis `200` setelah `filesvc` hidup lagi ([filesvc_metrics.json](../reports/spike/filesvc_metrics.json), [fault_isolation.json](../reports/spike/fault_isolation.json)).
-   - Sesuai evaluasi 6 kriteria di [ADR-0002](adr/0002-filesvc-spike.md), `spike/filesvc` **ditolak sementara** dari branch aktif agar sistem tetap ramping pada **1 VPS, 1 `.env` (51 var), 1 developer**, namun kontrak `filestore.FileStore` siap diekstrak bila pemicu ADR-0001/0002 tercapai.
+   - Sesuai evaluasi 6 kriteria di [ADR-0002](adr/0002-filesvc-spike.md), `spike/filesvc` **ditolak sementara** dari branch aktif agar sistem tetap ramping pada **1 VPS, 1 `.env` (43 var aktif), 1 developer**, namun kontrak `filestore.FileStore` siap diekstrak bila pemicu ADR-0001/0002 tercapai.
 4. **Fase 4 — Portabilitas Set C Acak & Isolasi Cookie (`env_portability_isolation.txt`)**:
    - Database PostgreSQL terisolasi **Set C** (`28080` API, `28081` UI, `28082` Worker, `25433` PG) dijalankan **dengan 0 perubahan kode**: `envcheck` PASS (`51` var), `/healthz` API & Worker `200`, UI `/config.json` `200` menunjuk `http://127.0.0.1:28080`, dan smoke Playwright `01.` PASS.
    - Uji tabrakan port: menyetel `WORKER_PORT=28080` (`== API_PORT`) ditolak keras oleh `envcheck` (exit code `1`: `KONFLIK PORT HOST 28080 digunakan bersama oleh: API_HOST_PORT, WORKER_PORT`).

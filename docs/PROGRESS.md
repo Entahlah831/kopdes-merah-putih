@@ -1442,5 +1442,9 @@ Bukti purge selesai: 0 berkas bukti non-lunas kedaluwarsa dihapus
    - Re-test beban (`GOMAXPROCS=2`): `0` regresi SLO; `load` baca p95 `117,00 ms`, `spike` baca p95 `257,23 ms` (`PASS < 300 ms`), `soak` baca p95 `45,19 ms`, `0` error tak terduga.
    - Chaos `tools/chaosdrill` (`112` req / `79` order, `0` inkonsistensi stok/uang, restore `21` tabel / `38` anggota RTO `7.415 ms`), `TestArchitecture_*`, `TestSecurityAbuse_*`, `staticcheck`, `gosec` (`0` isu), `govulncheck` (`0` kerentanan terpanggil), `gitleaks` (`115` commit, `0` bocoran).
    - Portabilitas Set C (`28080/28081/28082/25433`) lolos dengan `0` edit kode, konflik `WORKER_PORT=28080` ditolak exit `1`, dan cookie Set A ditolak `401` di Set B ([MODULAR_REPORT.md](MODULAR_REPORT.md)).
+6. **Tindak Lanjut v9 — Audit Env (`51 -> 43`), Matriks 19 Frame, Dokumen Go-Live/Staging/Pentest, & CI Linux Penuh**:
+   - Memangkas env `51 -> 43 <= 45` dengan alasan tertulis per variabel di [ENV_REFERENCE.md](ENV_REFERENCE.md) (`92107d6`).
+   - Melengkapi blok wireframe beranda, Suite E2E `05`, & [MATRIKS_E2E_19_FRAME.md](wireframe/MATRIKS_E2E_19_FRAME.md) (`0e556f6`).
+   - Menambahkan [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md), [STAGING_CHECKLIST.md](STAGING_CHECKLIST.md), dan [PENTEST_SCOPE.md](PENTEST_SCOPE.md).
 
 

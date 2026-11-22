@@ -4,7 +4,7 @@ info:
   title: API Kopdes Merah Putih (Backend Ramping)
   version: 2.1.0-lean
   description: 'Spesifikasi OpenAPI 3.0.3 untuk Backend Ramping Kopdes Merah Putih
-    (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 51 variabel env).
+    (1 koperasi tunggal, 21 tabel PostgreSQL 16, 36 endpoint HTTP, 43 variabel env).
 
     Autentikasi utama menggunakan cookie HttpOnly (__Host-kopdes_session / kopdes_session)
     dilengkapi CSRFGuard (Origin/Referer + header X-Requested-With pada mutasi) serta

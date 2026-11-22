@@ -15,7 +15,7 @@ Seluruh backend dikompilasi menjadi **satu biner `kopdes`** (`cmd/kopdes`) yang 
 | `kopdes uiserve` | Server statis referensi UI + runtime `/config.json` (zero hardcoded port) | `tester` | `UI_PORT` |
 | `kopdes admin` / `bootstrap-admin` / `migrate-storage` | Utilitas CLI operasional satu kali jalan | Manual / one-off | — |
 
-Konfigurasi 51 variabel lingkungan divalidasi penuh oleh `go run ./cmd/envcheck --strict --ports --no-listen` dan dipetakan otomatis ke `docs/ENV_REFERENCE.md`.
+Konfigurasi **43 variabel lingkungan** (`<= 45`) divalidasi penuh oleh `go run ./cmd/envcheck --strict --ports --no-listen` dan dipetakan otomatis ke `docs/ENV_REFERENCE.md` beserta alasan tiap variabel.
 
 ---
 
@@ -152,7 +152,7 @@ sequenceDiagram
 
 ## 5. Worker Terjadwal & Pencegahan Duplikasi
 
-`kopdes worker` menjalankan **6 tugas terjadwal** (`WORKER_TICK_INTERVAL`) dari satu proses atau beberapa replika kontainer:
+`kopdes worker` menjalankan **6 tugas terjadwal** (interval bawaan `60s`, dapat diubah lewat `--tick`) dari satu proses atau beberapa replika kontainer:
 1. `pesanan_expire` (pembatalan pesanan unpaid melewati batas & pelepasan `STOCK_HOLD_MINUTES` via `katalog/api`)
 2. `iuran_generate` (pembuatan tagihan iuran bulanan idempoten per periode)
 3. `pdp_purge` (retensi dokumen KYC pendaftaran ditolak sesuai `PDP_REJECTED_RETENTION_DAYS`)

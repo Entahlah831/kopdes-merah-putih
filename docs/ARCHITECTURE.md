@@ -6,16 +6,16 @@ Dokumen ini mendeskripsikan arsitektur **Modular Monolith** hasil **Fase 1 Promp
 
 ## 1. Bentuk Proses Runtime & Satu Sumber `.env`
 
-Seluruh backend dikompilasi menjadi **satu biner `kopdes`** (`cmd/kopdes`) yang dijalankan sebagai proses terpisah dari satu `docker-compose.yml` dan satu berkas `.env`:
+Seluruh backend (`backend/`) dikompilasi menjadi **satu biner `kopdes`** (`backend/cmd/kopdes`) yang dijalankan sebagai proses terpisah dari satu `docker-compose.yml` dan satu berkas `.env`:
 
 | Subperintah | Peran Runtime | Profil Compose | Port Env |
 | :--- | :--- | :--- | :--- |
-| `kopdes serve` | Server HTTP API utama + router modular | `app` | `API_PORT` |
+| `kopdes serve` | Server HTTP API utama (**37 endpoint**) + router modular | `app` | `API_PORT` |
 | `kopdes worker` | Penjadwal berkala + endpoint health `/healthz` (`pg_try_advisory_lock`) | `worker` | `WORKER_PORT` |
-| `kopdes uiserve` | Server statis referensi UI + runtime `/config.json` (zero hardcoded port) | `tester` | `UI_PORT` |
-| `kopdes admin` / `bootstrap-admin` / `migrate-storage` | Utilitas CLI operasional satu kali jalan | Manual / one-off | — |
+| `kopdes uiserve` | Server statis UI (`frontend/wireframe/dist` / `frontend/tester`) + `/config.json` | `tester` | `UI_PORT` |
+| `kopdes admin` / `storage migrate-files` / `healthcheck` | Utilitas CLI operasional & Docker healthcheck | Manual / Docker | — |
 
-Konfigurasi **43 variabel lingkungan** (`<= 45`) divalidasi penuh oleh `go run ./cmd/envcheck --strict --ports --no-listen` dan dipetakan otomatis ke `docs/ENV_REFERENCE.md` beserta alasan tiap variabel.
+Konfigurasi **44 variabel lingkungan** (`<= 45`) divalidasi penuh oleh `go -C backend run ./cmd/envcheck --strict --ports --no-listen` dan dipetakan otomatis ke `docs/ENV_REFERENCE.md` beserta alasan tiap variabel.
 
 ---
 

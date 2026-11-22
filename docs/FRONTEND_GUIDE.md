@@ -1,8 +1,8 @@
 # Panduan Integrasi Frontend — Kopdes Merah Putih (Ramping)
 
-Target Kontrak: [openapi.yaml](openapi.yaml) (`v2.1.0-lean`, `36` endpoint) | Matriks Peran: [roles_matrix.json](roles_matrix.json) | Audit Keputusan: [DECISION_AUDIT.md](DECISION_AUDIT.md) | Implementasi Referensi Wireframe: [../frontend-wireframe/](../frontend-wireframe/) ([LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)) & Tester Polos: [../frontend-tester/README.md](../frontend-tester/README.md).
+Target Kontrak: [openapi.yaml](openapi.yaml) (`v2.2.0-lean`, `37` endpoint) | Matriks Peran: [roles_matrix.json](roles_matrix.json) | Audit Keputusan: [DECISION_AUDIT.md](DECISION_AUDIT.md) | Direktori Frontend: **[../frontend/README.md](../frontend/README.md)** | Daftar Tugas Tim Frontend: **[../frontend/TODO_FRONTEND.md](../frontend/TODO_FRONTEND.md)** | Referensi Wireframe: [../frontend/wireframe/](../frontend/wireframe/) ([LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)) & Tester Polos: [../frontend/tester/](../frontend/tester/).
 
-> **Aturan Keras**: Jangan menanamkan nomor port backend, URL API produksi, ataupun kunci rahasia di kode frontend. Selalu baca konfigurasi runtime dari environment frontend lalu sinkronkan batas aturan dari `GET /api/v1/public/config`.
+> **Aturan Keras**: Jangan menanamkan nomor port backend, URL API produksi, ataupun kunci rahasia di kode frontend. Selalu baca konfigurasi runtime dari `/config.json` (`api_public_url: ""` untuk mode same-origin HTTPS di balik Caddy, atau URL env lokal) lalu sinkronkan batas aturan dari `GET /api/v1/public/config`.
 
 ---
 
@@ -48,7 +48,7 @@ Backend memakai **sesi opaque** berbasis database (tanpa JWT & tanpa `refresh_to
 | `anggota` | Katalog (`harga_anggota` & `stok_tersedia`), checkout, iuran sendiri, lihat & buat pembayaran `qris` sendiri, unggah bukti, batal pesanan yang belum dibayar. | Ditolak `403` untuk `metode: "tunai"`, ubah status pesanan selain batal milik sendiri, lihat anggota lain, `/users`, `/pendaftaran`, `/laporan`. |
 | `petugas_toko` | Kelola kategori/produk/promo (`foto_url` relatif `/...` atau `https://` maks 512 karakter, anjuran WebP/JPEG terkompresi <= 500 KB), ubah status pemenuhan pesanan (`PATCH /api/v1/pesanan/{id}/status`), cetak/unduh `daftar-antar`, lihat anggota tersamar & laporan toko. | Ditolak `403` untuk mencatat pembayaran `tunai`, verifikasi pembayaran, refund, maupun membuka KYC/`unmask`. |
 | `bendahara` | Kelola jenis/tagihan/keringanan iuran, buat pembayaran `tunai`/`qris`, verifikasi pembayaran & ajukan/putuskan refund (dual-control), ubah pengaturan koperasi, akses laporan penuh. | Ditolak `403` pada `PATCH /api/v1/pesanan/{id}/status` (khusus toko/admin), dilarang self-approve (`DUAL_CONTROL_VIOLATION`), dilarang pakai mode `breakglass`, dilarang `unmask=true`. |
-| `admin` | Kendali user (`/users`), verifikasi & dekripsi KYC (`/pendaftaran`), status anggota, impor CSV, `unmask=true`, plus hak toko & bendahara. | Tetap tunduk pada *Dual Control*, kecuali bila `DUAL_CONTROL_BREAKGLASS_ENABLED=true` dan admin menyertakan `breakglass: true`, `mfa_code` TOTP segar, & `alasan` >= 10 karakter. |
+| `admin` | Kendali user (`/users`), verifikasi & dekripsi KYC (`/pendaftaran`), baca **audit log (`GET /api/v1/audit-log`)**, status anggota, impor CSV, `unmask=true`, plus hak toko & bendahara. | Tetap tunduk pada *Dual Control*, kecuali bila `DUAL_CONTROL_BREAKGLASS_ENABLED=true` dan admin menyertakan `breakglass: true`, `mfa_code` TOTP segar, & `alasan` >= 10 karakter. |
 
 ---
 
@@ -69,4 +69,4 @@ Backend memakai **sesi opaque** berbasis database (tanpa JWT & tanpa `refresh_to
 
 ## 5. Verifikasi Live
 
-Semua kontrak di atas diverifikasi otomatis oleh `go test -count=1 -race -p 1 ./...` (termasuk `TestDecisionAudit_D1..D10` dan `TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries` yang memeriksa 36 rute + 95 kombinasi peran) serta dapat dicoba manual di browser via `cmd/uitester` (`frontend-tester/`).
+Semua kontrak di atas diverifikasi otomatis oleh `go -C backend test -count=1 -race -p 1 ./...` (termasuk `TestDecisionAudit_D1..D10` dan `TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries` yang memeriksa **37 rute**), Playwright Suite `01`–`06` pada `frontend/wireframe/`, serta dapat dicoba manual di browser via `go -C backend run ./cmd/kopdes uiserve --ui-dir frontend/tester`.

@@ -145,7 +145,11 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		"scripts/backup_keys.sh",
 		"scripts/restore_keys.sh",
 		"scripts/rotate_keys.sh",
+		"backend/README.md",
+		"frontend/README.md",
+		"frontend/TODO_FRONTEND.md",
 		"docs/KEAMANAN_KUNCI_PEMILIK.md",
+		"docs/PANDUAN_PASANG_VPS_LINUX.md",
 		"docs/TUGAS_MANUAL_PEMILIK.md",
 	}
 	for _, rel := range requiredFiles {

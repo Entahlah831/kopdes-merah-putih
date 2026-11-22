@@ -17,23 +17,25 @@ Jalankan skrip sinkronisasi agar seluruh 44 kunci variabel terbaru hadir tanpa m
 
 Verifikasi bahwa tidak ada variabel wajib yang kosong atau konflik port:
 ```bash
-go run ./cmd/envcheck --strict --ports --no-listen --env-file .env
-go run ./cmd/envcheck --compare .env.example .env
+go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env"
+go -C backend run ./cmd/envcheck --compare .env.example .env
 ```
 *(Seluruh nilai rahasia disamarkan menjadi `***REDACTED***` oleh `envcheck`.)*
 
 ---
 
-## 2. Pengisian Kunci Produksi & Aturan Ketat Kunci Backup `age`
+## 2. Pengisian Kunci Produksi (Model 85/15) & Aturan Ketat Kunci `age`
+
+Lihat panduan khusus pembagian **85% skrip otomasi vs 15% rahasia inti pemilik** beserta langkah backup/pulih/rotasi di **[KEAMANAN_KUNCI_PEMILIK.md](KEAMANAN_KUNCI_PEMILIK.md)** (`scripts/backup_keys.sh`, `scripts/restore_keys.sh`, `scripts/rotate_keys.sh`), serta cara pasang server di **[PANDUAN_PASANG_VPS_LINUX.md](PANDUAN_PASANG_VPS_LINUX.md)**.
 
 > **PERINGATAN KRITIS — KUNCI BACKUP `age` WAJIB DISIMPAN DI LUAR SERVER:**
-> - Bangkitkan pasangan kunci `age` di perangkat tepercaya pemilik (di luar VPS): `age-keygen -o kopdes-backup-private.key`.
+> - Bangkitkan **2 pasang kunci `age` terpisah** di perangkat tepercaya pemilik (di luar VPS): satu untuk backup harian (`kopdes-backup-private.key` -> `BACKUP_AGE_RECIPIENT`), satu lagi untuk brankas kunci (`kopdes-keyvault-private.key` -> `VAULT_AGE_RECIPIENT`).
 > - Isi **`BACKUP_AGE_RECIPIENT`** di `.env` VPS **HANYA** dengan *public key* (`age1...`).
 > - **JANGAN PERNAH** menaruh berkas `AGE-SECRET-KEY-...` (*private key*) di dalam VPS, `.env`, atau repositori Git!
-> - Simpan salinan terenkripsi/fisik *private key* `age` di **minimal 2 tempat aman terpisah milik pemilik** (mis. password manager utama + brankas offline pengurus). **Kehilangan private key berarti seluruh arsip backup `.tar.age` tidak dapat dibuka selamanya.**
+> - Simpan salinan terenkripsi/fisik *private key* `age` di **minimal 2 tempat aman terpisah milik pemilik** (mis. password manager utama + brankas offline pengurus). **Kehilangan private key berarti seluruh arsip `.tar.age` tidak dapat dibuka selamanya.**
 
-Pastikan variabel berikut juga disetel unik dengan CSPRNG (`openssl rand -hex 32`):
-- `AES_MASTER_KEY` (>= 32 byte / 64 hex, opsional format `ver:id=material`) & `AES_PREVIOUS_KEYS` (saat rotasi kunci — lihat [ROTASI_KUNCI.md](ROTASI_KUNCI.md) bila tersedia / SOP rotasi di [BACKEND_GUIDE.md](BACKEND_GUIDE.md)).
+Pastikan variabel berikut juga disetel sendiri oleh pemilik dengan CSPRNG (`openssl rand -hex 32`):
+- `AES_MASTER_KEY` (format `v1:k1=<64-hex>`) & `AES_PREVIOUS_KEYS` (saat rotasi kunci memakai [scripts/rotate_keys.sh](../scripts/rotate_keys.sh)).
 - `BLIND_INDEX_SECRET` (>= 32 byte / 64 hex).
 - `DB_PASSWORD` dan `POSTGRES_PASSWORD` (kata sandi kuat unik).
 - `DB_USER=kopdes_app` (role non-superuser aplikasi) dan `DB_SSLMODE=require` / `verify-full` bila memakai koneksi lintas host.
@@ -55,19 +57,20 @@ Ringkasan kebijakan berikut memiliki ID keputusan **`KP-01`..`KP-10`** beserta t
 | `PDP_REJECTED_RETENTION_DAYS` (`KP-05`) | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
 | `BUKTI_RETENTION_DAYS` (`KP-06`) | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
 | `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik (`KP-07`) | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |
-| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), `KP-08`) | Non-aktif di `frontend-wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final. |
+| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), `KP-08`) | Non-aktif di `frontend/wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final ([TODO_FRONTEND.md](../frontend/TODO_FRONTEND.md)). |
 | `CAPTCHA_ENABLED` & `RATE_LIMIT_RPS` (`KP-09`) | `false`, `30` (`1..120` di produksi) | **KEPUTUSAN PEMILIK** — penyetelan Turnstile CAPTCHA publik & batas laju per IP di VPS produksi. |
-| Kunci offline `age` & jadwal drill (`KP-10`) | `BACKUP_RETENTION_DAYS=30` | **KEPUTUSAN PEMILIK** — simpan minimal 2 salinan private key `age` di luar VPS + tetapkan jadwal latihan `restore_drill.sh`. |
+| Kunci offline `age` & jadwal drill (`KP-10`) | `BACKUP_RETENTION_DAYS=30` | **KEPUTUSAN PEMILIK** — simpan minimal 2 salinan private key `age` di luar VPS + tetapkan jadwal latihan `restore_drill.sh` & `restore_keys.sh`. |
 
 ---
 
 ## 4. Inisialisasi VPS, Worker Bawaan, Pemulihan Admin, & Backup Off-Server
 
-1. Pastikan konfigurasi valid dan jalankan layanan Compose inti (`postgres`, `api` profil `app`, `worker` profil `worker`, plus opsional `proxy` Caddy):
+1. Pastikan konfigurasi valid dan jalankan layanan Compose inti (`postgres`, `api` profil `app`, `worker` profil `worker`, plus `proxy` Caddy untuk melayani `frontend/wireframe/dist`):
    ```bash
-   go run ./cmd/envcheck --strict --ports --no-listen --env-file .env
-   docker compose --env-file .env --profile app --profile worker config --quiet
-   docker compose --env-file .env --profile app --profile worker up -d --build
+   go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env"
+   npm --prefix frontend/wireframe ci && npm --prefix frontend/wireframe run build
+   docker compose --env-file .env --profile app --profile worker --profile proxy config --quiet
+   KOPDES_SITE_ADDRESS="https://koperasi.desaanda.id" docker compose --env-file .env --profile app --profile worker --profile proxy up -d --build
    ```
 2. Jika upgrade dari versi sebelum `decision-audit`, jalankan migrasi berkas storage sekali secara idempoten:
    ```bash

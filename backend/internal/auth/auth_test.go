@@ -50,3 +50,16 @@ func TestPasswordPolicyAndRoleMFA(t *testing.T) {
 		t.Fatalf("truncateStr = %q, want abc", got)
 	}
 }
+
+func TestMFASetup_SkipActionAndGuard(t *testing.T) {
+	in := MFASetupInput{Action: "skip"}
+	if !isSkipMFAAction(in) {
+		t.Fatal("expected action=skip to be recognized")
+	}
+	if err := validateSkipMFASetup(false); err != nil {
+		t.Fatalf("unexpected error when MFA is not yet enabled: %v", err)
+	}
+	if err := validateSkipMFASetup(true); err == nil {
+		t.Fatal("expected error when attempting to skip MFA on an account with MFA already enabled")
+	}
+}

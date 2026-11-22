@@ -77,6 +77,12 @@ async function renderApp(): Promise<void> {
 
   const authBar = el("div", { class: "row" });
   if (currentUser) {
+    const btnAkun = el(
+      "button",
+      { class: "btn", type: "button", "data-testid": "btn-akun-mfa" },
+      currentUser.mfa_enabled ? "Pengaturan Akun" : "Pengaturan Akun (Atur MFA)"
+    );
+    btnAkun.addEventListener("click", () => navigate("pengaturan_user"));
     const btnLogout = el("button", { class: "btn", type: "button", "data-testid": "btn-logout" }, "Keluar");
     btnLogout.addEventListener("click", async () => {
       try {
@@ -88,6 +94,7 @@ async function renderApp(): Promise<void> {
     });
     authBar.append(
       el("span", { class: "badge", "data-testid": "user-badge" }, `${currentUser.nama} (${currentUser.peran})`),
+      btnAkun,
       btnLogout
     );
   } else {

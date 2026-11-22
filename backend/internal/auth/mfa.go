@@ -17,8 +17,20 @@ import (
 )
 
 type MFASetupInput struct {
+	Action     string `json:"action,omitempty"`
 	Code       string `json:"code"`
 	SetupToken string `json:"setup_token"`
+}
+
+func isSkipMFAAction(in MFASetupInput) bool {
+	return strings.EqualFold(strings.TrimSpace(in.Action), "skip")
+}
+
+func validateSkipMFASetup(mfaEnabled bool) error {
+	if mfaEnabled {
+		return response.NewDomainError(http.StatusConflict, "MFA_ALREADY_ENABLED", "MFA sudah aktif untuk akun ini dan wajib diverifikasi")
+	}
+	return nil
 }
 
 type MFAVerifyInput struct {
@@ -35,6 +47,9 @@ func (s *Service) SetupMFA(ctx context.Context, claims *middleware.SessionClaims
 	if err != nil {
 		return nil, err
 	}
+	if isSkipMFAAction(in) {
+		return s.skipMFASetup(ctx, q, claims, u, ip)
+	}
 	if u.MfaEnabled && claims.Scope != "full" {
 		return nil, response.NewDomainError(http.StatusConflict, "MFA_ALREADY_ENABLED", "MFA sudah aktif untuk akun ini")
 	}
@@ -43,6 +58,21 @@ func (s *Service) SetupMFA(ctx context.Context, claims *middleware.SessionClaims
 		return s.beginMFASetup(ctx, u, aad)
 	}
 	return s.confirmMFASetup(ctx, claims, in, aad, ip)
+}
+
+func (s *Service) skipMFASetup(ctx context.Context, q *db.Queries, claims *middleware.SessionClaims, u db.User, ip string) (map[string]interface{}, error) {
+	if err := validateSkipMFASetup(u.MfaEnabled); err != nil {
+		return nil, err
+	}
+	if err := q.UpgradeSessionAfterMFA(ctx, response.ToPGUUID(claims.SessionID)); err != nil {
+		return nil, fmt.Errorf("tunda setup mfa: %w", err)
+	}
+	s.logAudit(ctx, uuidPtr(claims.UserID), claims.Role, "mfa_setup_deferred", "sesi", claims.SessionID.String(), "Menunda aktivasi MFA ke pengaturan akun", ip)
+	return map[string]interface{}{
+		"mfa_enabled":  false,
+		"mfa_deferred": true,
+		"scope":        "full",
+	}, nil
 }
 
 func (s *Service) beginMFASetup(_ context.Context, u db.User, aad []byte) (map[string]interface{}, error) {

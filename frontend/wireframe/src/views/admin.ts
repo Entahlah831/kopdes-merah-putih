@@ -21,9 +21,7 @@ export async function renderDashboardPengurus(
     el("button", { class: "btn", type: "button", id: "sb-ver-pay" }, "04b Verifikasi Pembayaran"),
     el("button", { class: "btn", type: "button", id: "sb-pesanan" }, "06 Pesanan & Antaran"),
     el("button", { class: "btn", type: "button", id: "sb-operasional" }, "07 Laporan, Antar, Produk & Kasir"),
-    ...(user.peran === "admin"
-      ? [el("button", { class: "btn", type: "button", id: "sb-pengaturan-user" }, "08 Pengaturan & Pengguna")]
-      : []),
+    el("button", { class: "btn", type: "button", id: "sb-pengaturan-user" }, user.peran === "admin" ? "08 Pengaturan & Pengguna" : "08 Pengaturan Akun & MFA"),
     el("div", { class: "sidebar-label" }, "KELEMBAGAAN / AKUNTANSI"),
     el("div", { class: "alert alert-note" }, "SIMKOPDES, RAT, Pengurus/Pengawas, Kas & Mutasi: ", blockedBadge("BLOCKED: butuh keputusan pemilik"))
   );
@@ -39,7 +37,20 @@ export async function renderDashboardPengurus(
     el("h3", null, "Aktivitas & Audit Trail (Terbaru)"),
     el("div", null, user.peran === "admin" ? "Memuat log audit..." : "Log audit terperinci hanya dapat dibaca oleh peran admin.")
   );
-  main.append(el("h2", null, "02 — Dashboard Pengurus"), kpis, info);
+  main.append(el("h2", null, "02 — Dashboard Pengurus"));
+  if (!user.mfa_enabled) {
+    const btnGoMFA = el("button", { class: "btn btn-primary", type: "button", "data-testid": "btn-dashboard-setup-mfa" }, "Atur QR MFA TOTP di Pengaturan Akun");
+    btnGoMFA.addEventListener("click", () => navigate("pengaturan_user"));
+    main.appendChild(
+      el("div", { class: "card", style: "border-left:4px solid #d97706;" },
+        el("div", { class: "row", style: "justify-content:space-between;align-items:center;" },
+          el("span", null, "Verifikasi 2-Langkah (MFA TOTP) akun Anda belum aktif (ditunda). Amankan akun dengan memindai QR Code MFA."),
+          btnGoMFA
+        )
+      )
+    );
+  }
+  main.append(kpis, info);
   container.appendChild(el("div", { class: "shell-admin" }, sidebar, main));
 
   if (user.peran === "admin") {

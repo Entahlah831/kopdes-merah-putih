@@ -638,8 +638,11 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await loginUI(page, "admin@kopdes-test.local", seedPassword, "admin@kopdes-test.local");
     await expect(page.getByTestId("audit-log-table")).toBeVisible({ timeout: 10_000 });
 
-    // Buka 08 Pengaturan & Pengguna via sidebar -> simpan pengaturan -> cek users-table
+    // Buka 08 Pengaturan & Pengguna via sidebar -> cek QR MFA TOTP Akun, simpan pengaturan -> cek users-table
     await page.locator("#sb-pengaturan-user").click();
+    await expect(page.getByTestId("account-security-card")).toBeVisible();
+    await page.getByTestId("btn-account-mfa-start").click();
+    await expect(page.getByTestId("mfa-qr-canvas")).toBeVisible();
     await expect(page.getByTestId("users-table")).toBeVisible();
     await page.getByTestId("btn-pengaturan-save").click();
     await expect(page.getByTestId("pengaturan-ok")).toBeVisible();

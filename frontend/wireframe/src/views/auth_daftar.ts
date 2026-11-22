@@ -1,6 +1,7 @@
 import { APIClient } from "../api";
-import { blockedBadge, el } from "../dom";
+import { blockedBadge, clear, el } from "../dom";
 import { validateAndCompressImage } from "../image";
+import { renderQRCanvas } from "../qr";
 import { RouteKey, UserSession } from "../types";
 
 export function renderDaftar(container: HTMLElement, api: APIClient, navigate: (r: RouteKey) => void): void {
@@ -189,8 +190,20 @@ export function renderMasuk(
   let mfaMode: "setup" | "verify" = "verify";
   const mfaCode = el("input", { type: "text", placeholder: "6 digit kode TOTP", "data-testid": "mfa-code" });
   const btnMFA = el("button", { class: "btn btn-primary", type: "button", "data-testid": "btn-mfa-submit" }, "Verifikasi MFA TOTP");
+  const btnSkipMFA = el(
+    "button",
+    { class: "btn", type: "button", style: "display:none;", "data-testid": "btn-mfa-skip" },
+    "Lanjutkan Nanti (Atur di Pengaturan Akun)"
+  );
   const mfaInfo = el("div", { class: "alert alert-note" });
-  mfaBox.append(el("h3", null, "Verifikasi 2-Langkah (MFA TOTP)"), mfaInfo, el("div", { class: "field" }, el("label", null, "Kode OTP 6 Digit"), mfaCode), btnMFA);
+  const qrWrap = el("div", { style: "margin:8px 0;" });
+  mfaBox.append(
+    el("h3", null, "Verifikasi 2-Langkah (MFA TOTP)"),
+    mfaInfo,
+    qrWrap,
+    el("div", { class: "field" }, el("label", null, "Kode OTP 6 Digit"), mfaCode),
+    el("div", { class: "row" }, btnMFA, btnSkipMFA)
+  );
 
   btnMFA.addEventListener("click", async () => {
     feedback.textContent = "";
@@ -212,6 +225,20 @@ export function renderMasuk(
     }
   });
 
+  btnSkipMFA.addEventListener("click", async () => {
+    feedback.textContent = "";
+    btnSkipMFA.disabled = true;
+    try {
+      await api.request("POST", "/api/v1/auth/mfa/setup", { body: { action: "skip" } });
+      const me = await api.request<UserSession>("GET", "/api/v1/auth/me");
+      onLoggedIn(me.data);
+    } catch (err) {
+      feedback.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    } finally {
+      btnSkipMFA.disabled = false;
+    }
+  });
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     feedback.textContent = "";
@@ -223,15 +250,21 @@ export function renderMasuk(
       const scope = res.data?.scope || "";
       if (scope === "mfa_setup" || res.data?.mfa_setup_required) {
         mfaMode = "setup";
-        const setupRes = await api.request<{ secret: string; setup_token: string }>("POST", "/api/v1/auth/mfa/setup", { body: {} });
+        const setupRes = await api.request<{ secret: string; otpauth_uri?: string; setup_token: string }>("POST", "/api/v1/auth/mfa/setup", { body: {} });
         mfaSetupToken = setupRes.data.setup_token;
-        mfaInfo.textContent = `MFA belum aktif. Secret TOTP: ${setupRes.data.secret} — masukkan kode 6 digit untuk aktivasi.`;
+        mfaInfo.textContent = `MFA belum aktif. Pindai QR Code di bawah dengan Google Authenticator / Authy (atau ketik manual Secret TOTP: ${setupRes.data.secret}) — masukkan kode 6 digit untuk aktivasi, atau klik Lanjutkan Nanti.`;
+        clear(qrWrap);
+        const qrUri = setupRes.data.otpauth_uri || `otpauth://totp/Kopdes:${encodeURIComponent(inIdent.value.trim())}?secret=${setupRes.data.secret}&issuer=Kopdes`;
+        qrWrap.appendChild(renderQRCanvas(qrUri, 4));
+        btnSkipMFA.style.display = "inline-block";
         mfaBox.style.display = "block";
         return;
       }
       if (scope === "mfa_pending" || res.data?.requires_mfa) {
         mfaMode = "verify";
         mfaInfo.textContent = "Masukkan 6 digit kode TOTP aktif akun Anda.";
+        clear(qrWrap);
+        btnSkipMFA.style.display = "none";
         mfaBox.style.display = "block";
         return;
       }

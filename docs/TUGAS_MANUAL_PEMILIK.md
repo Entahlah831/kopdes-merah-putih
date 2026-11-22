@@ -2,9 +2,9 @@
 
 Dokumen ini berisi langkah-langkah yang **wajib dilakukan langsung oleh pemilik sistem** pada `.env` asli, penyimpanan kunci backup off-server, dan keputusan kebijakan bisnis sebelum go-live (agen dilarang membaca, mengubah, atau mengomit `.env` asli).
 
-## 1. Sinkronisasi `.env` Asli dari `.env.example` (43 Variabel <= 45)
+## 1. Sinkronisasi `.env` Asli dari `.env.example` (44 Variabel <= 45)
 
-Jalankan skrip sinkronisasi agar seluruh 43 kunci variabel terbaru hadir tanpa menimpa rahasia yang sudah Anda isi (termasuk `WORKER_PORT`; catatan penghapusan 8 var opsional & alasan lengkap ada di [ENV_REFERENCE.md](ENV_REFERENCE.md)):
+Jalankan skrip sinkronisasi agar seluruh 44 kunci variabel terbaru hadir tanpa menimpa rahasia yang sudah Anda isi (termasuk `WORKER_PORT` & `RATE_LIMIT_RPS`; daftar alasan lengkap per variabel ada di [ENV_REFERENCE.md](ENV_REFERENCE.md)):
 
 - **Windows (PowerShell):**
   ```powershell
@@ -42,18 +42,22 @@ Pastikan variabel berikut juga disetel unik dengan CSPRNG (`openssl rand -hex 32
 
 ---
 
-## 3. Keputusan Kebijakan Bisnis, Hukum, & Akuntansi (**KEPUTUSAN PEMILIK**)
+## 3. Keputusan Kebijakan Bisnis, Hukum, & Akuntansi (`KP-01` s.d. `KP-10`)
+
+Ringkasan kebijakan berikut memiliki ID keputusan **`KP-01`..`KP-10`** beserta target penutupannya (`UAT` / `Pilot` / `Produksi`) pada [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md). Gunakan pula [PANDUAN_PENGURUS.md](PANDUAN_PENGURUS.md) dan [LEMBAR_PELATIHAN_PENGURUS.md](LEMBAR_PELATIHAN_PENGURUS.md) saat membekali Ketua, Bendahara, dan Petugas Toko:
 
 | Variabel / Kolom | Nilai Bawaan Aman | Status Keputusan |
 | :--- | :---: | :--- |
-| `STOCK_HOLD_MINUTES` | `60` | **KEPUTUSAN PEMILIK** — lama tahanan stok tertahan saat checkout (`>= PAYMENT_EXPIRY_DURATION` dalam menit). |
-| `DUAL_CONTROL_BREAKGLASS_ENABLED` | `false` | **KEPUTUSAN PEMILIK** — aktifkan `true` hanya sementara jika koperasi sedang kekurangan staf (1 admin darurat); tetap butuh `mfa_code` TOTP terbaru & alasan >= 10 karakter + audit log khusus. |
-| `ALLOW_PERSONAL_PAYMENT_PILOT` | `false` | **KEPUTUSAN PEMILIK** & **PERLU VERIFIKASI HUKUM** — tetap `false` sampai QRIS badan hukum koperasi terbit; jika dipakai pilot, dikunci `PILOT_MAX_PER_TX=500000` & `PILOT_MAX_PER_DAY=2000000`. |
-| `QRIS_UNIQUE_DIGITS` | `3` | **KEPUTUSAN PEMILIK** — `3` digit (`1..999`, cukup untuk batas default 50 transaksi pending global) atau `4` digit (`1..9999`). |
-| `PDP_REJECTED_RETENTION_DAYS` | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
-| `BUKTI_RETENTION_DAYS` | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
-| `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |
-| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md)) | Non-aktif di `frontend-wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final. |
+| `STOCK_HOLD_MINUTES` (`KP-02`) | `60` | **KEPUTUSAN PEMILIK** — lama tahanan stok tertahan saat checkout (`>= PAYMENT_EXPIRY_DURATION` dalam menit). |
+| `DUAL_CONTROL_BREAKGLASS_ENABLED` (`KP-03`) | `false` | **KEPUTUSAN PEMILIK** — aktifkan `true` hanya sementara jika koperasi sedang kekurangan staf (1 admin darurat); tetap butuh `mfa_code` TOTP terbaru & alasan >= 10 karakter + audit log khusus. |
+| `ALLOW_PERSONAL_PAYMENT_PILOT` (`KP-01`) | `false` | **KEPUTUSAN PEMILIK** & **PERLU VERIFIKASI HUKUM** — tetap `false` sampai QRIS badan hukum koperasi terbit; jika dipakai pilot, dikunci `PILOT_MAX_PER_TX=500000` & `PILOT_MAX_PER_DAY=2000000`. |
+| `QRIS_UNIQUE_DIGITS` (`KP-04`) | `3` | **KEPUTUSAN PEMILIK** — `3` digit (`1..999`, cukup untuk batas default 50 transaksi pending global) atau `4` digit (`1..9999`). |
+| `PDP_REJECTED_RETENTION_DAYS` (`KP-05`) | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
+| `BUKTI_RETENTION_DAYS` (`KP-06`) | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
+| `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik (`KP-07`) | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |
+| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), `KP-08`) | Non-aktif di `frontend-wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final. |
+| `CAPTCHA_ENABLED` & `RATE_LIMIT_RPS` (`KP-09`) | `false`, `30` (`1..120` di produksi) | **KEPUTUSAN PEMILIK** — penyetelan Turnstile CAPTCHA publik & batas laju per IP di VPS produksi. |
+| Kunci offline `age` & jadwal drill (`KP-10`) | `BACKUP_RETENTION_DAYS=30` | **KEPUTUSAN PEMILIK** — simpan minimal 2 salinan private key `age` di luar VPS + tetapkan jadwal latihan `restore_drill.sh`. |
 
 ---
 

@@ -13,7 +13,7 @@ Gunakan daftar periksa ini sebelum mengizinkan UAT pengurus atau pengujian penet
 - [ ] PostgreSQL (`DB_HOST_PORT`), `/readyz`/`WORKER_PORT`, dan UI tester tidak diekspos ke `0.0.0.0`; seluruh binding host di [docker-compose.yml](../docker-compose.yml) mengarah ke `127.0.0.1` kecuali port API di belakang reverse proxy HTTPS (`Caddy` / `Nginx`).
 - [ ] Domain HTTPS staging aktif (mis. `https://staging-koperasi.example.id`) dengan sertifikat TLS valid sebelum `APP_ENV=production` / `APP_ENV=staging`.
 
-## 2. Konfigurasi Tunggal `.env` (**43 Variabel**)
+## 2. Konfigurasi Tunggal `.env` (**44 Variabel <= 45**)
 
 - [ ] Di mesin lokal tepercaya atau sesi aman VPS, generate `.env` dari cetak biru [../.env.example](../.env.example):
   ```bash
@@ -23,15 +23,16 @@ Gunakan daftar periksa ini sebelum mengizinkan UAT pengurus atau pengujian penet
   ```bash
   age-keygen -o kopdes-staging-private.key
   ```
-  Simpan *private key* secara offline; salin **HANYA** `age1...` (*public key*) ke `BACKUP_AGE_RECIPIENT` di `.env`.
+  Simpan *private key* secara offline; salin **HANYA** `age1...` (*public key*) ke `BACKUP_AGE_RECIPIENT` di `.env` (`KP-10`).
 - [ ] Isi variabel wajib lingkungan pada `.env` (tanpa pernah mengomit ke Git):
   - `APP_ENV=staging` (atau `production` saat uji mode ketat penuh)
   - `ALLOWED_ORIGINS=https://staging-koperasi.example.id` (dilarang `*`)
   - `TRUSTED_PROXIES=<IP_CIDR_PROXY_LOKAL>/32` (rentang sempit `/16`–`/32`)
+  - `RATE_LIMIT_RPS=30` (bawaan produksi `1..120 rps`; nilai tinggi mis. `1500` hanya diizinkan pada `APP_ENV=test`)
   - `DB_HOST=postgres`, `DB_USER=kopdes_app`, `DB_SSLMODE=disable` *(jaringan bridge internal Compose)* atau `require` bila lintas host
   - `DB_PASSWORD`, `POSTGRES_PASSWORD`, `AES_MASTER_KEY` (format `v1:k1=<64-hex>`), `BLIND_INDEX_SECRET` (>= 64 hex unik)
   - `COOKIE_SECURE=auto`, `ALLOW_BEARER_AUTH=false`, `MFA_REQUIRED_ROLES=admin,bendahara`
-  - Parameter kebijakan bisnis (`STOCK_HOLD_MINUTES`, `QRIS_UNIQUE_DIGITS`, `DUAL_CONTROL_BREAKGLASS_ENABLED`, `ALLOW_PERSONAL_PAYMENT_PILOT`, `PDP_REJECTED_RETENTION_DAYS`, `BUKTI_RETENTION_DAYS`) sesuai keputusan tertulis di [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md).
+  - Parameter kebijakan bisnis (`STOCK_HOLD_MINUTES`, `QRIS_UNIQUE_DIGITS`, `DUAL_CONTROL_BREAKGLASS_ENABLED`, `ALLOW_PERSONAL_PAYMENT_PILOT`, `PDP_REJECTED_RETENTION_DAYS`, `BUKTI_RETENTION_DAYS`) sesuai keputusan tertulis `KP-01`–`KP-10` di [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md) & [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md).
 - [ ] Jalankan validasi ketat tanpa kebocoran rahasia:
   ```bash
   go run ./cmd/envcheck --strict --ports --no-listen --env-file .env
@@ -64,9 +65,10 @@ Gunakan daftar periksa ini sebelum mengizinkan UAT pengurus atau pengujian penet
   ```
 - [ ] Login via browser (HTTPS), selesaikan enrollment MFA 2-langkah, catat 8 `recovery_codes` di tempat aman, lalu buat rekening QRIS koperasi dan aktifkan pada `PUT /api/v1/pengaturan`.
 
-## 4. Uji Operasional, Backup `age`, & Pemulihan Darurat
+## 4. Uji Operasional, Latihan Pengurus, Backup `age`, & Pemulihan Darurat
 
 - [ ] Jalankan 1 siklus UAT penuh di browser (`Daftar + Upload 3 KYC -> Approve -> Aktivasi -> Checkout + Upload Bukti -> Verifikasi Bendahara -> Selesai`) dan cek volume terpisah: berkas `.enc` tersimpan terpisah tanpa plaintext PNG/JPG header.
+- [ ] Laksanakan pelatihan langsung pengurus inti mengikuti [PANDUAN_PENGURUS.md](PANDUAN_PENGURUS.md) dan selesaikan semua 6 latihan pada [LEMBAR_PELATIHAN_PENGURUS.md](LEMBAR_PELATIHAN_PENGURUS.md).
 - [ ] Jalankan backup harian nyata & verifikasi artifact `.tar.age`:
   ```bash
   ENV_FILE=.env bash scripts/backup.sh
@@ -75,13 +77,13 @@ Gunakan daftar periksa ini sebelum mengizinkan UAT pengurus atau pengujian penet
   ```bash
   ENV_FILE=.env BACKUP_AGE_IDENTITY_FILE=/path/aman/kopdes-staging-private.key bash scripts/restore_drill.sh
   ```
-- [ ] Uji runbook pemulihan akses admin di staging (memastikan CLI reset mencabut sesi aktif & menulis `audit_log`), lalu daftarkan ulang MFA admin.
+- [ ] Uji runbook pemulihan akses admin & staf (`reset-password`, `reset-mfa`) di staging (memastikan CLI mencabut sesi aktif & menulis `audit_log`), lalu daftarkan ulang MFA admin.
 
 ## 5. Tabel Persetujuan Staging (`Sign-Off`)
 
 | Tahap | Pelaksana | Tanggal | Commit SHA | Bukti Terlampir |
 | :--- | :--- | :---: | :---: | :--- |
-| Validasi `.env` 43 Var & Boot Compose | | | | `envcheck`, `/readyz` |
+| Validasi `.env` 44 Var & Boot Compose | | | | `envcheck`, `/readyz` |
 | Uji Backup `.tar.age` & `restore_drill.sh` | | | | Log RTO & 21 tabel |
-| UAT Pengurus (Semua Peran Inti) | | | | Checklist UAT |
-| Siap Uji Pentest / Pilot ([GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md)) | | | | Laporan CI + UAT |
+| Pelatihan & UAT Pengurus (Semua Peran Inti) | | | | [LEMBAR_PELATIHAN_PENGURUS.md](LEMBAR_PELATIHAN_PENGURUS.md) |
+| Penutupan Keputusan Pemilik Awal (`KP-01`..`KP-10`) & Siap Pentest | | | | Laporan CI ([PERFORMANCE_K6.md](PERFORMANCE_K6.md), [ZAP_TRIAGE.md](security/ZAP_TRIAGE.md)) + [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md) |

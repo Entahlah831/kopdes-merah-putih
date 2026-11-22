@@ -96,3 +96,36 @@ Setelah pemindaian aktif ZAP diturunkan ke mode sekuensial (`-config scanner.thr
 
 Hasil empiris ini membuktikan bahwa seluruh 12 jalur yang sempat memicu `40018` pada dua run paralel sebelumnya memang murni artefak perbedaan status HTTP akibat `IPRateLimiter` (`30 rps`): ketika kecepatan pemindai berada di bawah ambang batas laju (`<=20 req/s`), ZAP menghasilkan **0 temuan High**, **0 temuan Medium**, bahkan daftar pengecualian terlingkup pada [`zap_false_positives.json`](../../tests/security/zap_false_positives.json) tidak perlu terpicu sama sekali (`triaged_fp=0`).
 
+---
+
+## 8. Pemindaian OWASP ZAP OpenAPI Per Peran (Dengan MFA Tervalidasi & Longgar Rate Limit)
+
+Untuk memverifikasi cakupan serangan di balik autentikasi **setiap peran**, CI kini menjalankan matriks **5 pekerjaan ZAP paralel** melalui [`tests/security/zap_role_scan.py`](../../tests/security/zap_role_scan.py) dan [`tests/security/auth_helper.py`](../../tests/security/auth_helper.py). Akun `admin` dan `bendahara` masuk lalu menyelesaikan verifikasi TOTP 6 digit RFC 6238 (`POST /api/v1/auth/mfa/verify` -> `scope=full`, diverifikasi melalui `GET /api/v1/auth/me`) sebelum ZAP maupun audit jangkauan 36 operasi OpenAPI berjalan. Dua endpoint pembatal sesi/kunci akun (`POST /api/v1/auth/logout` dan `POST /api/v1/auth/mfa/verify`) dikeluarkan dari berkas OpenAPI runtime ZAP agar sesi aktif tidak dicabut di tengah scan, tetapi tetap diaudit terpisah pasca-scan (`post_session_ok=True`).
+
+### 8.1 Temuan Nyata yang Ditemukan & Ditambal Selama Eksperimen `admin_relaxed`
+
+Saat menjalankan profil penuh berkecepatan tinggi **`admin_relaxed`** (`RATE_LIMIT_RPS=1500`, `threadPerHost=4`, `delayInMs=0`) pada run awal [`44993863851`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44993863851) (commit `ae20eca`), pemindaian berhasil menembus batas laju tanpa tersaring `429` dan menangkap **1 temuan nyata bernilai `MEDIUM` + 1 respons HTTP `500`**:
+
+- **Temuan:** Alert ZAP **`30002` (Format String / Boundary Error, Risk Medium)** dan **`100000` (Server Error HTTP 500)** pada `POST /api/v1/users` (parameter `password`).
+- **Akar Masalah:** Fungsi [`validatePasswordPolicy`](../../internal/auth/admin_service.go) hanya memeriksa panjang minimum (`len(pwd) < 10`) tanpa batas atas, sehingga masukan berpanjang `> 72` byte diteruskan ke `bcrypt.GenerateFromPassword` yang mengembalikan `bcrypt.ErrPasswordTooLong` dan terjawab sebagai HTTP `500`.
+- **Perbaikan & Bukti Regresi:** Ditambahkan tes gagal-dulu di [`internal/auth/auth_test.go`](../../internal/auth/auth_test.go) (`TestCreateUser_RejectsOver72BytePassword`) serta penjagaan `len(pwd) > 72 -> HTTP 400 PASSWORD_TOO_LONG` pada commit [`3daaa51`](https://github.com/Entahlah831/kopdes-merah-putih/commit/3daaa51). Bug tersebut terkonfirmasi hilang (`0 Medium`, `0 Server Error 500`) pada Run [`44994495765`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44994495765) maupun run final bersih [`44996362750`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44996362750).
+
+*(Selain itu, `testHybridScale` yang sempat dicoba untuk menskalakan kuota per jam di mode uji terbukti membuat uji internal `TestSecurityAbuse_RegUploadSpamAndCredentialStuffingVsCGNAT` gagal saat `set -euo pipefail` diperketat; `testHybridScale` dihapus penuh pada commit `b6bdcaa` sehingga `hybridLimit` tetap ketat `20/3600s` dan `40/3600s` di semua profil, sementara `RATE_LIMIT_RPS` mengendalikan murni `IPRateLimiter` global.)*
+
+### 8.2 Hasil Verbatim Matriks 5 Profil — CI Run `44996362750` (Commit `b6bdcaa`)
+
+| Profil Matriks | Peran | Status MFA | `RATE_LIMIT_RPS` | Mode ZAP | Rute Terjangkau (`X/36`) | Ditolak `401/403` | `err500` | Temuan `MEDIUM+` | `triaged_fp` | `low` / `info` | Log DB/API & Sesi Pasca-Scan |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`admin`** | `admin` | `verified` (TOTP) | `30` | `paced` (+baseline) | **`36 / 36`** | `0` | `0` | **0 High, 0 Medium** | `0` | `3` / `5` | `pg_syntax=0`, `api_500=0`, `api_sql=0`, `post_session_ok=True` |
+| **`bendahara`** | `bendahara` | `verified` (TOTP) | `30` | `paced` | **`25 / 36`** | `11` | `0` | **0 High, 0 Medium** | `0` | `2` / `4` | `pg_syntax=0`, `api_500=0`, `api_sql=0`, `post_session_ok=True` |
+| **`petugas_toko`** | `petugas_toko` | `not_required` | `30` | `paced` | **`23 / 36`** | `13` | `0` | **0 High, 0 Medium** | `0` | `2` / `4` | `pg_syntax=0`, `api_500=0`, `api_sql=0`, `post_session_ok=True` |
+| **`anggota`** | `anggota` | `not_required` | `30` | `paced` | **`19 / 36`** | `17` | `0` | **0 High, 0 Medium** | `0` | `1` / `4` | `pg_syntax=0`, `api_500=0`, `api_sql=0`, `post_session_ok=True` |
+| **`admin_relaxed`** | `admin` | `verified` (TOTP) | `1500` *(env tes)* | `full` (`4t, 0ms`) | **`36 / 36`** | `0` | `0` | **0 High, 0 Medium** | `0` | `2` / `4` | `pg_syntax=0`, `api_500=0`, `api_sql=0`, `post_session_ok=True` |
+
+#### Ringkasan Cakupan RBAC per Peran (`reachability_<profile>.json`)
+- **`admin` & `admin_relaxed` (`36/36`):** Menjangkau seluruh rute operasional, manajemen user/pendaftaran/anggota, iuran, katalog, pesanan, pembayaran/refund, dan laporan (catatan: jalur `POST /api/v1/pesanan/{id}/status` dengan status `"batal"` memverifikasi handler tercapai pasca-RBAC sebagai `404` non-403).
+- **`bendahara` (`25/36`, `11` ditolak `403`):** Ditolak pada manajemen `/api/v1/users` (3), verifikasi `/api/v1/pendaftaran*` (3), ubah status/impor `/api/v1/anggota*` (2), `POST /api/v1/katalog/produk`, `PATCH /api/v1/pesanan/{id}/status`, dan `GET /api/v1/pesanan/daftar-antar`.
+- **`petugas_toko` (`23/36`, `13` ditolak `403`):** Ditolak pada `PUT /api/v1/pengaturan`, `/api/v1/users` (3), `/api/v1/pendaftaran*` (3), status/impor anggota (2), mutasi iuran (`POST /iuran/jenis`, `PATCH /keringanan`), dan otorisasi keuangan (`POST /pembayaran/{id}/verifikasi`, `POST /pembayaran/{id}/refund`).
+- **`anggota` (`19/36`, `17` ditolak `403`):** Hanya menjangkau rute publik, otentikasi/profil sendiri, katalog, checkout, daftar pesanan/tagihan/pembayaran milik sendiri, dan batal pesanan milik sendiri; seluruh 17 rute admin/pengurus/laporan/verifikasi mengembalikan `403`.
+
+

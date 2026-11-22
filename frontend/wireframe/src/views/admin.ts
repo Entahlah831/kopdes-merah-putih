@@ -20,21 +20,31 @@ export async function renderDashboardPengurus(
     el("button", { class: "btn", type: "button", id: "sb-ver-ang" }, "03a Verifikasi Anggota"),
     el("button", { class: "btn", type: "button", id: "sb-ver-pay" }, "04b Verifikasi Pembayaran"),
     el("button", { class: "btn", type: "button", id: "sb-pesanan" }, "06 Pesanan & Antaran"),
+    el("button", { class: "btn", type: "button", id: "sb-operasional" }, "07 Laporan, Antar, Produk & Kasir"),
+    ...(user.peran === "admin"
+      ? [el("button", { class: "btn", type: "button", id: "sb-pengaturan-user" }, "08 Pengaturan & Pengguna")]
+      : []),
     el("div", { class: "sidebar-label" }, "KELEMBAGAAN / AKUNTANSI"),
     el("div", { class: "alert alert-note" }, "SIMKOPDES, RAT, Pengurus/Pengawas, Kas & Mutasi: ", blockedBadge("BLOCKED: butuh keputusan pemilik"))
   );
   sidebar.querySelector("#sb-ver-ang")?.addEventListener("click", () => navigate("verifikasi_anggota"));
   sidebar.querySelector("#sb-ver-pay")?.addEventListener("click", () => navigate("verifikasi_pembayaran"));
   sidebar.querySelector("#sb-pesanan")?.addEventListener("click", () => navigate("pesanan"));
+  sidebar.querySelector("#sb-operasional")?.addEventListener("click", () => navigate("operasional"));
+  sidebar.querySelector("#sb-pengaturan-user")?.addEventListener("click", () => navigate("pengaturan_user"));
 
   const main = el("div");
   const kpis = el("div", { class: "grid-cards" }, el("div", { class: "card" }, "Memuat ringkasan laporan..."));
   const info = el("div", { class: "card" },
-    el("h3", null, "Aktivitas & Audit Trail"),
-    el("p", { class: "alert alert-note" }, "Audit log dicatat di server pada setiap persetujuan/penolakan. Endpoint baca audit langsung belum diekspos pada OpenAPI ramping.")
+    el("h3", null, "Aktivitas & Audit Trail (Terbaru)"),
+    el("div", null, user.peran === "admin" ? "Memuat log audit..." : "Log audit terperinci hanya dapat dibaca oleh peran admin.")
   );
   main.append(el("h2", null, "02 — Dashboard Pengurus"), kpis, info);
   container.appendChild(el("div", { class: "shell-admin" }, sidebar, main));
+
+  if (user.peran === "admin") {
+    void renderAuditTrailCard(info, api);
+  }
 
   try {
     const [angLap, tungLap, pendRes, payRes] = await Promise.all([
@@ -56,6 +66,63 @@ export async function renderDashboardPengurus(
     clear(kpis);
     kpis.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
   }
+}
+
+interface AuditLogRow {
+  id: string;
+  actor_peran: string;
+  aksi: string;
+  entitas: string;
+  entitas_id: string;
+  ringkasan: string;
+  ip_address: string;
+  created_at: string;
+}
+
+async function renderAuditTrailCard(card: HTMLElement, api: APIClient): Promise<void> {
+  const entFilter = el("input", { type: "text", placeholder: "Filter entitas (mis. pengaturan, pembayaran)", "data-testid": "audit-filter-entitas" });
+  const btnLoad = el("button", { class: "btn", type: "button", "data-testid": "btn-audit-refresh" }, "Muat Ulang");
+  const tblWrap = el("div", null, "Memuat log audit...");
+
+  const load = async (): Promise<void> => {
+    clear(tblWrap);
+    try {
+      const q = entFilter.value.trim();
+      const qs = q ? `?limit=15&entitas=${encodeURIComponent(q)}` : "?limit=15";
+      const res = await api.request<AuditLogRow[]>("GET", `/api/v1/audit-log${qs}`);
+      const rows = res.data || [];
+      if (rows.length === 0) {
+        tblWrap.appendChild(el("div", { class: "alert alert-note" }, "Belum ada entri audit log yang cocok."));
+        return;
+      }
+      const tbl = el("table", { "data-testid": "audit-log-table" },
+        el("thead", null, el("tr", null, el("th", null, "Waktu"), el("th", null, "Peran"), el("th", null, "Aksi"), el("th", null, "Entitas"), el("th", null, "Ringkasan"))),
+        el("tbody", null,
+          ...rows.map((r) =>
+            el("tr", null,
+              el("td", null, String(r.created_at).slice(0, 19).replace("T", " ")),
+              el("td", null, r.actor_peran),
+              el("td", null, r.aksi),
+              el("td", null, `${r.entitas}:${r.entitas_id}`),
+              el("td", null, r.ringkasan)
+            )
+          )
+        )
+      );
+      tblWrap.appendChild(el("div", { class: "table-wrap" }, tbl));
+    } catch (err) {
+      tblWrap.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    }
+  };
+
+  btnLoad.addEventListener("click", () => { void load(); });
+  clear(card);
+  card.append(
+    el("h3", null, "Aktivitas & Audit Trail (GET /api/v1/audit-log)"),
+    el("div", { class: "row", style: "margin-bottom:8px;" }, el("div", { style: "flex:1;" }, entFilter), btnLoad),
+    tblWrap
+  );
+  await load();
 }
 
 export async function renderVerifikasiAnggota(
@@ -296,7 +363,8 @@ export async function renderVerifikasiPembayaran(
       el("div", { class: "field" }, el("label", null, "Nominal Dibayar Aktual"), inNominal),
       el("div", { class: "field" }, el("label", null, "Alasan / Catatan"), inAlasan),
       el("div", { class: "field" }, el("label", { class: "row" }, chkBreak, "Break-glass Darurat Admin (KEPUTUSAN PEMILIK)"), inMFA),
-      el("div", { class: "row" }, btnSetuju, btnTolak)
+      el("div", { class: "row" }, btnSetuju, btnTolak),
+      buildRefundPanel(p, api, chkBreak, inMFA, loadList)
     );
 
     if (p.bukti_url) {
@@ -347,4 +415,58 @@ export async function renderVerifikasiPembayaran(
 
   container.append(el("h2", null, "04b — Verifikasi Pembayaran (Bendahara/Admin)"), feedback, tblWrap, detailWrap);
   await loadList();
+}
+
+function buildRefundPanel(
+  p: { id: string; nomor_pembayaran: string; nominal_total: number; status: string },
+  api: APIClient,
+  chkBreak: HTMLInputElement,
+  inMFA: HTMLInputElement,
+  reloadList: () => Promise<void>
+): HTMLElement {
+  const aksiSel = el("select", { "data-testid": "refund-aksi" },
+    el("option", { value: "ajukan" }, "ajukan (Petugas 1)"),
+    el("option", { value: "setujui" }, "setujui (Petugas 2 / Break-glass)"),
+    el("option", { value: "tolak" }, "tolak (Petugas 2 / Break-glass)")
+  );
+  const metodeSel = el("select", { "data-testid": "refund-metode" },
+    el("option", { value: "tunai" }, "tunai"),
+    el("option", { value: "transfer" }, "transfer")
+  );
+  const nomIn = el("input", { type: "number", value: String(p.nominal_total), "data-testid": "refund-nominal" });
+  const alasanIn = el("input", { type: "text", placeholder: "Alasan pengajuan / catatan pelaksana", "data-testid": "refund-alasan" });
+  const msg = el("div");
+  const btn = el("button", { class: "btn btn-danger", type: "button", "data-testid": "btn-refund-submit" }, "Proses Refund Dual-Control");
+
+  btn.addEventListener("click", async () => {
+    clear(msg);
+    btn.disabled = true;
+    try {
+      const aksi = aksiSel.value;
+      const alasan = alasanIn.value.trim();
+      const body = aksi === "ajukan"
+        ? { aksi, metode: metodeSel.value, nominal: Number(nomIn.value || 0), alasan }
+        : { aksi, catatan_pelaksana: alasan, breakglass: chkBreak.checked, mfa_code: inMFA.value.trim() };
+      await api.request("POST", `/api/v1/pembayaran/${encodeURIComponent(p.id)}/refund`, { body });
+      msg.appendChild(el("div", { class: "alert alert-ok", "data-testid": "refund-ok" }, `Aksi refund '${aksi}' pada ${p.nomor_pembayaran} tersimpan.`));
+      await reloadList();
+    } catch (err) {
+      msg.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  return el("div", { class: "card card-muted", style: "margin-top:12px;" },
+    el("h4", null, "Pengembalian Dana Manual (Dual-Control 2-Orang)"),
+    el("p", { class: "alert alert-note" }, `Berlaku untuk pembayaran status 'lunas' / 'perlu_tindak_lanjut' (saat ini: ${p.status}). Pemohon dan pelaksana tidak boleh akun yang sama kecuali break-glass.`),
+    msg,
+    el("div", { class: "grid-cards" },
+      el("div", { class: "field" }, el("label", null, "Aksi"), aksiSel),
+      el("div", { class: "field" }, el("label", null, "Metode (khusus ajukan)"), metodeSel),
+      el("div", { class: "field" }, el("label", null, "Nominal Refund"), nomIn)
+    ),
+    el("div", { class: "field" }, el("label", null, "Alasan / Catatan Pelaksana"), alasanIn),
+    btn
+  );
 }

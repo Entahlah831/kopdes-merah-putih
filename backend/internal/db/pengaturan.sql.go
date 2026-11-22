@@ -67,6 +67,57 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 	return err
 }
 
+const listAuditLog = `-- name: ListAuditLog :many
+SELECT id, actor_user_id, actor_peran, aksi, entitas, entitas_id, ringkasan, ip_address, created_at
+FROM audit_log
+WHERE ($1::text = '' OR entitas = $1::text)
+  AND ($2::text = '' OR aksi = $2::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListAuditLogParams struct {
+	EntitasFilter string `json:"entitas_filter"`
+	AksiFilter    string `json:"aksi_filter"`
+	Off           int32  `json:"off"`
+	Lim           int32  `json:"lim"`
+}
+
+func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditLog,
+		arg.EntitasFilter,
+		arg.AksiFilter,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLog{}
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorUserID,
+			&i.ActorPeran,
+			&i.Aksi,
+			&i.Entitas,
+			&i.EntitasID,
+			&i.Ringkasan,
+			&i.IpAddress,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updatePengaturan = `-- name: UpdatePengaturan :one
 UPDATE pengaturan
 SET nama_koperasi = COALESCE(NULLIF($1::text, ''), nama_koperasi),

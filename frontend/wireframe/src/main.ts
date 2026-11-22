@@ -7,6 +7,7 @@ import { renderDaftar, renderMasuk } from "./views/auth_daftar";
 import { renderKatalog, renderPesanan } from "./views/katalog_pesanan";
 import { renderTagihan } from "./views/tagihan";
 import { renderDashboardPengurus, renderVerifikasiAnggota, renderVerifikasiPembayaran } from "./views/admin";
+import { renderOperasional, renderPengaturanUser } from "./views/operasional";
 
 const api = new APIClient();
 let currentUser: UserSession | null = null;
@@ -29,7 +30,8 @@ function routeFromHash(): RouteKey {
   const h = window.location.hash.replace(/^#\/?/, "");
   const valid: RouteKey[] = [
     "beranda", "katalog", "daftar", "masuk", "tagihan", "pesanan",
-    "dashboard", "verifikasi_anggota", "verifikasi_pembayaran"
+    "dashboard", "verifikasi_anggota", "verifikasi_pembayaran",
+    "operasional", "pengaturan_user"
   ];
   return (valid.includes(h as RouteKey) ? h : "beranda") as RouteKey;
 }
@@ -60,7 +62,9 @@ async function renderApp(): Promise<void> {
     { key: "tagihan", label: "Tagihan", show: !!currentUser },
     { key: "dashboard", label: "Pengurus", show: !!currentUser && ["admin", "bendahara", "petugas_toko"].includes(currentUser.peran) },
     { key: "verifikasi_anggota", label: "Verif Anggota", show: !!currentUser && ["admin", "bendahara", "petugas_toko"].includes(currentUser.peran) },
-    { key: "verifikasi_pembayaran", label: "Verif Bayar", show: !!currentUser && ["admin", "bendahara"].includes(currentUser.peran) }
+    { key: "verifikasi_pembayaran", label: "Verif Bayar", show: !!currentUser && ["admin", "bendahara"].includes(currentUser.peran) },
+    { key: "operasional", label: "Operasional", show: !!currentUser && ["admin", "bendahara", "petugas_toko"].includes(currentUser.peran) },
+    { key: "pengaturan_user", label: "Pengaturan", show: !!currentUser && currentUser.peran === "admin" }
   ];
 
   const navButtons = navItems
@@ -140,6 +144,12 @@ async function renderApp(): Promise<void> {
       break;
     case "verifikasi_pembayaran":
       await renderVerifikasiPembayaran(main, api, currentUser, registerCleanup);
+      break;
+    case "operasional":
+      await renderOperasional(main, api, currentUser);
+      break;
+    case "pengaturan_user":
+      await renderPengaturanUser(main, api, currentUser);
       break;
   }
 }

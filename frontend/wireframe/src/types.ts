@@ -93,4 +93,6 @@ export type RouteKey =
   | "pesanan"
   | "dashboard"
   | "verifikasi_anggota"
-  | "verifikasi_pembayaran";
+  | "verifikasi_pembayaran"
+  | "operasional"
+  | "pengaturan_user";

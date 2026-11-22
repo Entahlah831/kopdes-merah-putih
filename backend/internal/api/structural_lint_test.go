@@ -59,14 +59,14 @@ func TestStructural_LeanBudgetsAndLimits(t *testing.T) {
 		t.Fatalf("Jumlah tabel=%d (harus 1..22)", tableCount)
 	}
 
-	// 3. Maksimal 36 endpoint HTTP
+	// 3. Maksimal 38 endpoint HTTP (37 aktif saat ini)
 	routesBytes, err := os.ReadFile(filepath.Join(bRoot, "internal", "api", "routes.go"))
 	if err != nil {
 		t.Fatalf("baca routes.go: %v", err)
 	}
 	routeMatches := regexp.MustCompile(`mux\.Handle(?:Func)?\(`).FindAllIndex(routesBytes, -1)
-	if len(routeMatches) == 0 || len(routeMatches) > 36 {
-		t.Fatalf("Jumlah endpoint terdaftar=%d, melebihi batas 36", len(routeMatches))
+	if len(routeMatches) == 0 || len(routeMatches) > 38 {
+		t.Fatalf("Jumlah endpoint terdaftar=%d, melebihi batas 38", len(routeMatches))
 	}
 }
 

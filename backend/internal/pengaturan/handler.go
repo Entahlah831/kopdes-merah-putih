@@ -29,3 +29,13 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	response.JSON(w, http.StatusOK, row)
 }
+
+func (h *Handler) HandleListAuditLog(w http.ResponseWriter, r *http.Request) {
+	lim, off := response.ParsePagination(r, 20, 100)
+	rows, err := h.svc.ListAuditLog(r.Context(), r.URL.Query().Get("entitas"), r.URL.Query().Get("aksi"), lim, off)
+	if err != nil {
+		response.WriteServiceError(w, err)
+		return
+	}
+	response.JSON(w, http.StatusOK, rows, map[string]interface{}{"limit": lim, "offset": off})
+}

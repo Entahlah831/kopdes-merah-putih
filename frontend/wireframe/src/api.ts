@@ -22,9 +22,8 @@ export class APIClient {
       throw new Error(`Gagal memuat /config.json (${rtRes.status})`);
     }
     this.runtimeCfg = (await rtRes.json()) as RuntimeConfigJSON;
-    const base = this.getAPIBase();
-    if (!base) {
-      throw new Error("api_public_url kosong pada /config.json");
+    if (typeof this.runtimeCfg?.api_public_url !== "string") {
+      throw new Error("api_public_url tidak valid pada /config.json");
     }
     const pubEnv = await this.request<PublicConfigData>("GET", "/api/v1/public/config");
     this.publicCfg = pubEnv.data;
@@ -115,6 +114,20 @@ export class APIClient {
       url: URL.createObjectURL(blob),
       contentType: res.headers.get("Content-Type") || blob.type || "image/jpeg"
     };
+  }
+
+  async fetchText(path: string, signal?: AbortSignal): Promise<string> {
+    const url = `${this.getAPIBase()}${path}`;
+    const res = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+      signal
+    });
+    if (!res.ok) {
+      throw new Error(`Gagal memuat data teks/CSV (HTTP ${res.status})`);
+    }
+    return await res.text();
   }
 }
 

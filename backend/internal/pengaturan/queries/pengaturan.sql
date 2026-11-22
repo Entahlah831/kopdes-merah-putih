@@ -23,3 +23,11 @@ VALUES (
     sqlc.narg(actor_user_id), sqlc.arg(actor_peran), sqlc.arg(aksi),
     sqlc.arg(entitas), sqlc.arg(entitas_id), sqlc.arg(ringkasan), sqlc.arg(ip_address)
 );
+
+-- name: ListAuditLog :many
+SELECT id, actor_user_id, actor_peran, aksi, entitas, entitas_id, ringkasan, ip_address, created_at
+FROM audit_log
+WHERE (sqlc.arg(entitas_filter)::text = '' OR entitas = sqlc.arg(entitas_filter)::text)
+  AND (sqlc.arg(aksi_filter)::text = '' OR aksi = sqlc.arg(aksi_filter)::text)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);

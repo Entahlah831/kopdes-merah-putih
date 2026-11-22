@@ -1,7 +1,7 @@
 {
   "file": "roles_matrix.json",
   "version": "2.1.0-lean",
-  "description": "Matriks RBAC aktual untuk 4 peran inti (+ publik tanpa login) Kopdes Merah Putih yang disinkronkan 100% dengan 36 endpoint di internal/api/routes.go.",
+  "description": "Matriks RBAC aktual untuk 4 peran inti (+ publik tanpa login) Kopdes Merah Putih yang disinkronkan 100% dengan 37 endpoint di backend/internal/api/routes.go.",
   "roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"],
   "route_catalog": [
     { "pattern": "GET /healthz", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Liveness probe" },
@@ -16,6 +16,7 @@
     { "pattern": "POST /api/v1/auth/password", "allowed_roles": ["unauthenticated", "anggota", "petugas_toko", "bendahara", "admin"], "note": "Aktivasi/ganti sandi" },
     { "pattern": "GET /api/v1/auth/me", "allowed_roles": ["anggota", "petugas_toko", "bendahara", "admin"], "note": "Profil sesi aktif" },
     { "pattern": "PUT /api/v1/pengaturan", "allowed_roles": ["bendahara", "admin"], "note": "Ubah pengaturan & rekening QRIS koperasi" },
+    { "pattern": "GET /api/v1/audit-log", "allowed_roles": ["admin"], "note": "Daftar log audit sistem read-only (paginasi aman)" },
     { "pattern": "GET /api/v1/users", "allowed_roles": ["admin"], "note": "Daftar user sistem" },
     { "pattern": "POST /api/v1/users", "allowed_roles": ["admin"], "note": "Buat akun staf/admin" },
     { "pattern": "PATCH /api/v1/users/{id}", "allowed_roles": ["admin"], "note": "Perbarui peran/status/reset MFA user" },
@@ -182,6 +183,13 @@
       "path": "/api/v1/laporan?jenis=anggota",
       "note": "Laporan operasional & kas (admin, bendahara, petugas_toko)",
       "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 200, "bendahara": 200, "admin": 200 }
+    },
+    {
+      "id": "RBAC-20",
+      "method": "GET",
+      "path": "/api/v1/audit-log?limit=10",
+      "note": "Log audit sistem read-only (hanya admin)",
+      "expected_status": { "unauthenticated": 401, "anggota": 403, "petugas_toko": 403, "bendahara": 403, "admin": 200 }
     }
   ]
 }

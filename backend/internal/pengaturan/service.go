@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -149,4 +150,57 @@ func (s *Service) UpdatePengaturan(ctx context.Context, claims *middleware.Sessi
 		IPAddress:   ip,
 	})
 	return row, nil
+}
+
+// AuditLogDTO merepresentasikan satu baris log audit aman untuk UI admin.
+type AuditLogDTO struct {
+	ID          uuid.UUID  `json:"id"`
+	ActorUserID *uuid.UUID `json:"actor_user_id,omitempty"`
+	ActorPeran  string     `json:"actor_peran"`
+	Aksi        string     `json:"aksi"`
+	Entitas     string     `json:"entitas"`
+	EntitasID   string     `json:"entitas_id"`
+	Ringkasan   string     `json:"ringkasan"`
+	IPAddress   string     `json:"ip_address"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func mapAuditLogRow(row db.AuditLog) AuditLogDTO {
+	var actorID *uuid.UUID
+	if row.ActorUserID.Valid {
+		v := response.FromPGUUID(row.ActorUserID)
+		actorID = &v
+	}
+	return AuditLogDTO{
+		ID:          response.FromPGUUID(row.ID),
+		ActorUserID: actorID,
+		ActorPeran:  row.ActorPeran,
+		Aksi:        row.Aksi,
+		Entitas:     row.Entitas,
+		EntitasID:   row.EntitasID,
+		Ringkasan:   row.Ringkasan,
+		IPAddress:   row.IpAddress,
+		CreatedAt:   row.CreatedAt.Time,
+	}
+}
+
+// ListAuditLog mengambil daftar log audit terbaru dengan filter opsional entitas/aksi dan paginasi.
+func (s *Service) ListAuditLog(ctx context.Context, entitas, aksi string, lim, off int32) ([]AuditLogDTO, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("pool database tidak tersedia")
+	}
+	rows, err := db.New(s.pool).ListAuditLog(ctx, db.ListAuditLogParams{
+		EntitasFilter: strings.TrimSpace(entitas),
+		AksiFilter:    strings.TrimSpace(aksi),
+		Lim:           lim,
+		Off:           off,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AuditLogDTO, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapAuditLogRow(r))
+	}
+	return out, nil
 }

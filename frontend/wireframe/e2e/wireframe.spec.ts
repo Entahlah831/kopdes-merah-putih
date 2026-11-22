@@ -626,4 +626,57 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await expect(page.getByTestId("detail-pesanan-judul")).toContainText("selesai");
     await logoutUI(page);
   });
+
+  test("06. Audit Log (#37), Operasional (Laporan/Antar/Produk) & Pengaturan/Pengguna + RBAC Non-Admin", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.goto("/");
+    const rt = await (await page.request.get("/config.json")).json() as { api_public_url: string };
+    const apiBase = rt.api_public_url;
+    const uniq = Date.now().toString().slice(-6);
+
+    // 1. Admin login -> cek Dashboard Audit Trail & Navigasi ke Pengaturan/Pengguna
+    await loginUI(page, "admin@kopdes-test.local", seedPassword, "admin@kopdes-test.local");
+    await expect(page.getByTestId("audit-log-table")).toBeVisible({ timeout: 10_000 });
+
+    // Buka 08 Pengaturan & Pengguna via sidebar -> simpan pengaturan -> cek users-table
+    await page.locator("#sb-pengaturan-user").click();
+    await expect(page.getByTestId("users-table")).toBeVisible();
+    await page.getByTestId("btn-pengaturan-save").click();
+    await expect(page.getByTestId("pengaturan-ok")).toBeVisible();
+
+    // Kembali ke Dashboard -> entri update_pengaturan muncul di tabel audit log
+    await page.getByTestId("nav-dashboard").click();
+    await expect(page.getByTestId("audit-log-table")).toContainText("update_pengaturan");
+
+    // 2. Buka 07 Operasional -> Laporan, Daftar Antar & Tambah Produk
+    await page.locator("#sb-operasional").click();
+    await page.getByTestId("btn-laporan-load").click();
+    await expect(page.getByTestId("laporan-table")).toBeVisible();
+
+    await page.getByTestId("btn-daftar-antar-load").click();
+    await expect(page.locator("body")).toContainText(/Daftar Antar|antaran aktif|ORD-/i);
+
+    await page.getByTestId("prod-sku").fill(`OP-${uniq}`);
+    await page.getByTestId("prod-nama").fill(`Produk Operasional ${uniq}`);
+    await page.getByTestId("prod-harga-umum").fill("15000");
+    await page.getByTestId("prod-harga-anggota").fill("12000");
+    await page.getByTestId("prod-stok").fill("4");
+    await page.getByTestId("btn-produk-submit").click();
+    await expect(page.getByTestId("produk-ok")).toContainText(`OP-${uniq}`);
+    await logoutUI(page);
+
+    // 3. Anggota biasa ditolak akses UI & GET /api/v1/audit-log -> 403
+    await loginUI(page, "anggota1@kopdes-test.local", seedPassword);
+    await expect(page.getByTestId("nav-pengaturan_user")).toHaveCount(0);
+    await expect(page.getByTestId("nav-operasional")).toHaveCount(0);
+    const anggotaAuditStatus = await page.evaluate(async ({ base }) => {
+      const r = await fetch(`${base}/api/v1/audit-log?limit=5`, {
+        credentials: "include",
+        headers: { "X-Requested-With": "XMLHttpRequest" }
+      });
+      return r.status;
+    }, { base: apiBase });
+    expect(anggotaAuditStatus).toBe(403);
+    await logoutUI(page);
+  });
 });

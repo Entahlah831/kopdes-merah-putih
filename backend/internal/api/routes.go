@@ -204,6 +204,7 @@ func registerPublicAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg Config
 	mux.Handle("POST /api/v1/auth/password", optSes(http.HandlerFunc(dh.auth.HandlePassword)))
 	mux.Handle("GET /api/v1/auth/me", limSes(http.HandlerFunc(dh.auth.HandleMe)))
 	mux.Handle("PUT /api/v1/pengaturan", fullSes(staffRoles(http.HandlerFunc(dh.pengaturan.HandleUpdate))))
+	mux.Handle("GET /api/v1/audit-log", fullSes(adminOnly(http.HandlerFunc(dh.pengaturan.HandleListAuditLog))))
 	mux.Handle("GET /api/v1/users", fullSes(adminOnly(http.HandlerFunc(dh.auth.HandleListUsers))))
 	mux.Handle("POST /api/v1/users", fullSes(adminOnly(http.HandlerFunc(dh.auth.HandleCreateUser))))
 	mux.Handle("PATCH /api/v1/users/{id}", fullSes(adminOnly(http.HandlerFunc(dh.auth.HandleUpdateUser))))

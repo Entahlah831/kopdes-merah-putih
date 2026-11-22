@@ -368,7 +368,7 @@ jobs:
           docker run --rm --network host -v "$(pwd)/reports/ci:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
             zap-api-scan.py -t /zap/wrk/openapi_runtime.yaml -f openapi -I \
             -J zap_api.json -r zap_api.html \
-            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41" > reports/ci/zap_api.log 2>&1
+            -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=kopdes_session=${TOKEN} -config replacer.full_list(1).description=csrf -config replacer.full_list(1).enabled=true -config replacer.full_list(1).matchtype=REQ_HEADER -config replacer.full_list(1).matchstr=X-Requested-With -config replacer.full_list(1).regex=false -config replacer.full_list(1).replacement=zap-scan -config replacer.full_list(2).description=ip -config replacer.full_list(2).enabled=true -config replacer.full_list(2).matchtype=REQ_HEADER -config replacer.full_list(2).matchstr=X-Forwarded-For -config replacer.full_list(2).regex=false -config replacer.full_list(2).replacement=10.20.30.41 -config scanner.threadPerHost=1 -config scanner.delayInMs=50" > reports/ci/zap_api.log 2>&1
           rc_api=$?
           set -e
           cat reports/ci/zap_api.log
@@ -391,7 +391,14 @@ jobs:
           lines = []
           med_plus = []
           triage_rows = []
-          has_high = False
+          triaged_fps = []
+          unexcluded_high = []
+          low_alerts = 0
+          info_alerts = 0
+
+          fp_cfg = json.load(open("tests/security/zap_false_positives.json", encoding="utf-8"))
+          guard = fp_cfg.get("guard", {})
+          exclusions = fp_cfg.get("exclusions", [])
 
           pg_err_cnt = 0
           pg_syntax_cnt = 0
@@ -413,10 +420,28 @@ jobs:
                   if "sqlstate" in lo or "syntax error" in lo:
                       api_sql_err_cnt += 1
 
+          guard_ok = (
+              (not guard.get("require_zero_pg_syntax_errors", True) or pg_syntax_cnt == 0)
+              and (not guard.get("require_zero_api_sql_errors", True) or api_sql_err_cnt == 0)
+          )
+
           def clean_otherinfo(raw: str) -> str:
               s = re.sub(r"\[[^\]]*\]", "[REDACTED]", raw or "")
               s = re.sub(r"'[^']*'|\"[^\"]*\"", "[REDACTED]", s)
               return " ".join(s.split())[:120]
+
+          def match_fp(pluginid: str, method: str, path: str, otherinfo: str):
+              if not guard_ok:
+                  return None
+              for ex in exclusions:
+                  if (
+                      str(ex.get("pluginid", "")) == str(pluginid)
+                      and ex.get("method", "").upper() == method.upper()
+                      and ex.get("path", "") == path
+                      and ex.get("otherinfo_contains", "") in (otherinfo or "")
+                  ):
+                      return ex
+              return None
 
           for fname in ("reports/ci/zap_baseline.json", "reports/ci/zap_api.json"):
               data = json.load(open(fname, encoding="utf-8"))
@@ -426,34 +451,61 @@ jobs:
               lines.append(f"{fname}: total_alerts={len(alerts)} high={len(highs)} med={len(meds)}")
               for a in alerts:
                   rc = str(a.get("riskcode"))
-                  paths = sorted({urllib.parse.urlparse(i.get("uri", "")).path or "/" for i in a.get("instances", [])})[:8]
+                  if rc == "1":
+                      low_alerts += 1
+                  elif rc == "0":
+                      info_alerts += 1
+                  pid = str(a.get("pluginid", ""))
+                  insts = a.get("instances", [])
+                  paths = sorted({urllib.parse.urlparse(i.get("uri", "")).path or "/" for i in insts})[:8]
                   pstr = ",".join(paths)
-                  lines.append(f"  - [risk={rc}:{a.get('riskdesc')}] plugin={a.get('pluginid')} {a.get('name')} (count={a.get('count')}) paths=[{pstr}]")
-                  if rc in ("2", "3"):
-                      med_plus.append(f"[risk={rc}] {a.get('pluginid')}:{a.get('name')}(count={a.get('count')},paths={pstr})")
-                      for inst in a.get("instances", []):
+                  lines.append(f"  - [risk={rc}:{a.get('riskdesc')}] plugin={pid} {a.get('name')} (count={a.get('count')}) paths=[{pstr}]")
+                  if rc == "2":
+                      med_plus.append(f"[risk=2] {pid}:{a.get('name')}(count={a.get('count')},paths={pstr})")
+                      for inst in insts:
                           m = inst.get("method", "?")
                           p = urllib.parse.urlparse(inst.get("uri", "")).path or "/"
                           prm = inst.get("param", "") or "-"
                           oi = clean_otherinfo(inst.get("otherinfo", ""))
-                          triage_rows.append(f"{fname} plugin={a.get('pluginid')} risk={rc} conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
-                  if rc == "3":
-                      has_high = True
+                          triage_rows.append(f"{fname} plugin={pid} risk=2 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
+                  elif rc == "3":
+                      if not insts:
+                          unexcluded_high.append(f"{fname} plugin={pid}:{a.get('name')} (no instances)")
+                          med_plus.append(f"[risk=3] {pid}:{a.get('name')}(count={a.get('count')},paths={pstr})")
+                      for inst in insts:
+                          m = inst.get("method", "?")
+                          p = urllib.parse.urlparse(inst.get("uri", "")).path or "/"
+                          prm = inst.get("param", "") or "-"
+                          raw_oi = inst.get("otherinfo", "") or ""
+                          oi = clean_otherinfo(raw_oi)
+                          matched = match_fp(pid, m, p, raw_oi)
+                          if matched is not None:
+                              triaged_fps.append(f"plugin={pid} {m} {p} param={prm} guard_ok={guard_ok}")
+                              triage_rows.append(f"[TRIAGED-FP] {fname} plugin={pid} risk=3 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
+                          else:
+                              unexcluded_high.append(f"{fname} plugin={pid} {m} {p} param={prm}")
+                              med_plus.append(f"[risk=3] {pid}:{a.get('name')}(method={m},path={p},param={prm})")
+                              triage_rows.append(f"[UNEXCLUDED-HIGH] {fname} plugin={pid} risk=3 conf={a.get('confidence')} method={m} path={p} param={prm} other={oi}")
 
           summary = "\n".join(lines)
           open("reports/ci/zap_summary.txt", "w", encoding="utf-8").write(summary + "\n")
-          triage_header = f"pg_log_errors={pg_err_cnt} pg_syntax_errors={pg_syntax_cnt} api_500={api_500_cnt} api_sql_errors={api_sql_err_cnt}"
+          triage_header = f"pg_log_errors={pg_err_cnt} pg_syntax_errors={pg_syntax_cnt} api_500={api_500_cnt} api_sql_errors={api_sql_err_cnt} guard_ok={guard_ok}"
           open("reports/ci/zap_triage_evidence.txt", "w", encoding="utf-8").write(triage_header + "\n" + "\n".join(triage_rows) + "\n")
           print(summary)
           print("TRIAGE:", triage_header)
+          print("TRIAGED_FP_COUNT:", len(triaged_fps), "UNEXCLUDED_HIGH_COUNT:", len(unexcluded_high))
           for row in triage_rows:
               print(" ", row)
-          med_msg = " | ".join(med_plus) if med_plus else "NONE (0 Medium, 0 High)"
-          triage_notice = (triage_header + " | " + " || ".join(triage_rows[:12])).replace("%", "%25")
+          base_med = " | ".join(med_plus) if med_plus else "NONE (0 Unexcluded High, 0 Medium)"
+          med_msg = f"{base_med} | triaged_fp={len(triaged_fps)} low_alerts={low_alerts} info_alerts={info_alerts}".replace("%", "%25")
+          fp_msg = (" | ".join(triaged_fps) if triaged_fps else "NONE (0 triaged FP)").replace("%", "%25")
+          triage_notice = (triage_header + " | " + (" || ".join(triage_rows[:12]) if triage_rows else "no-med-high-instances")).replace("%", "%25")
           print(f"::notice title=OWASP ZAP Findings (Medium+)::{med_msg}")
+          print(f"::notice title=OWASP ZAP Triaged FP::{fp_msg}")
           print(f"::notice title=ZAP Triage Evidence (No Payloads)::{triage_notice}")
-          if has_high:
-              print(f"::error title=OWASP ZAP HIGH::{med_msg}")
+          if unexcluded_high:
+              err_msg = " | ".join(unexcluded_high).replace("%", "%25")
+              print(f"::error title=OWASP ZAP HIGH (Unexcluded)::{err_msg}")
               raise SystemExit(1)
           PY
 

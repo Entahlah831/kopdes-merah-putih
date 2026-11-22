@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "guard": {
+    "require_zero_pg_syntax_errors": true,
+    "require_zero_api_sql_errors": true
+  },
+  "exclusions": [
+    {
+      "pluginid": "40018",
+      "method": "POST",
+      "path": "/api/v1/public/pendaftaran",
+      "otherinfo_contains": "boolean conditions",
+      "reason": "Endpoint pendaftaran publik memiliki hybridLimit ketat (20 req/3600s); probe aktif beruntun ZAP bertransisi dari HTTP 400/201 ke HTTP 429 TOO_MANY_REQUESTS sehingga heuristik boolean-differential menandai false positive (terverifikasi 0 pg_syntax_errors, 0 api_sql_errors, 0 SQL dinamis via sqlc dan Semgrep)."
+    },
+    {
+      "pluginid": "40018",
+      "method": "POST",
+      "path": "/api/v1/public/pendaftaran/id/dokumen",
+      "otherinfo_contains": "boolean conditions",
+      "reason": "Endpoint unggah KYC publik memiliki hybridLimit ketat (40 req/3600s); probe aktif beruntun ZAP bertransisi dari HTTP 400/415 ke HTTP 429 TOO_MANY_REQUESTS sehingga heuristik boolean-differential menandai false positive (terverifikasi 0 pg_syntax_errors, 0 api_sql_errors, 0 SQL dinamis via sqlc dan Semgrep)."
+    }
+  ]
+}

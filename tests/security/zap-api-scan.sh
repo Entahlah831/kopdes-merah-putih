@@ -49,4 +49,5 @@ docker run --rm --network host \
   -f openapi \
   -I \
   -J zap_api_report.json \
-  -r zap_api_report.html
+  -r zap_api_report.html \
+  -z "-config scanner.threadPerHost=1 -config scanner.delayInMs=50"

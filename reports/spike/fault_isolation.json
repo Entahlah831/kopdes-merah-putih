@@ -1,0 +1,13 @@
+{
+  "measured_at": "2026-11-21T18:54:15Z",
+  "phase_a_upload_status": 201,
+  "phase_a_fetch_status": 200,
+  "phase_a_api_key_rejects_enc": true,
+  "phase_b_health_status": 200,
+  "phase_b_config_status": 200,
+  "phase_b_katalog_status": 200,
+  "phase_b_fetch_status": 503,
+  "phase_b_upload_status": 503,
+  "phase_c_recovery_status": 200,
+  "phase_c_byte_exact_match": true
+}

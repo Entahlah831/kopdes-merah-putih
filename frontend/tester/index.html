@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Frontend Tester Polos - Kopdes Merah Putih (Ramping 35 Endpoint)</title>
+  <style>
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    fieldset { border: 1px solid #000; padding: 10px; margin-bottom: 14px; }
+    legend { font-weight: bold; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+    th, td { border: 1px solid #000; padding: 4px 6px; text-align: left; vertical-align: top; }
+    pre { border: 1px solid #000; padding: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 360px; }
+    input, select, textarea, button { font-family: inherit; font-size: 13px; margin: 2px 4px 2px 0; }
+    .row { margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <h1>Frontend Tester Polos — Kopdes Merah Putih (Single-Cooperative Lean API)</h1>
+  <p>
+    Lingkup: <strong>1 Koperasi Tunggal</strong> | 19 Tabel PostgreSQL | 35 Endpoint HTTP | Tanpa framework, tanpa build step, tanpa CDN, tanpa literal port/rahasia.
+    <br>
+    Referensi integrasi HTML murni:
+    <a href="reference/index.html">Hub</a> |
+    <a href="reference/pendaftaran.html">Pendaftaran &amp; KYC</a> |
+    <a href="reference/login.html">Login &amp; MFA</a> |
+    <a href="reference/pembayaran-qris.html">Pembayaran QRIS</a>
+  </p>
+
+  <fieldset>
+    <legend>1. Konfigurasi Runtime &amp; Autentikasi Sesi (In-Memory)</legend>
+    <div class="row">
+      <strong>Status Konfigurasi:</strong> <span id="configStatus">Memuat /config.json ...</span>
+    </div>
+    <div class="row">
+      <label for="seedPasswordInput">Kata Sandi Uji (TEST_SEED_PASSWORD, tidak pernah disimpan di kode):</label>
+      <input id="seedPasswordInput" type="password" size="34" placeholder="Masukkan kata sandi uji .env.test" autocomplete="off">
+      <button id="btnReloadConfig" type="button">Muat Ulang /config.json &amp; /public/config</button>
+      <button id="btnRunDiagnostics" type="button">Run All Diagnostics</button>
+    </div>
+    <div class="row">
+      <label for="accountSelect">Akun Uji Cepat:</label>
+      <select id="accountSelect"></select>
+      <label for="totpInput">TOTP (opsional):</label>
+      <input id="totpInput" type="text" size="8" maxlength="8" placeholder="123456">
+      <button id="btnFetchTOTP" type="button">Ambil TOTP (/api/totp-helper)</button>
+      <button id="btnQuickLogin" type="button">Login Akun Terpilih (+MFA Otomatis)</button>
+      <button id="btnCheckMe" type="button">GET /api/v1/auth/me</button>
+      <button id="btnLogout" type="button">Logout</button>
+    </div>
+    <div class="row">
+      <strong>Sesi Aktif Explorer:</strong> <span id="activeSessionInfo">Belum login</span>
+    </div>
+    <pre id="diagOutput">Belum menjalankan diagnostik.</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Live Demo End-to-End &amp; Skenario Klaim Otomatis (Set A)</legend>
+    <div class="row">
+      <button id="btnRunLiveDemo" type="button">Run Full Live Demo (35-Endpoint Flow)</button>
+      <button id="btnRunScenarios" type="button">Run All Non-Destructive Scenarios (SCEN-01..10)</button>
+      <label><input id="chkIncludeLockout" type="checkbox"> Sertakan SCEN-11 Lockout Uji Akun Baru (Opt-In)</label>
+      <button id="btnRunRoleMatrix" type="button">Run Role Matrix (roles_matrix.json)</button>
+    </div>
+    <div class="row">
+      <strong>Ringkasan Eksekusi Lab:</strong> <span id="labSummary">Siap dijalankan.</span>
+    </div>
+    <table id="labResultsTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Klaim / Target</th>
+          <th>Status</th>
+          <th>Durasi (ms)</th>
+          <th>Bukti / Rincian</th>
+        </tr>
+      </thead>
+      <tbody id="labResultsBody">
+        <tr><td colspan="5">Belum ada pengujian yang dijalankan.</td></tr>
+      </tbody>
+    </table>
+    <pre id="labDetailOutput">Detail mentah respons akan muncul di sini.</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Explorer 35 Endpoint &amp; Uji Pengaturan/Laporan Interaktif</legend>
+    <div class="row">
+      <button id="btnQuickKatalog" type="button">GET Katalog Produk</button>
+      <button id="btnQuickTagihan" type="button">GET Iuran Tagihan (sesuai sesi)</button>
+      <button id="btnQuickDaftarAntar" type="button">GET Daftar Antar (sesuai sesi)</button>
+      <button id="btnQuickLaporan" type="button">GET Laporan Pembayaran JSON</button>
+      <button id="btnQuickPengaturan" type="button">GET Public Config + QRIS Aktif</button>
+    </div>
+    <div class="row">
+      <label for="endpointSelect">Pilih Operasi OpenAPI (35 Endpoint):</label>
+      <select id="endpointSelect"></select>
+      <button id="btnGenIdemKey" type="button">Buat Idempotency-Key</button>
+    </div>
+    <div class="row">
+      <label for="pathInput">Path:</label>
+      <input id="pathInput" type="text" size="50">
+      <label for="queryInput">Query:</label>
+      <input id="queryInput" type="text" size="30" placeholder="?status=aktif&limit=10">
+      <label for="extraHeaderInput">Header Tambahan (opsional):</label>
+      <input id="extraHeaderInput" type="text" size="38" placeholder="Idempotency-Key:... atau X-Upload-Token:...">
+    </div>
+    <div class="row">
+      <label for="bodyInput">JSON Body (kosongkan untuk GET atau multipart):</label><br>
+      <textarea id="bodyInput" rows="7" cols="95"></textarea>
+    </div>
+    <div class="row">
+      <label><input id="chkMultipart" type="checkbox"> Kirim sebagai Multipart File Upload</label>
+      <label for="multipartFieldName">Field Extra (mis. tipe_dokumen=ktp atau pembayaran_id=...):</label>
+      <input id="multipartMetaInput" type="text" size="36" value="tipe_dokumen=ktp">
+      <input id="multipartFileInput" type="file">
+      <button id="btnSendRequest" type="button">Kirim Request Sekarang</button>
+    </div>
+    <pre id="explorerResponseOutput">Respons HTTP endpoint explorer akan muncul di sini.</pre>
+  </fieldset>
+
+  <script src="app.js"></script>
+  <script src="lab.js"></script>
+</body>
+</html>

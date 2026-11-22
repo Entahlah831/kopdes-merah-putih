@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Login &amp; MFA - Kopdes Merah Putih</title>
+  <style>
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    fieldset { border: 1px solid #000; padding: 10px; margin-bottom: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Login Opaque Session &amp; TOTP MFA</h1>
+  <p><a href="index.html">Hub Referensi</a> | <a href="../index.html">Tester Utama</a></p>
+  <p>Token sesi hanya disimpan pada variabel memori JavaScript halaman ini (tidak menyentuh localStorage/sessionStorage).</p>
+
+  <fieldset>
+    <legend>Langkah 1: POST /api/v1/auth/login</legend>
+    <label>Email / No HP: <input id="idInput" type="text" size="30" value="anggota1@kopdes-test.local"></label><br>
+    <label>Password: <input id="pwdInput" type="password" size="30" placeholder="Isi kata sandi uji"></label><br>
+    <button id="btnLogin" type="button">Login</button>
+    <button id="btnMe" type="button">Cek /api/v1/auth/me</button>
+    <button id="btnLogout" type="button">Logout</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Langkah 2 (Wajib untuk Admin &amp; Bendahara): Setup / Verifikasi MFA</legend>
+    <button id="btnMfaSetup" type="button">POST /api/v1/auth/mfa/setup</button><br>
+    <label>Setup Token (bila enrollment baru): <input id="setupTokenInput" type="text" size="40"></label><br>
+    <label>Kode TOTP / Recovery: <input id="mfaCodeInput" type="text" size="16" placeholder="6 digit"></label>
+    <button id="btnHelperTotp" type="button">Ambil Kode Uji (/api/totp-helper)</button>
+    <button id="btnMfaVerify" type="button">POST /api/v1/auth/mfa/verify</button>
+  </fieldset>
+
+  <pre id="out">-</pre>
+  <script>
+    "use strict";
+    let apiBase = "";
+    let sessionToken = "";
+
+    async function initApi() {
+      if (!apiBase) {
+        const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+        apiBase = ui.api_public_url.replace(/\/+$/, "");
+      }
+      return apiBase;
+    }
+    function show(msg) { document.getElementById("out").textContent = msg; }
+
+    document.getElementById("btnLogin").addEventListener("click", async function () {
+      const base = await initApi();
+      const resp = await fetch(base + "/api/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: document.getElementById("idInput").value.trim(),
+          password: document.getElementById("pwdInput").value
+        })
+      });
+      const json = await resp.json();
+      if (json.data && json.data.session_token) sessionToken = json.data.session_token;
+      show("HTTP " + resp.status + "\n" + JSON.stringify(json, null, 2));
+    });
+
+    document.getElementById("btnMfaSetup").addEventListener("click", async function () {
+      const base = await initApi();
+      const resp = await fetch(base + "/api/v1/auth/mfa/setup", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const json = await resp.json();
+      if (json.data && json.data.setup_token) {
+        document.getElementById("setupTokenInput").value = json.data.setup_token;
+      }
+      show("HTTP " + resp.status + "\n" + JSON.stringify(json, null, 2));
+    });
+
+    document.getElementById("btnHelperTotp").addEventListener("click", async function () {
+      const resp = await fetch("/api/totp-helper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_email: document.getElementById("idInput").value.trim() })
+      });
+      const data = await resp.json();
+      if (data.code) document.getElementById("mfaCodeInput").value = data.code;
+      show("TOTP helper HTTP " + resp.status + ": " + JSON.stringify(data));
+    });
+
+    document.getElementById("btnMfaVerify").addEventListener("click", async function () {
+      const base = await initApi();
+      const body = { code: document.getElementById("mfaCodeInput").value.trim() };
+      const st = document.getElementById("setupTokenInput").value.trim();
+      const target = st ? "/api/v1/auth/mfa/setup" : "/api/v1/auth/mfa/verify";
+      if (st) body.setup_token = st;
+      const resp = await fetch(base + target, {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      show("POST " + target + " -> HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2));
+    });
+
+    document.getElementById("btnMe").addEventListener("click", async function () {
+      const base = await initApi();
+      const resp = await fetch(base + "/api/v1/auth/me", {
+        headers: { "Authorization": "Bearer " + sessionToken }
+      });
+      show("HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2));
+    });
+
+    document.getElementById("btnLogout").addEventListener("click", async function () {
+      const base = await initApi();
+      const resp = await fetch(base + "/api/v1/auth/logout", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: "{}"
+      });
+      sessionToken = "";
+      show("HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2));
+    });
+  </script>
+</body>
+</html>

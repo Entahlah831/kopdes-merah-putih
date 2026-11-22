@@ -1,51 +1,98 @@
 # Tugas Manual Pemilik Proyek
 
-Dokumen ini berisi langkah-langkah yang harus dilakukan langsung oleh pemilik sistem pada file `.env` asli dan lingkungan produksi (karena agen dilarang membaca/mengedit `.env` asli maupun menyimpan rahasia nyata di repositori).
+Dokumen ini berisi langkah-langkah yang **wajib dilakukan langsung oleh pemilik sistem** pada `.env` asli, penyimpanan kunci backup off-server, dan keputusan kebijakan bisnis sebelum go-live (agen dilarang membaca, mengubah, atau mengomit `.env` asli).
 
-## 1. Sinkronisasi `.env` Asli dari `.env.example`
+## 1. Sinkronisasi `.env` Asli dari `.env.example` (44 Variabel <= 45)
 
-Jika sebelumnya Anda sudah memiliki `.env` dari versi awal, jalankan skrip sinkronisasi agar seluruh kunci variabel baru dari `internal/config/config.go` ikut ditambahkan tanpa menimpa rahasia yang sudah Anda isi:
+Jalankan skrip sinkronisasi agar seluruh 44 kunci variabel terbaru hadir tanpa menimpa rahasia yang sudah Anda isi (termasuk `WORKER_PORT` & `RATE_LIMIT_RPS`; daftar alasan lengkap per variabel ada di [ENV_REFERENCE.md](ENV_REFERENCE.md)):
 
 - **Windows (PowerShell):**
   ```powershell
-  .\scripts\promote_env.ps1 -Template .env.example -Target .env
+  .\scripts\promote_env.ps1 -Template .env.example -Target .env -GenerateEmptySecrets
   ```
 - **Linux / macOS:**
   ```bash
-  bash scripts/promote_env.sh .env.example .env
+  GENERATE_SECRETS=true bash scripts/promote_env.sh .env.example .env
   ```
 
-Setelah sinkronisasi, cek apakah masih ada variabel wajib yang kosong atau konflik port dengan:
+Verifikasi bahwa tidak ada variabel wajib yang kosong atau konflik port:
 ```bash
-go run ./cmd/envcheck --strict --ports --env-file .env
-go run ./cmd/envcheck --compare .env.example .env
+go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env"
+go -C backend run ./cmd/envcheck --compare .env.example .env
 ```
-*(Kedua perintah di atas menyamarkan seluruh nilai rahasia dengan `***REDACTED***`.)*
+*(Seluruh nilai rahasia disamarkan menjadi `***REDACTED***` oleh `envcheck`.)*
 
-## 2. Pengisian Kunci & Kata Sandi Produksi
+---
 
-Pastikan seluruh nilai berikut di `.env` produksi dibuat unik menggunakan CSPRNG (`openssl rand -hex 32`) dan **bukan** nilai dari `.env.test` / `.env.test.alt`:
+## 2. Pengisian Kunci Produksi (Model 85/15) & Aturan Ketat Kunci `age`
 
-- `JWT_SECRET`, `AES_MASTER_KEY`, `BLIND_INDEX_SECRET`, `QRIS_SECRET` (>= 32 byte / 64 karakter hex)
-- `METRICS_TOKEN` (>= 32 byte, jangan gunakan token pendek)
-- `DB_PASSWORD`, `KOPDES_APP_PASSWORD`, `POSTGRES_PASSWORD` (kata sandi kuat unik)
-- `BACKUP_ENCRYPTION_KEY` (passphrase panjang untuk enkripsi backup harian `scripts/backup.sh`)
-- `DB_SSLMODE=require` atau `verify-full` saat memakai koneksi jaringan non-loopback
-- `ALLOWED_ORIGINS` berisi domain frontend resmi koperasi (dilarang wildcard `*` saat `APP_ENV=production`)
-- `ALLOW_SUPERUSER_DB=false`
+Lihat panduan khusus pembagian **85% skrip otomasi vs 15% rahasia inti pemilik** beserta langkah backup/pulih/rotasi di **[KEAMANAN_KUNCI_PEMILIK.md](KEAMANAN_KUNCI_PEMILIK.md)** (`scripts/backup_keys.sh`, `scripts/restore_keys.sh`, `scripts/rotate_keys.sh`), serta cara pasang server di **[PANDUAN_PASANG_VPS_LINUX.md](PANDUAN_PASANG_VPS_LINUX.md)**.
 
-## 3. Verifikasi Manual Akhir di Host Target Pemilik
+> **PERINGATAN KRITIS — KUNCI BACKUP `age` WAJIB DISIMPAN DI LUAR SERVER:**
+> - Bangkitkan **2 pasang kunci `age` terpisah** di perangkat tepercaya pemilik (di luar VPS): satu untuk backup harian (`kopdes-backup-private.key` -> `BACKUP_AGE_RECIPIENT`), satu lagi untuk brankas kunci (`kopdes-keyvault-private.key` -> `VAULT_AGE_RECIPIENT`).
+> - Isi **`BACKUP_AGE_RECIPIENT`** di `.env` VPS **HANYA** dengan *public key* (`age1...`).
+> - **JANGAN PERNAH** menaruh berkas `AGE-SECRET-KEY-...` (*private key*) di dalam VPS, `.env`, atau repositori Git!
+> - Simpan salinan terenkripsi/fisik *private key* `age` di **minimal 2 tempat aman terpisah milik pemilik** (mis. password manager utama + brankas offline pengurus). **Kehilangan private key berarti seluruh arsip `.tar.age` tidak dapat dibuka selamanya.**
 
-Karena host pengujian saat pengembangan tidak memiliki daemon Docker lokal maupun sertifikat TLS domain koperasi:
-1. Jalankan di server target:
+Pastikan variabel berikut juga disetel sendiri oleh pemilik dengan CSPRNG (`openssl rand -hex 32`):
+- `AES_MASTER_KEY` (format `v1:k1=<64-hex>`) & `AES_PREVIOUS_KEYS` (saat rotasi kunci memakai [scripts/rotate_keys.sh](../scripts/rotate_keys.sh)).
+- `BLIND_INDEX_SECRET` (>= 32 byte / 64 hex).
+- `DB_PASSWORD` dan `POSTGRES_PASSWORD` (kata sandi kuat unik).
+- `DB_USER=kopdes_app` (role non-superuser aplikasi) dan `DB_SSLMODE=require` / `verify-full` bila memakai koneksi lintas host.
+- `COOKIE_SECURE=auto` (memakai cookie `__Host-kopdes_session` otomatis saat HTTPS/proxy TLS di `TRUSTED_PROXIES`), `ALLOW_BEARER_AUTH=false` untuk web SPA.
+- `ALLOWED_ORIGINS` berisi origin frontend HTTPS resmi koperasi (dilarang `*` di produksi).
+
+---
+
+## 3. Keputusan Kebijakan Bisnis, Hukum, & Akuntansi (`KP-01` s.d. `KP-10`)
+
+Ringkasan kebijakan berikut memiliki ID keputusan **`KP-01`..`KP-10`** beserta target penutupannya (`UAT` / `Pilot` / `Produksi`) pada [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md). Gunakan pula [PANDUAN_PENGURUS.md](PANDUAN_PENGURUS.md) dan [LEMBAR_PELATIHAN_PENGURUS.md](LEMBAR_PELATIHAN_PENGURUS.md) saat membekali Ketua, Bendahara, dan Petugas Toko:
+
+| Variabel / Kolom | Nilai Bawaan Aman | Status Keputusan |
+| :--- | :---: | :--- |
+| `STOCK_HOLD_MINUTES` (`KP-02`) | `60` | **KEPUTUSAN PEMILIK** — lama tahanan stok tertahan saat checkout (`>= PAYMENT_EXPIRY_DURATION` dalam menit). |
+| `DUAL_CONTROL_BREAKGLASS_ENABLED` (`KP-03`) | `false` | **KEPUTUSAN PEMILIK** — aktifkan `true` hanya sementara jika koperasi sedang kekurangan staf (1 admin darurat); tetap butuh `mfa_code` TOTP terbaru & alasan >= 10 karakter + audit log khusus. |
+| `ALLOW_PERSONAL_PAYMENT_PILOT` (`KP-01`) | `false` | **KEPUTUSAN PEMILIK** & **PERLU VERIFIKASI HUKUM** — tetap `false` sampai QRIS badan hukum koperasi terbit; jika dipakai pilot, dikunci `PILOT_MAX_PER_TX=500000` & `PILOT_MAX_PER_DAY=2000000`. |
+| `QRIS_UNIQUE_DIGITS` (`KP-04`) | `3` | **KEPUTUSAN PEMILIK** — `3` digit (`1..999`, cukup untuk batas default 50 transaksi pending global) atau `4` digit (`1..9999`). |
+| `PDP_REJECTED_RETENTION_DAYS` (`KP-05`) | `30` | **PERLU VERIFIKASI HUKUM** — masa simpan data pendaftaran ditolak sebelum dihapus keras oleh worker `pdp_purge`. |
+| `BUKTI_RETENTION_DAYS` (`KP-06`) | `365` | **PERLU VERIFIKASI HUKUM** & **KEPUTUSAN AKUNTAN** — masa retensi berkas bukti transaksi gagal/batal/kedaluwarsa sebelum dihapus worker `bukti_purge` (bukti transaksi `lunas` tetap dipertahankan). |
+| `jenis_iuran.klasifikasi_akuntansi` & refund/selisih kode unik (`KP-07`) | Label teks netral | **KEPUTUSAN AKUNTAN** — tetapkan pemetaan pos akuntansi bersama akuntan koperasi sebelum tutup buku resmi. |
+| Item wireframe `BLOCKED` ([ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), `KP-08`) | Non-aktif di `frontend/wireframe/` | **KEPUTUSAN PEMILIK** — pastikan ruang lingkup tetap 1 koperasi (non-SIMKOPDES, non-Transfer Bank, non-PDF bukti, non-RAT/CMS) sebelum memproduksi UI final ([TODO_FRONTEND.md](../frontend/TODO_FRONTEND.md)). |
+| `CAPTCHA_ENABLED` & `RATE_LIMIT_RPS` (`KP-09`) | `false`, `30` (`1..120` di produksi) | **KEPUTUSAN PEMILIK** — penyetelan Turnstile CAPTCHA publik & batas laju per IP di VPS produksi. |
+| Kunci offline `age` & jadwal drill (`KP-10`) | `BACKUP_RETENTION_DAYS=30` | **KEPUTUSAN PEMILIK** — simpan minimal 2 salinan private key `age` di luar VPS + tetapkan jadwal latihan `restore_drill.sh` & `restore_keys.sh`. |
+
+---
+
+## 4. Inisialisasi VPS, Worker Bawaan, Pemulihan Admin, & Backup Off-Server
+
+1. Pastikan konfigurasi valid dan jalankan layanan Compose inti (`postgres`, `api` profil `app`, `worker` profil `worker`, plus `proxy` Caddy untuk melayani `frontend/wireframe/dist`):
    ```bash
-   go run ./cmd/envcheck --strict --ports --env-file .env
-   docker compose --env-file .env config --quiet
-   docker compose --env-file .env up -d --build
+   go -C backend run ./cmd/envcheck --strict --ports --no-listen --env-file "${PWD}/.env"
+   npm --prefix frontend/wireframe ci && npm --prefix frontend/wireframe run build
+   docker compose --env-file .env --profile app --profile worker --profile proxy config --quiet
+   KOPDES_SITE_ADDRESS="https://koperasi.desaanda.id" docker compose --env-file .env --profile app --profile worker --profile proxy up -d --build
    ```
-2. Verifikasi `curl -fsS http://127.0.0.1:${API_HOST_PORT}/readyz` mengembalikan HTTP `200`.
-3. Pastikan `/metrics` tidak terekspos ke publik oleh reverse proxy (Caddy/Nginx) dan hanya di-scrape Prometheus menggunakan `METRICS_TOKEN`.
-4. Konsultasikan dengan konsultan hukum/notaris mengenai kesesuaian masa retensi `PDP_REJECTED_RETENTION_DAYS` (default 30 hari — **PERLU VERIFIKASI HUKUM**).
-5. Tetapkan klasifikasi pembukuan akuntansi untuk setiap jenis iuran (`pokok`, `wajib`, `sukarela`) bersama akuntan koperasi sebelum periode tutup buku (**KEPUTUSAN AKUNTAN**).
-6. Lengkapi kredensial penyedia eksternal nyata saat beralih dari stub/outbox lokal: gateway SMS/WhatsApp (`NOTIFIER_*`), penyimpanan objek S3/MinIO untuk berkas KYC (jika pindah dari `STORAGE_KYC_DIR` lokal), serta payload QRIS badan hukum koperasi dari PJP resmi ketika menonaktifkan `ALLOW_PERSONAL_PAYMENT_PILOT=false`.
-7. Bila membangun biner dari mesin pengembang Windows secara langsung (non-Docker), perbarui toolchain Go lokal ke rilis patch terbaru (di mesin dev terdeteksi `go1.27.1`, sementara `govulncheck` pada container Linux CI sudah lolos `No vulnerabilities found`).
+2. Jika upgrade dari versi sebelum `decision-audit`, jalankan migrasi berkas storage sekali secara idempoten:
+   ```bash
+   docker compose exec api /app/kopdes --env-file /app/.env storage migrate-files
+   ```
+3. Buat akun admin awal (wajib setup MFA TOTP saat login pertama):
+   ```bash
+   docker compose exec api /app/kopdes --env-file /app/.env admin create \
+     --email ketua@koperasi.desa.id --nama "Ketua Koperasi" --hp 08120000001 --password "<SANDI_KUAT>"
+   ```
+4. Verifikasi `/readyz` menampilkan `"database": "CONNECTED"`, `worker_jobs`, dan `"worker_degraded": false`, serta `GET /api/v1/public/config` merespons normal.
+5. **Runbook Pemulihan Akses Jika Admin Kehilangan Ponsel MFA atau Lupa Sandi**:
+   Masuk via SSH ke VPS pemilik lalu jalankan:
+   ```bash
+   docker compose exec api /app/kopdes --env-file /app/.env admin reset-mfa --email ketua@koperasi.desa.id
+   docker compose exec api /app/kopdes --env-file /app/.env admin reset-password --email ketua@koperasi.desa.id --password "<SANDI_BARU_MIN_12_KARAKTER>"
+   ```
+   Kedua perintah otomatis mencabut seluruh sesi aktif dan menulis jejak ke `audit_log`.
+6. **Cron Backup Harian & Salinan Off-Server (Hanya 1 Tugas Cron di Host)**:
+   Tugas rutin (`pesanan_expire`, `iuran_generate`, `pdp_purge`, `bukti_purge`, `rate_limits_cleanup`) kini otomatis berjalan di kontainer `worker`. Di host VPS cukup jadwalkan backup harian terenkripsi `age` + sinkronisasi ke storage terpisah (`rclone copy` / `restic`):
+   ```cron
+   0 3 * * * cd /opt/kopdes && ENV_FILE=/opt/kopdes/.env bash /opt/kopdes/scripts/backup.sh
+   ```
+   Lakukan uji pemulihan berkala (dengan kunci private dari perangkat terpisah ke staging DB) menggunakan [restore_test.sh](../scripts/restore_test.sh) atau [restore_drill.sh](../scripts/restore_drill.sh).
+7. **WAF/Edge Cloudflare**: Aktifkan Cloudflare proxied HTTPS dan rule rate-limit edge pada jalur `/api/v1/public/*` dan `/api/v1/auth/login` untuk menahan serangan volumetrik sebelum menyentuh VPS.

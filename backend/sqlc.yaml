@@ -1,0 +1,22 @@
+﻿version: "2"
+sql:
+  - engine: "postgresql"
+    queries:
+      - "internal/auth/queries"
+      - "internal/pengaturan/queries"
+      - "internal/anggota/queries"
+      - "internal/iuran/queries"
+      - "internal/katalog/queries"
+      - "internal/pesanan/queries"
+      - "internal/pembayaran/queries"
+      - "internal/worker/queries"
+    schema:
+      - "db/migrations/000001_init_kopdes_schema.up.sql"
+      - "db/migrations/000002_decision_audit_enhancements.up.sql"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_empty_slices: true

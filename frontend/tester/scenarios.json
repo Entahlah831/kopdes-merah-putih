@@ -1,0 +1,127 @@
+{
+  "file": "scenarios.json",
+  "version": "2.0.0-lean",
+  "description": "Skenario uji end-to-end berbasis klaim (claims) untuk Kopdes Merah Putih Ramping. Non-destructive scenarios aman dijalankan berulang terhadap database Set A.",
+  "scenarios": [
+    {
+      "id": "SCEN-01",
+      "claim_id": "claim:01-public-config",
+      "title": "Health, Readiness, dan GET /api/v1/public/config Tanpa Kebocoran Rahasia",
+      "destructive": false,
+      "steps": [
+        "GET /healthz dan GET /readyz mengembalikan HTTP 200",
+        "GET /api/v1/public/config mengembalikan api_version, server_time, upload_limits, kyc_required_document_types, features, pagination, dan objek koperasi + active_qris",
+        "Payload /api/v1/public/config dipindai dan tidak mengandung kunci AES, HMAC, secret_key, atau password"
+      ]
+    },
+    {
+      "id": "SCEN-02",
+      "claim_id": "claim:02-auth-login-session",
+      "title": "Login Opaque Session, Guard mfa_pending, Verifikasi TOTP, dan Logout",
+      "destructive": false,
+      "steps": [
+        "Login admin mendapatkan scope=mfa_pending sebelum verifikasi TOTP",
+        "Akses GET /api/v1/users dengan token mfa_pending ditolak (401/403)",
+        "Verifikasi TOTP lewat /api/v1/auth/mfa/verify mempromosikan sesi sehingga GET /api/v1/auth/me dan /users mengembalikan 200"
+      ]
+    },
+    {
+      "id": "SCEN-03",
+      "claim_id": "claim:03-rbac-matrix",
+      "title": "Penegakan RBAC 4 Peran pada Endpoint Sensitif",
+      "destructive": false,
+      "steps": [
+        "Anggota ditolak 403 pada GET /api/v1/users, GET /api/v1/pendaftaran, dan GET /api/v1/laporan",
+        "Petugas toko mendapat 200 pada GET /api/v1/pesanan/daftar-antar dan ditolak 403 pada verifikasi pembayaran",
+        "Bendahara mendapat 200 pada GET /api/v1/iuran/tagihan dan GET /api/v1/pembayaran"
+      ]
+    },
+    {
+      "id": "SCEN-04",
+      "claim_id": "claim:04-pendaftaran-kyc",
+      "title": "Pendaftaran Publik, Upload KYC Terenkripsi, Verifikasi Admin, Aktivasi, dan Pencabutan Sesi saat Suspend",
+      "destructive": false,
+      "steps": [
+        "POST /api/v1/public/pendaftaran membuat calon anggota baru dengan status menunggu_dokumen/menunggu_verifikasi dan upload_token",
+        "POST /api/v1/public/pendaftaran/{id}/dokumen dengan X-Upload-Token salah ditolak (401/403), lalu token benar + PNG 1x1 valid berhasil (201)",
+        "Admin mengunduh berkas dekripsi KYC (200 image/png) dan menyetujui pendaftaran sehingga terbit activation_code",
+        "Calon mengaktivasi sandi via POST /api/v1/auth/password (200), login (200), lalu di-nonaktifkan admin lewat PATCH /api/v1/anggota/{id}/status yang mencabut sesi aktif (401)"
+      ]
+    },
+    {
+      "id": "SCEN-05",
+      "claim_id": "claim:05-anggota-status",
+      "title": "Daftar Anggota, Penyamaran PII vs ?unmask=true Admin, dan Dry-Run Impor CSV",
+      "destructive": false,
+      "steps": [
+        "GET /api/v1/anggota mengembalikan NIK & HP tersamar (masked)",
+        "GET /api/v1/anggota/{id}?unmask=true mengembalikan data penuh hanya untuk admin dan ditolak bagi bendahara/anggota",
+        "POST /api/v1/anggota/impor?dry_run=true memvalidasi CSV sintetis tanpa mengubah database"
+      ]
+    },
+    {
+      "id": "SCEN-06",
+      "claim_id": "claim:06-iuran-keringanan",
+      "title": "Jenis Iuran, Generate Tagihan Periode Uji, dan Penerapan Keringanan",
+      "destructive": false,
+      "steps": [
+        "GET /api/v1/iuran/tagihan?scope=jenis mengembalikan minimal 1 jenis iuran aktif",
+        "POST /api/v1/iuran/jenis dengan action=generate membuat tagihan periode masa depan secara idempoten",
+        "PATCH /api/v1/iuran/tagihan/{id}/keringanan memperbarui nominal_keringanan dan alasan"
+      ]
+    },
+    {
+      "id": "SCEN-07",
+      "claim_id": "claim:07-katalog-produk",
+      "title": "E-Katalog Kategori/Promo, Penolakan 409 Produk Tanpa Harga Aktif saat Checkout, dan Harga Anggota",
+      "destructive": false,
+      "steps": [
+        "GET /api/v1/katalog/produk?tab=kategori dan ?tab=promo mengembalikan 200",
+        "Membuat produk tanpa harga_umum/harga_anggota lalu mencoba checkout menghasilkan 409/400 (tidak 500)",
+        "Memperbarui harga produk via action=update_produk membuat produk siap dibeli"
+      ]
+    },
+    {
+      "id": "SCEN-08",
+      "claim_id": "claim:08-checkout-pesanan-daftar-antar",
+      "title": "Checkout Idempotensi-Key, Pengurangan Stok Atomik, Status Diantar, dan Ekspor Label/CSV Daftar Antar",
+      "destructive": false,
+      "steps": [
+        "POST /api/v1/toko/checkout dengan Idempotency-Key unik mengembalikan 201; replay key identik mengembalikan 200 dengan id pesanan yang sama",
+        "GET /api/v1/pesanan mengembalikan rincian pesanan milik pembayar",
+        "Setelah status diubah petugas_toko menjadi diproses/diantar, GET /api/v1/pesanan/daftar-antar dan ?format=csv memuat label_antar yang valid"
+      ]
+    },
+    {
+      "id": "SCEN-09",
+      "claim_id": "claim:09-pembayaran-qris-dual-control",
+      "title": "Pembayaran QRIS Kode Unik, Idempotensi, Tolak Duplikat Bukti 409, dan Dual Control (Maker != Checker)",
+      "destructive": false,
+      "steps": [
+        "POST /api/v1/pembayaran membuat instruksi QRIS dengan nominal_total = nominal_pokok + kode_unik",
+        "Replay dengan Idempotency-Key yang sama mengembalikan 200 tanpa menggandakan tagihan",
+        "Upload bukti PNG unik berhasil (200), sedangkan upload byte yang sama persis ditolak 409",
+        "Dual control: admin yang membuat pembayaran ditolak 403 ketika mencoba verifikasi sendiri; bendahara berhasil memverifikasi (200)"
+      ]
+    },
+    {
+      "id": "SCEN-10",
+      "claim_id": "claim:10-laporan-csv",
+      "title": "Laporan Anggota, Tunggakan, Penjualan, Pembayaran (JSON & CSV Anti-Formula-Injection)",
+      "destructive": false,
+      "steps": [
+        "GET /api/v1/laporan?jenis=anggota|tunggakan|penjualan|pembayaran mengembalikan 200 JSON untuk staf",
+        "GET /api/v1/laporan?jenis=pembayaran&format=csv mengembalikan Content-Type text/csv yang valid"
+      ]
+    },
+    {
+      "id": "SCEN-11",
+      "claim_id": "claim:02-auth-lockout-optin",
+      "title": "[Opt-In] Account Lockout Setelah Batas Gagal Login (Tanpa Brute Force Massal)",
+      "destructive": true,
+      "steps": [
+        "Menguji kegagalan sandi berturut-turut untuk akun anggota baru non-seed saja hingga mendapat 429, lalu memastikan anggota1 tetap bisa login (isolasi per akun)"
+      ]
+    }
+  ]
+}

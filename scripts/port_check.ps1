@@ -6,7 +6,8 @@ param(
     [string]$EnvFile = ".env.test"
 )
 $ErrorActionPreference = "Stop"
-go run ./cmd/envcheck --ports --strict --env-file $EnvFile
+$absEnv = [System.IO.Path]::GetFullPath($EnvFile)
+go -C backend run ./cmd/envcheck --ports --strict --env-file $absEnv
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

@@ -1,0 +1,39 @@
+{
+  "measured_at": "2026-11-21T18:54:07Z",
+  "payload_bytes": 16384,
+  "iterations": 100,
+  "local_save": {
+    "count": 100,
+    "mean_ms": 1.3832440000000004,
+    "p50_ms": 1.2383,
+    "p95_ms": 2.0046,
+    "p99_ms": 2.2852
+  },
+  "remote_save": {
+    "count": 100,
+    "mean_ms": 2.2324200000000003,
+    "p50_ms": 2.0074,
+    "p95_ms": 3.0178,
+    "p99_ms": 3.0576
+  },
+  "save_p95_delta_ms": 1.0131999999999999,
+  "local_load": {
+    "count": 100,
+    "mean_ms": 7.670133000000003,
+    "p50_ms": 6.8439,
+    "p95_ms": 9.5945,
+    "p99_ms": 15.3773
+  },
+  "remote_load": {
+    "count": 100,
+    "mean_ms": 7.552779999999999,
+    "p50_ms": 7.5375,
+    "p95_ms": 8.9952,
+    "p99_ms": 9.6284
+  },
+  "load_p95_delta_ms": -0.5992999999999995,
+  "s2s_auth_401_ok": true,
+  "traversal_400_ok": true,
+  "wrong_token_503_ok": true,
+  "health_200_ok": true
+}

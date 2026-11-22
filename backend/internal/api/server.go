@@ -1,0 +1,315 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kopdes/merah-putih/internal/api/middleware"
+	"github.com/kopdes/merah-putih/internal/config"
+	"github.com/kopdes/merah-putih/internal/filestore"
+	"github.com/kopdes/merah-putih/internal/security"
+)
+
+type Config struct {
+	AppEnv                    string
+	AppTimezone               string
+	Port                      int
+	BlindIndexSecret          string
+	AESMasterKey              string
+	AESPreviousKeys           string
+	AllowedOrigins            []string
+	TrustedProxies            []string
+	RateLimitRPS              float64
+	RateLimitBurst            int
+	MaxRateLimitClients       int
+	MaxBodyBytes              int64
+	HTTPReadHeaderTimeout     time.Duration
+	HTTPReadTimeout           time.Duration
+	HTTPWriteTimeout          time.Duration
+	HTTPIdleTimeout           time.Duration
+	BcryptCost                int
+	MFAIssuer                 string
+	MFAMaxAttempts            int
+	SessionIdleTTL               time.Duration
+	SessionAbsTTL                time.Duration
+	CookieSecure                 string
+	AllowBearerAuth              bool
+	MFARequiredRoles             []string
+	LoginMaxAttempts             int
+	LoginLockoutDuration         time.Duration
+	AllowPersonalPaymentPilot    bool
+	PilotMaxPerTx                int64
+	PilotMaxPerDay               int64
+	QRISUniqueDigits             int
+	PaymentExpiryDuration        time.Duration
+	StockHoldMinutes             int
+	PendingLimitPerMember        int
+	PendingLimitGlobal           int
+	DualControlBreakglassEnabled bool
+	PDPRejectedRetentionDays     int
+	StorageKYCDir                string
+	StorageBuktiDir              string
+	BuktiRetentionDays           int
+	MaxKYCUploadBytes            int64
+	FileStore                    filestore.FileStore
+	APIVersion                   string
+	PaymentsDisabled          bool
+	RegistrationDisabled      bool
+	ReadOnlyMode              bool
+	CaptchaEnabled            bool
+	CaptchaProvider           string
+	CaptchaSiteKey            string
+	CaptchaSecretKey          string
+	PollingIntervalMS         int
+	PaginationDefaultLimit    int
+	PaginationMaxLimit        int
+}
+
+func decodeSecretBytes(secret string) []byte {
+	return security.DecodeSecretMaterial(secret)
+}
+
+func defaultBcryptCost(appEnv string) int {
+	if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+		return 12
+	}
+	return 10
+}
+
+func resolveRateLimits(c config.AppConfig, def Config) (float64, int) {
+	rps := c.RateLimitRPS
+	if rps <= 0 {
+		rps = def.RateLimitRPS
+	}
+	return rps, maxInt(def.RateLimitBurst, int(rps*2))
+}
+
+func ConfigFromAppConfig(c config.AppConfig) Config {
+	def := DefaultConfig()
+	rps, burst := resolveRateLimits(c, def)
+	return Config{
+		AppEnv:                    c.AppEnv,
+		AppTimezone:               c.AppTimezone,
+		Port:                      c.APIPort,
+		BlindIndexSecret:          c.BlindIndexSecret,
+		AESMasterKey:              c.AESMasterKey,
+		AESPreviousKeys:           c.AESPreviousKeys,
+		AllowedOrigins:            c.AllowedOrigins,
+		TrustedProxies:            c.TrustedProxies,
+		RateLimitRPS:              rps,
+		RateLimitBurst:            burst,
+		MaxRateLimitClients:       def.MaxRateLimitClients,
+		MaxBodyBytes:              def.MaxBodyBytes,
+		HTTPReadHeaderTimeout:     def.HTTPReadHeaderTimeout,
+		HTTPReadTimeout:           def.HTTPReadTimeout,
+		HTTPWriteTimeout:          def.HTTPWriteTimeout,
+		HTTPIdleTimeout:           def.HTTPIdleTimeout,
+		BcryptCost:                defaultBcryptCost(c.AppEnv),
+		MFAIssuer:                 def.MFAIssuer,
+		MFAMaxAttempts:            def.MFAMaxAttempts,
+		SessionIdleTTL:               c.SessionIdleTTL,
+		SessionAbsTTL:                c.SessionAbsTTL,
+		CookieSecure:                 c.CookieSecure,
+		AllowBearerAuth:              c.AllowBearerAuth,
+		MFARequiredRoles:             c.MFARequiredRoles,
+		LoginMaxAttempts:             def.LoginMaxAttempts,
+		LoginLockoutDuration:         def.LoginLockoutDuration,
+		AllowPersonalPaymentPilot:    c.AllowPersonalPaymentPilot,
+		PilotMaxPerTx:                c.PilotMaxPerTx,
+		PilotMaxPerDay:               c.PilotMaxPerDay,
+		QRISUniqueDigits:             c.QRISUniqueDigits,
+		PaymentExpiryDuration:        c.PaymentExpiryDuration,
+		StockHoldMinutes:             c.StockHoldMinutes,
+		PendingLimitPerMember:        def.PendingLimitPerMember,
+		PendingLimitGlobal:           def.PendingLimitGlobal,
+		DualControlBreakglassEnabled: c.DualControlBreakglassEnabled,
+		PDPRejectedRetentionDays:     c.PDPRejectedRetentionDays,
+		StorageKYCDir:                c.StorageKYCDir,
+		StorageBuktiDir:              c.StorageBuktiDir,
+		BuktiRetentionDays:           c.BuktiRetentionDays,
+		MaxKYCUploadBytes:            def.MaxKYCUploadBytes,
+		APIVersion:                def.APIVersion,
+		PaymentsDisabled:          !c.PaymentsEnabled,
+		RegistrationDisabled:      !c.RegistrationEnabled,
+		CaptchaEnabled:            c.CaptchaEnabled,
+		CaptchaProvider:           def.CaptchaProvider,
+		CaptchaSiteKey:            c.CaptchaSiteKey,
+		CaptchaSecretKey:          c.CaptchaSecretKey,
+		PollingIntervalMS:         def.PollingIntervalMS,
+		PaginationDefaultLimit:    def.PaginationDefaultLimit,
+		PaginationMaxLimit:        def.PaginationMaxLimit,
+	}
+}
+
+func (c *Config) Validate() error {
+	if err := security.ValidateSecretKey("BLIND_INDEX_SECRET", decodeSecretBytes(c.BlindIndexSecret)); err != nil {
+		return err
+	}
+	if err := security.ValidateSecretKey("AES_MASTER_KEY", decodeSecretBytes(c.AESMasterKey)); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(c.AppEnv), "production") {
+		for _, o := range c.AllowedOrigins {
+			if strings.TrimSpace(o) == "*" {
+				return errors.New("ALLOWED_ORIGINS tidak boleh berisi '*' pada mode production")
+			}
+		}
+	}
+	return nil
+}
+
+func ValidateProductionDatabasePassword(appEnv, dbPassword string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+		return nil
+	}
+	pass := strings.TrimSpace(dbPassword)
+	if pass == "" {
+		return errors.New("pada profil produksi, DB_PASSWORD wajib disetel")
+	}
+	// #nosec G101 -- literal pembanding untuk menolak password dev bawaan di profil produksi
+	if pass == "kopdes_dev_password" {
+		return errors.New("pada profil produksi, dilarang menggunakan password default dev (kopdes_dev_password)")
+	}
+	return nil
+}
+
+func DefaultConfig() Config {
+	return Config{
+		AppEnv:                   "development",
+		AppTimezone:              "Asia/Jakarta",
+		Port:                     8080,
+		AllowedOrigins:           []string{"*"},
+		RateLimitRPS:             30,
+		RateLimitBurst:           60,
+		MaxRateLimitClients:      10000,
+		MaxBodyBytes:             10 * 1024 * 1024,
+		HTTPReadHeaderTimeout:    5 * time.Second,
+		HTTPReadTimeout:          10 * time.Second,
+		HTTPWriteTimeout:         15 * time.Second,
+		HTTPIdleTimeout:          60 * time.Second,
+		BcryptCost:               10,
+		MFAIssuer:                "Kopdes Merah Putih",
+		MFAMaxAttempts:           3,
+		SessionIdleTTL:           30 * time.Minute,
+		SessionAbsTTL:            12 * time.Hour,
+		CookieSecure:             "auto",
+		AllowBearerAuth:          true,
+		MFARequiredRoles:         []string{"admin", "bendahara"},
+		LoginMaxAttempts:         5,
+		LoginLockoutDuration:     15 * time.Minute,
+		PilotMaxPerTx:            500000,
+		PilotMaxPerDay:           2000000,
+		QRISUniqueDigits:         3,
+		PaymentExpiryDuration:    15 * time.Minute,
+		StockHoldMinutes:         60,
+		PendingLimitPerMember:    2,
+		PendingLimitGlobal:       50,
+		PDPRejectedRetentionDays: 30,
+		StorageKYCDir:            "./storage/kyc",
+		StorageBuktiDir:          "./storage/bukti",
+		BuktiRetentionDays:       365,
+		MaxKYCUploadBytes:        5 * 1024 * 1024,
+		APIVersion:               "2.0.0-lean",
+		PollingIntervalMS:        3000,
+		PaginationDefaultLimit:   20,
+		PaginationMaxLimit:       100,
+		CaptchaProvider:          "turnstile",
+	}
+}
+
+type Server struct {
+	cfg         Config
+	pool        *pgxpool.Pool
+	keyProvider security.KeyProvider
+	httpServer  *http.Server
+	router      *http.ServeMux
+}
+
+func applyServerDefaults(cfg *Config) {
+	def := DefaultConfig()
+	if cfg.Port <= 0 {
+		cfg.Port = def.Port
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = def.MaxBodyBytes
+	}
+	if cfg.HTTPReadHeaderTimeout <= 0 {
+		cfg.HTTPReadHeaderTimeout = def.HTTPReadHeaderTimeout
+	}
+	if cfg.HTTPReadTimeout <= 0 {
+		cfg.HTTPReadTimeout = def.HTTPReadTimeout
+	}
+	if cfg.HTTPWriteTimeout <= 0 {
+		cfg.HTTPWriteTimeout = def.HTTPWriteTimeout
+	}
+	if cfg.HTTPIdleTimeout <= 0 {
+		cfg.HTTPIdleTimeout = def.HTTPIdleTimeout
+	}
+	if cfg.SessionIdleTTL <= 0 {
+		cfg.SessionIdleTTL = def.SessionIdleTTL
+	}
+	if len(cfg.MFARequiredRoles) == 0 {
+		cfg.MFARequiredRoles = def.MFARequiredRoles
+	}
+}
+
+func NewServer(pool *pgxpool.Pool, cfg Config) *Server {
+	applyServerDefaults(&cfg)
+
+	var kpSet *security.PurposeKeySet
+	var dbKP security.KeyProvider
+	if strings.TrimSpace(cfg.AESMasterKey) != "" {
+		if ks, err := security.NewPurposeKeySet(cfg.AESMasterKey, cfg.AESPreviousKeys); err == nil {
+			kpSet = ks
+			dbKP = ks.DB
+		}
+	}
+
+	mux := http.NewServeMux()
+	dh := buildDomainHandlers(pool, cfg, kpSet)
+	registerAllRoutes(mux, pool, cfg, dh)
+
+	corsCfg := middleware.DefaultCORSConfig()
+	if len(cfg.AllowedOrigins) > 0 {
+		corsCfg.AllowedOrigins = cfg.AllowedOrigins
+	}
+	ipLim := middleware.NewIPRateLimiterWithConfig(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies, cfg.MaxRateLimitClients)
+	var handler http.Handler = mux
+	handler = middleware.CSRFGuard(cfg.AllowedOrigins, cfg.TrustedProxies)(handler)
+	handler = readOnlyGuard(cfg.ReadOnlyMode)(handler)
+	handler = middleware.RateLimit(ipLim)(handler)
+	handler = middleware.BodyLimit(cfg.MaxBodyBytes)(handler)
+	handler = middleware.CORS(corsCfg)(handler)
+	handler = middleware.SecurityHeaders(handler)
+	handler = middleware.Recovery(handler)
+
+	return &Server{
+		cfg:         cfg,
+		pool:        pool,
+		keyProvider: dbKP,
+		router:      mux,
+		httpServer: &http.Server{
+			Addr:              fmt.Sprintf(":%d", cfg.Port),
+			Handler:           handler,
+			ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+			ReadTimeout:       cfg.HTTPReadTimeout,
+			WriteTimeout:      cfg.HTTPWriteTimeout,
+			IdleTimeout:       cfg.HTTPIdleTimeout,
+		},
+	}
+}
+
+func (s *Server) Router() http.Handler              { return s.httpServer.Handler }
+func (s *Server) KeyProvider() security.KeyProvider { return s.keyProvider }
+func (s *Server) Start() error {
+	if err := s.cfg.Validate(); err != nil {
+		return fmt.Errorf("gagal memulai server: konfigurasi keamanan tidak valid: %w", err)
+	}
+	return s.httpServer.ListenAndServe()
+}
+func (s *Server) Shutdown(ctx context.Context) error { return s.httpServer.Shutdown(ctx) }

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Integrasi Frontend - Kopdes Merah Putih</title>
+  <style>
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Integrasi HTML Murni — Kopdes Merah Putih</h1>
+  <p>
+    <a href="../index.html">Kembali ke Frontend Tester Utama</a> |
+    <a href="pendaftaran.html">1. Pendaftaran &amp; KYC</a> |
+    <a href="login.html">2. Login Opaque &amp; MFA</a> |
+    <a href="pembayaran-qris.html">3. Pembayaran QRIS</a>
+  </p>
+  <h2>Konfigurasi Publik &amp; Katalog Produk Live</h2>
+  <p id="status">Memuat /config.json ...</p>
+  <button id="btnRefresh" type="button">Muat Ulang Public Config &amp; Katalog</button>
+  <h3>GET /api/v1/public/config</h3>
+  <pre id="pubConfigOut">-</pre>
+  <h3>GET /api/v1/katalog/produk</h3>
+  <pre id="katalogOut">-</pre>
+  <script>
+    "use strict";
+    async function loadReferenceHub() {
+      const st = document.getElementById("status");
+      try {
+        const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+        const apiBase = ui.api_public_url.replace(/\/+$/, "");
+        st.textContent = "Terhubung ke API: " + apiBase + " (APP_ENV=" + ui.app_env + ")";
+        const pubResp = await fetch(apiBase + "/api/v1/public/config");
+        document.getElementById("pubConfigOut").textContent = JSON.stringify(await pubResp.json(), null, 2);
+        const katResp = await fetch(apiBase + "/api/v1/katalog/produk");
+        document.getElementById("katalogOut").textContent = JSON.stringify(await katResp.json(), null, 2);
+      } catch (e) {
+        st.textContent = "Error: " + e.message;
+      }
+    }
+    document.getElementById("btnRefresh").addEventListener("click", loadReferenceHub);
+    document.addEventListener("DOMContentLoaded", loadReferenceHub);
+  </script>
+</body>
+</html>

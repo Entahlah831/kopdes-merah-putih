@@ -1,0 +1,28 @@
+# Reverse proxy & penyaji frontend statis VPS Linux (tanpa literal port)
+{$KOPDES_SITE_ADDRESS:http://localhost} {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+		-Server
+	}
+
+	@backend path /api/* /healthz /readyz
+	handle @backend {
+		reverse_proxy api:{$API_PORT}
+	}
+
+	handle /config.json {
+		header Content-Type "application/json; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `{"app_env":"production","api_public_url":""}` 200
+	}
+
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -37,7 +37,7 @@ while IFS= read -r line || [ -n "${line}" ]; do
   tpl_val="${line#*=}"
   if [[ -n "${EXISTING[${k}]:-}" ]]; then
     printf '%s=%s\n' "${k}" "${EXISTING[${k}]}" >> "${TMP_OUT}"
-  elif [[ "${GENERATE_SECRETS}" == "true" && -z "${tpl_val}" ]] && [[ "${k}" =~ ^(JWT_SECRET|AES_MASTER_KEY|BLIND_INDEX_SECRET|QRIS_SECRET|METRICS_TOKEN|DB_PASSWORD|POSTGRES_PASSWORD|KOPDES_APP_PASSWORD|BACKUP_ENCRYPTION_KEY)$ ]]; then
+  elif [[ "${GENERATE_SECRETS}" == "true" && -z "${tpl_val}" ]] && [[ "${k}" =~ ^(AES_MASTER_KEY|BLIND_INDEX_SECRET|DB_PASSWORD|POSTGRES_PASSWORD)$ ]]; then
     gen=$(openssl rand -hex 32)
     printf '%s=%s\n' "${k}" "${gen}" >> "${TMP_OUT}"
   else

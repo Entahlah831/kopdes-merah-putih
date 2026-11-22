@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Pembayaran QRIS - Kopdes Merah Putih</title>
+  <style>
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    fieldset { border: 1px solid #000; padding: 10px; margin-bottom: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Pembayaran QRIS Statis Kode Unik &amp; Polling Status</h1>
+  <p><a href="index.html">Hub Referensi</a> | <a href="../index.html">Tester Utama</a></p>
+
+  <fieldset>
+    <legend>1. Info QRIS Aktif (dari GET /api/v1/public/config)</legend>
+    <pre id="qrisInfo">Memuat ...</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Cek Status Pembayaran (GET /api/v1/pembayaran?id=...)</legend>
+    <label>Session Token Bearer (tempel dari sesi tester bila menguji manual): <input id="tokInput" type="password" size="45"></label><br>
+    <label>ID Pembayaran: <input id="payIdInput" type="text" size="40"></label>
+    <button id="btnCekStatus" type="button">Polling Status Pembayaran</button>
+    <pre id="payOut">-</pre>
+  </fieldset>
+
+  <script>
+    "use strict";
+    let apiBase = "";
+    async function init() {
+      const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+      apiBase = ui.api_public_url.replace(/\/+$/, "");
+      const pub = await (await fetch(apiBase + "/api/v1/public/config")).json();
+      const qris = (pub.data && pub.data.koperasi && pub.data.koperasi.active_qris) || {};
+      document.getElementById("qrisInfo").textContent = JSON.stringify({
+        qris_unique_digits: pub.data && pub.data.koperasi && pub.data.koperasi.qris_unique_digits,
+        payment_expiry_seconds: pub.data && pub.data.payment_expiry_seconds,
+        polling_interval_ms: pub.data && pub.data.polling_interval_ms,
+        active_qris: qris
+      }, null, 2);
+    }
+    document.getElementById("btnCekStatus").addEventListener("click", async function () {
+      const tok = document.getElementById("tokInput").value.trim();
+      const id = document.getElementById("payIdInput").value.trim();
+      const resp = await fetch(apiBase + "/api/v1/pembayaran?id=" + encodeURIComponent(id), {
+        headers: { "Authorization": "Bearer " + tok }
+      });
+      document.getElementById("payOut").textContent = "HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2);
+    });
+    document.addEventListener("DOMContentLoaded", init);
+  </script>
+</body>
+</html>

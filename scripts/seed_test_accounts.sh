@@ -11,5 +11,6 @@ case "$BASE_NAME" in
     ;;
 esac
 
+ABS_ENV="$(cd "$(dirname "$ENV_FILE_ARG")" && pwd)/$(basename "$ENV_FILE_ARG")"
 shift || true
-exec go run ./cmd/seed_test_accounts --env-file "$ENV_FILE_ARG" "$@"
+exec go -C backend run ./cmd/seed_test_accounts --env-file "$ABS_ENV" "$@"

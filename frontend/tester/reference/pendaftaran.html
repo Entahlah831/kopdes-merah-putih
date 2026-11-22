@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Referensi Pendaftaran &amp; KYC - Kopdes Merah Putih</title>
+  <style>
+    html, body { background: #fff; color: #000; font-family: sans-serif; font-size: 14px; margin: 12px; }
+    fieldset { border: 1px solid #000; padding: 10px; margin-bottom: 12px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Referensi Pendaftaran Anggota &amp; Unggah Berkas KYC</h1>
+  <p><a href="index.html">Hub Referensi</a> | <a href="../index.html">Tester Utama</a></p>
+
+  <fieldset>
+    <legend>1. POST /api/v1/public/pendaftaran</legend>
+    <label>Nama Lengkap: <input id="namaInput" type="text" value="Dewi Referensi"></label><br>
+    <label>Email: <input id="emailInput" type="email" size="30"></label><br>
+    <label>NIK (16 digit): <input id="nikInput" type="text" size="20"></label><br>
+    <label>No HP: <input id="hpInput" type="text" size="18"></label><br>
+    <label>Tanggal Lahir: <input id="tglInput" type="text" value="1995-07-07"></label><br>
+    <label>Alamat: <input id="alamatInput" type="text" value="Jl. Desa Referensi RT 01"></label><br>
+    <label>Pekerjaan: <input id="kerjaInput" type="text" value="Wiraswasta"></label><br>
+    <button id="btnDaftar" type="button">Ajukan Pendaftaran</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. POST /api/v1/public/pendaftaran/{id}/dokumen (X-Upload-Token)</legend>
+    <label>ID Pendaftaran: <input id="regIdInput" type="text" size="40"></label><br>
+    <label>X-Upload-Token: <input id="uploadTokInput" type="text" size="50"></label><br>
+    <label>Tipe Dokumen: <select id="tipeSelect"><option value="ktp">ktp</option><option value="selfie_ktp">selfie_ktp</option><option value="kk">kk</option></select></label><br>
+    <label>Berkas JPEG/PNG: <input id="fileInput" type="file"></label><br>
+    <button id="btnUpload" type="button">Unggah Dokumen KYC</button>
+  </fieldset>
+
+  <pre id="out">-</pre>
+  <script>
+    "use strict";
+    function randDigits(n) {
+      const a = new Uint32Array(n);
+      crypto.getRandomValues(a);
+      return Array.from(a, x => String(x % 10)).join("");
+    }
+    document.addEventListener("DOMContentLoaded", function () {
+      document.getElementById("emailInput").value = "ref-" + randDigits(5) + "@kopdes-test.local";
+      document.getElementById("nikInput").value = "3203" + randDigits(12);
+      document.getElementById("hpInput").value = "0813" + randDigits(8);
+    });
+    async function getApiBase() {
+      const ui = await (await fetch("/config.json", { cache: "no-store" })).json();
+      return ui.api_public_url.replace(/\/+$/, "");
+    }
+    document.getElementById("btnDaftar").addEventListener("click", async function () {
+      const base = await getApiBase();
+      const resp = await fetch(base + "/api/v1/public/pendaftaran", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nama_lengkap: document.getElementById("namaInput").value,
+          email: document.getElementById("emailInput").value,
+          nik: document.getElementById("nikInput").value,
+          no_hp: document.getElementById("hpInput").value,
+          tanggal_lahir: document.getElementById("tglInput").value,
+          alamat: document.getElementById("alamatInput").value,
+          pekerjaan: document.getElementById("kerjaInput").value
+        })
+      });
+      const json = await resp.json();
+      if (json.data) {
+        document.getElementById("regIdInput").value = json.data.id || "";
+        document.getElementById("uploadTokInput").value = json.data.upload_token || "";
+      }
+      document.getElementById("out").textContent = "HTTP " + resp.status + "\n" + JSON.stringify(json, null, 2);
+    });
+    document.getElementById("btnUpload").addEventListener("click", async function () {
+      const base = await getApiBase();
+      const id = document.getElementById("regIdInput").value.trim();
+      const tok = document.getElementById("uploadTokInput").value.trim();
+      const fileEl = document.getElementById("fileInput");
+      if (!fileEl.files || !fileEl.files[0]) {
+        document.getElementById("out").textContent = "Pilih berkas PNG atau JPEG terlebih dahulu.";
+        return;
+      }
+      const fd = new FormData();
+      fd.append("tipe_dokumen", document.getElementById("tipeSelect").value);
+      fd.append("file", fileEl.files[0]);
+      const resp = await fetch(base + "/api/v1/public/pendaftaran/" + id + "/dokumen", {
+        method: "POST",
+        headers: { "X-Upload-Token": tok },
+        body: fd
+      });
+      document.getElementById("out").textContent = "HTTP " + resp.status + "\n" + JSON.stringify(await resp.json(), null, 2);
+    });
+  </script>
+</body>
+</html>

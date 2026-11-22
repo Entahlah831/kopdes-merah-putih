@@ -1318,3 +1318,188 @@ $ gosec -quiet ./...  # EXIT:0
 - **Live Demo 10 Modul (`#btnRunLiveDemo`)**: `Live Demo Selesai (Mode Standar Tanpa Brute-Force): PASS=10, SKIP=0, FAIL=0, Total=10`.
 - **Matriks Peran (`#btnRunRolesMatrix`)**: `Matriks selesai: Total=440, PASS=440, FAIL=0`.
 - **Web Storage & Halaman Referensi (`/reference/`)**: `localStorage.length === 0 && sessionStorage.length === 0`, `0` uncaught `pageerror`; keempat halaman (`/reference/index.html`, `login.html`, `pendaftaran.html`, `pembayaran-qris.html`) memuat `/config.json` dan `GET /api/v1/public/config` cleanly.
+
+
+---
+
+## Ringkasan Pelaksanaan Lean Revamp (`lean-revamp`, Fase 1–8C)
+
+Seluruh perubahan pemangkasan lingkup koperasi tunggal dijalankan bertahap di branch `lean-revamp`:
+
+1. **Fase 1–2 (Skema 19 Tabel & Env 40 Variabel)**:
+   - Mengkonsolidasikan `db/migrations/` menjadi `000001_init_kopdes_schema.up.sql` (`19` tabel inti tanpa multi-tenant RLS, SIMKOPDES, simpan-pinjam/SHU, double-entry ledger, maupun mutasi bank CSV).
+   - Memangkas konfigurasi `.env.example`, `.env.test`, `.env.test.alt` menjadi tepat `40` variabel yang divalidasi oleh `cmd/envcheck` & [docs/ENV_REFERENCE.md](ENV_REFERENCE.md).
+2. **Fase 3–7 (`sqlc`, 8 Domain, 35 Endpoint HTTP, CLI `cmd/kopdes`, Seeder & `cmd/uitester`)**:
+   - Menghasilkan seluruh query database bertipe kuat ke `internal/db/*.go` via `sqlc generate`.
+   - Membangun `8` paket domain ramping (`auth`, `pendaftaran`, `anggota`, `iuran`, `katalog`, `pesanan`, `pembayaran`, `laporan`) + `internal/security` + `internal/api` dengan tepat `35` rute HTTP.
+   - Menghapus `frontend-reference/` serta berkas pre-revamp usang (`67a79c1`) dan menyelaraskan `Dockerfile`, `docker-compose*.yml`, serta [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) (`d3c97af`).
+3. **Fase 8A (`dd87ec9`) — Pengujian Unit & Integrasi Set A + Set B**:
+   - Menambahkan uji struktural (`internal/api/structural_lint_test.go`), `9` berkas unit test baru (zero `[no test files]`), dan `4` rangkaian E2E integrasi HTTP (`internal/api/e2e_integration_test.go`) terhadap `kopdes_test` & `kopdes_alt_test`.
+   - Memperbaiki hash recovery code (`security.HashRecoveryCode`) pada `internal/testseed/seed.go` dan memecah 4 fungsi >60 baris.
+4. **Fase 8B (`1e665dc`) — Frontend Tester Polos 35 Endpoint & Verifikasi Live Browser**:
+   - Menulis ulang seluruh `frontend-tester/` (`index.html`, `app.js`, `lab.js`, `openapi.json`, `roles_matrix.json`, `scenarios.json`, `reference/*.html`, `README.md`) tanpa framework, tanpa build step, tanpa CDN, dan tanpa literal port/rahasia.
+   - Menemukan serta memperbaiki validasi kosong `UpdatePengaturan` (`INVALID_NAMA_KOPERASI`), kontrak 2-langkah `/auth/mfa/setup` (`mfa_setup`), serta `keputusan` pembayaran (`setuju|tolak`).
+   - Bukti verifikasi live browser terhadap `cmd/server` & `cmd/uitester` (`Set A`):
+     - Diagnostics: `/healthz` `200`, `/readyz` `200`, `/api/v1/public/config` `200` (`api_version=2.0.0-lean`), CORS `204`.
+     - Live Demo (`DEMO-01`..`05`): `5/5 langkah PASS`.
+     - Scenario Runner (`SCEN-01`..`10`): `10/10 skenario dijalankan PASS` (`SCEN-11` opt-in dilewati bersih).
+     - Role Matrix (`RBAC-01`..`16` x 5 peran): `80/80 pemeriksaan cocok`.
+5. **Fase 8C — Penyelarasan Dokumentasi Ramping & CI**:
+   - Memperbarui [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), [openapi.yaml](openapi.yaml), [roles_matrix.json](roles_matrix.json), [DOC_DISCREPANCIES.md](DOC_DISCREPANCIES.md), dan [frontend/README.md](frontend/README.md), memensiunkan bab usang multi-tenant di `docs/frontend/`, serta menulis ulang `.github/workflows/ci.yml`.
+6. **Fase 9 — Pembersihan Temuan Keamanan & Laporan Revamp (`627792d`, `59dbae4`)**:
+   - Merapikan seluruh temuan `staticcheck`, `gosec`, `govulncheck`, dan `gitleaks`, serta menambahkan [REVAMP_REPORT.md](REVAMP_REPORT.md) sebagai ringkasan hasil arsitektur ramping dan verifikasi langsung (`f9f7d1f`, `627792d`, `59dbae4`).
+7. **Fase 10 — Enkripsi Storage Bukti Bayar Terpisah & Potong Stok saat Verifikasi (`22e49ce`)**:
+   - Memisahkan penyimpanan bukti bayar ke `<STORAGE_KYC_DIR>/bukti/bukti_<id>.enc` terenkripsi AES-256-GCM (AAD `pembayaran:bukti:<id>`) dari berkas KYC (`<STORAGE_KYC_DIR>/kyc/`).
+   - Memindahkan pemotongan stok atomik dari tahap checkout ke tahap persetujuan pembayaran (`setuju`) atau pesanan tunai masuk status `dibayar`/`diproses`, dengan pengembalian stok bersyarat hanya bila stok sudah terpotong.
+8. **Fase 11 — Dokumentasi Akhir Lengkap (Root `README.md` & `PANDUAN_SISTEM_LENGKAP.md`)**:
+   - Menambahkan [../README.md](../README.md) dan [PANDUAN_SISTEM_LENGKAP.md](PANDUAN_SISTEM_LENGKAP.md) mencakup setup lokal & VPS (Docker + Caddy HTTPS), konfigurasi fitur, integrasi frontend, alur lengkap 5 peran, dan skema 19 tabel PostgreSQL, serta menyelaraskan [README.md](README.md), [BACKEND_GUIDE.md](BACKEND_GUIDE.md), [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md), dan [REVAMP_REPORT.md](REVAMP_REPORT.md).
+
+---
+
+## Audit Keputusan (Prompt v9A — Branch `decision-audit`, Tag Dasar `pre-decision-audit`)
+
+Audit menyeluruh 10 keputusan desain (D1–D10) beserta implementasi *fail-first*, migrasi `000002`, 10 ADR berbobot di [adr/](adr/), dan ringkasan keputusan di [DECISION_AUDIT.md](DECISION_AUDIT.md):
+
+1. **Migrasi `000002` & 46 Variabel Env (`61761de`)**: Menambah `produk.stok_tertahan`, `pesanan.stok_status`/`stok_hold_expires_at`, status pembayaran `dikembalikan`, tabel #20 `pengembalian_dana`, tabel #21 `worker_runs`, metadata amplop `pembayaran.bukti_key_id`/`bukti_dek_wrapped`, `tanggal_lahir_enc` nullable; menyinkronkan 46 env var across `AppConfig`, `.env.*`, `cmd/envcheck`, dan `ENV_REFERENCE.md`.
+2. **D4 — HKDF 4 Subkunci & Storage Bukti Terpisah (`c7425fc`)**: Derivasi HKDF-SHA256 (`db-columns`, `kyc-files`, `bukti-files`, `backup`) di `internal/security/kdf.go`, amplop DEK seragam di `STORAGE_KYC_DIR` & `STORAGE_BUKTI_DIR`, retensi `BUKTI_RETENTION_DAYS`, dan CLI `kopdes storage migrate-files` / `bukti purge`.
+3. **D1 — Reservasi Stok Tertahan (`13bc298`)**: Checkout menahan `stok_tertahan` atomik selama `STOCK_HOLD_MINUTES`; verifikasi `setuju` mengonversi tahanan ke pengurangan `stok` nyata dengan savepoint fallback `perlu_tindak_lanjut` bila hold habis & stok kosong. Terbukti `TestDecisionAudit_D1_StockReservationConcurrency50Buyers` (50 pembeli -> 5 sukses, 45 `409`).
+4. **D2 & D7 — Refund Manual Dual-Control & Break-Glass Admin (`5d1c4dd`)**: Endpoint #36 `POST /api/v1/pembayaran/{id}/refund` (`ajukan|setujui|tolak`, bukti `.enc` opsional, laporan `total_dikembalikan`) serta `DUAL_CONTROL_BREAKGLASS_ENABLED` khusus `admin` (TOTP anti-replay + alasan >= 10 karakter + `audit_log` `pembayaran.verify_breakglass`).
+5. **D3 & D9 — Cookie `HttpOnly` Utama, `CSRFGuard`, Throttle Sesi, & CLI Recovery (`11cb960`)**: `__Host-kopdes_session` otomatis di balik proxy tepercaya (`COOKIE_SECURE`), `ALLOW_BEARER_AUTH=false` di produksi/Set B, `CSRFGuard` (`Origin`/`Referer` + `X-Requested-With`), `Vary: Origin`, `TouchSessionActivity` <= 1x/60s (**20 request `29.8834ms`, `0` tulis DB** + cabut instan `401`), dan `kopdes admin reset-mfa` / `reset-password`.
+6. **D6 — Hybrid Rate Limiter & Cleanup Goroutine (`676c507`)**: `HybridRateLimiter` (LRU L1 + persistensi DB L2 saat tembus batas), hapus goroutine ticker liar di `IPRateLimiter`, & `CleanupExpiredRateLimits`. Terbukti **500 IP palsu = `500 row DB (196.4832ms)` vs `0 row DB (1.9949ms)`**.
+7. **D8 — Worker Terjadwal Compose (`2240a80`)**: `internal/worker` (single `*pgxpool.Conn` `pg_try_advisory_lock`), `kopdes worker [--tick 60s] [--once]`, `/readyz` telemetry (`worker_jobs`, `worker_degraded`), dan service `worker` + volume `bukti_storage` di `docker-compose*.yml`.
+8. **D5 — Backup Terautentikasi `age` & CI DB Penuh (`fe5ead3`)**: Mengganti total `openssl aes-256-cbc` pada `scripts/backup.sh`, `restore_drill.sh`, `restore_test.sh` dengan `age` kunci publik (`BACKUP_AGE_RECIPIENT`, private key wajib off-server) + uji tolak tamper 1 byte + `.github/workflows/ci.yml` penuh (21 tabel, Set A & Set B).
+9. **D10 — Sinkronisasi RBAC, `foto_url`, `tanggal_lahir` Opsional, & CI `internal/db` (`aee1cda`)**: Memblokir `bendahara` di `PATCH /api/v1/pesanan/{id}/status` (`403`) & `petugas_toko` di tunai `POST /api/v1/pembayaran` (`403`), menambah `validateFotoURL`, menjadikan `tanggal_lahir` opsional, menambah `-short` skip di `internal/db/role_guard_test.go`, serta memverifikasi paritas 36 rute + 95 tes live peran via `TestRBAC_MatrixMatchesLiveRouterAndEnforcesBoundaries`.
+
+### Output Verifikasi Nyata Pasca-Perubahan Terakhir
+
+```text
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 46 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_test
+
+$ go run ./cmd/envcheck --strict --ports --no-listen --env-file .env.test.alt
+envcheck PORTS PASS: tidak ada konflik port pada konfigurasi.
+envcheck STRICT PASS: 46 variabel terverifikasi, APP_ENV=test, DB_NAME=kopdes_alt_test
+
+$ go run ./cmd/envcheck --compare .env.test .env.test.alt
+envcheck COMPARE PASS: skema kunci 100% identik (46 kunci).
+
+$ go build ./... && go vet ./... && staticcheck ./... && gosec -quiet ./... && govulncheck ./...
+# Seluruhnya exit code 0; govulncheck: 0 vulnerabilities found.
+
+$ go test -short -count=1 ./...
+# Seluruh 22 paket PASS (0.363s - 3.369s).
+
+$ go test -count=1 -race -p 1 ./...
+ok  github.com/kopdes/merah-putih/cmd/envcheck              1.552s
+ok  github.com/kopdes/merah-putih/cmd/kopdes                15.932s
+ok  github.com/kopdes/merah-putih/cmd/seed_test_accounts    1.765s
+ok  github.com/kopdes/merah-putih/cmd/server                1.951s
+ok  github.com/kopdes/merah-putih/cmd/uitester              2.757s
+ok  github.com/kopdes/merah-putih/internal/anggota          2.069s
+ok  github.com/kopdes/merah-putih/internal/api              72.809s
+ok  github.com/kopdes/merah-putih/internal/api/handlers     1.925s
+ok  github.com/kopdes/merah-putih/internal/api/middleware   1.529s
+ok  github.com/kopdes/merah-putih/internal/api/response     1.949s
+ok  github.com/kopdes/merah-putih/internal/auth             1.764s
+ok  github.com/kopdes/merah-putih/internal/config           1.660s
+ok  github.com/kopdes/merah-putih/internal/db               2.925s
+ok  github.com/kopdes/merah-putih/internal/iuran            1.999s
+ok  github.com/kopdes/merah-putih/internal/katalog          1.771s
+ok  github.com/kopdes/merah-putih/internal/laporan          2.086s
+ok  github.com/kopdes/merah-putih/internal/pembayaran       2.461s
+ok  github.com/kopdes/merah-putih/internal/pendaftaran      2.418s
+ok  github.com/kopdes/merah-putih/internal/pesanan          1.751s
+ok  github.com/kopdes/merah-putih/internal/security         1.573s
+ok  github.com/kopdes/merah-putih/internal/testseed         1.736s
+ok  github.com/kopdes/merah-putih/internal/worker           5.091s
+
+$ go run ./cmd/kopdes --env-file .env.test worker --once
+# EXIT:0
+$ go run ./cmd/kopdes --env-file .env.test storage migrate-files
+Migrasi storage selesai: kyc_moved=0 kyc_reencrypted=0 bukti_moved=0 bukti_reencrypted=0
+$ go run ./cmd/kopdes --env-file .env.test bukti purge
+Bukti purge selesai: 0 berkas bukti non-lunas kedaluwarsa dihapus
+```
+
+---
+
+## Modular Monolith, Figma Wireframe, & Eksperimen Microservice (Prompt v9 — Branch `modular-and-wireframe`, Tag Dasar `pre-modular` = `448da13`)
+
+1. **Fase 0 — Baseline Pra-Restrukturisasi (`9e17632`)**:
+   - Menambahkan skrip `tools/loadtest`, `tools/chaosdrill`, suite `TestSecurityAbuse_*` & `TestChaos_*`, serta menambal **3 temuan nyata** (*fail-first*): `DecodeJSON` `DisallowUnknownFields()`, scoping `Idempotency-Key` per `UserID`, dan guard `FileStore == nil` di unggah KYC.
+   - Menyimpan angka patokan performa, chaos (`0` stok negatif/selisih/orphan, RTO `5.180 ms`), dan SAST di [BASELINE_REPORT.md](BASELINE_REPORT.md) & `reports/baseline/`.
+2. **Fase 1 — Modular Monolith dengan Batas Terpaksa (`869eb5c`)**:
+   - Menyatukan biner `cmd/kopdes` (`serve`, `worker`, `uiserve`, `admin`), memisahkan 8 modul (`auth`, `pengaturan`, `anggota`, `iuran`, `katalog`, `pesanan`, `pembayaran`, `laporan`) + `internal/<modul>/api`, `internal/filestore`, `internal/uiserve`, dan 51 env var termasuk `WORKER_PORT`, `WORKER_TICK_INTERVAL`, `SLO_*`.
+   - Memaksa batas impor & kepemilikan 21 tabel melalui [internal/arch_test.go](../internal/arch_test.go) (`4/4` PASS) serta menyusun [ADR-0001](adr/0001-modular-monolith.md) dan [ARCHITECTURE.md](ARCHITECTURE.md).
+3. **Fase 2 — Implementasi Wireframe Figma & E2E Set B (`4b895f8`)**:
+   - Menginventarisasi **19 frame** Figma (`5RsPLIopItTEIp21N1VU2x`) -> [INVENTARIS_LAYAR.md](wireframe/INVENTARIS_LAYAR.md) & [ANALISIS_KESENJANGAN.md](wireframe/ANALISIS_KESENJANGAN.md), menandai fitur luar lingkup dengan `BLOCKED: butuh keputusan pemilik`.
+   - Membangun `frontend-wireframe/` (Vite + TypeScript ketat, `0` deps runtime, cookie HttpOnly + CSRF `X-Requested-With`, bebas `innerHTML`, `<canvas>` PNG/JPG) dan lulus **4/4** suite Playwright Chromium pada Set B (`18,7s`, `10` tangkapan layar di `reports/wireframe/`, [LAPORAN_E2E.md](wireframe/LAPORAN_E2E.md)).
+4. **Fase 3 — Eksperimen Microservice Terukur `spike/filesvc` (`848c2be`)**:
+   - Memisahkan `kopdes filesvc` via `RemoteFileStore`: delta p95 loopback `SaveEncrypted = +1.013 ms` & `LoadDecrypted = -0.599 ms`, S2S bearer `401`, API `0` kunci berkas (`phase_a_api_key_rejects_enc=true`), isolasi `200`/`503` saat mati & pemulihan `200`.
+   - Ditolak sementara via gerbang 6 kriteria di [ADR-0002](adr/0002-filesvc-spike.md) agar tetap ramping (`1` VPS, `51` var `.env`, `1` developer), dengan cetak biru & data eksperimen tetap disimpan di `reports/spike/`.
+5. **Fase 4 & Penutup — Re-Test Final, Set C Port Acak, & Dokumentasi**:
+   - Re-test beban (`GOMAXPROCS=2`): `0` regresi SLO; `load` baca p95 `117,00 ms`, `spike` baca p95 `257,23 ms` (`PASS < 300 ms`), `soak` baca p95 `45,19 ms`, `0` error tak terduga.
+   - Chaos `tools/chaosdrill` (`112` req / `79` order, `0` inkonsistensi stok/uang, restore `21` tabel / `38` anggota RTO `7.415 ms`), `TestArchitecture_*`, `TestSecurityAbuse_*`, `staticcheck`, `gosec` (`0` isu), `govulncheck` (`0` kerentanan terpanggil), `gitleaks` (`115` commit, `0` bocoran).
+   - Portabilitas Set C (`28080/28081/28082/25433`) lolos dengan `0` edit kode, konflik `WORKER_PORT=28080` ditolak exit `1`, dan cookie Set A ditolak `401` di Set B ([MODULAR_REPORT.md](MODULAR_REPORT.md)).
+6. **Tindak Lanjut v9 — Audit Env (`51 -> 43`), Matriks 19 Frame, Dokumen Go-Live/Staging/Pentest, & CI Linux Penuh**:
+   - Memangkas env `51 -> 43 <= 45` dengan alasan tertulis per variabel di [ENV_REFERENCE.md](ENV_REFERENCE.md) (`92107d6`).
+   - Melengkapi blok wireframe beranda, Suite E2E `05`, & [MATRIKS_E2E_19_FRAME.md](wireframe/MATRIKS_E2E_19_FRAME.md) (`0e556f6`).
+   - Menambahkan [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md), [STAGING_CHECKLIST.md](STAGING_CHECKLIST.md), dan [PENTEST_SCOPE.md](PENTEST_SCOPE.md).
+7. **Pengerasan CI Linux 5/5 Hijau, `kopdes healthcheck`, Hadolint/sqlc/psql, & Triage OWASP ZAP `40018`**:
+   - **Pin `sqlc` (`v1.31.1`)** di [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) dan [BACKEND_GUIDE.md](BACKEND_GUIDE.md) (`17c58b8`, `31dd84a`), terverifikasi `sqlc=v1.31.1(drift=0)`.
+   - **Normalisasi `psql -tA` non-superuser** di [`scripts/ci_deploy_e2e.sh`](../scripts/ci_deploy_e2e.sh) (`31dd84a`): memeriksa `kopdes_app|super=false|bypassrls=false|createdb=false|createrole=false`.
+   - **Dockerfile & Subperintah `kopdes healthcheck`** (`94c6dc4`): mengubah `USER` ke UID/GID numerik `10001:10001`, mendokumentasikan alasan `# hadolint ignore=DL3018`, menambahkan [`cmd/kopdes/healthcheck.go`](../cmd/kopdes/healthcheck.go) beserta [`healthcheck_test.go`](../cmd/kopdes/healthcheck_test.go), dan memakai JSON `HEALTHCHECK CMD ["/app/kopdes", "healthcheck"]` hingga `hadolint=PASS`.
+   - **Audit & Triage OWASP ZAP `40018`** ([ZAP_TRIAGE.md](security/ZAP_TRIAGE.md), [`zap_false_positives.json`](../tests/security/zap_false_positives.json), [`semgrep-kopdes.yml`](../tests/security/semgrep-kopdes.yml)): seluruh SQL terverifikasi berparameter `sqlc` (`0` SQL dinamis via Semgrep `kopdes-no-dynamic-sql-build`, `0` error sintaks PG, `0` HTTP `500`/galat SQL di API); penyebab `40018` (`boolean conditions`) terkonfirmasi sebagai artefak rate limit `IPRateLimiter` (`30 rps`) / `hybridLimit`; pembatasan kecepatan ZAP (`scanner.threadPerHost=1`, `scanner.delayInMs=50`) di [`zap-api-scan.sh`](../tests/security/zap-api-scan.sh) & CI menghasilkan **0 High & 0 Medium** di seluruh endpoint (`triaged_fp=0`, `low_alerts=2`, `info_alerts=5`), ditambah pemetaan SQLSTATE PG ke `4xx` tanpa membocorkan detail internal ([`http_helpers.go`](../internal/api/response/http_helpers.go), `bfa88c6`) dan perbaikan parser `k6 --summary-export` (`fb7d4d9`).
+   - **Ringkasan Run CI Penuh 5/5 Hijau** — Run [`44988458803`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44988458803) (`5c3224a`, **5/5 `success`**) & Run terbaru [`44990176992`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44990176992) (`fb7d4d9`, **5/5 `success`**, 5 artefak laporan):
+
+| Job CI (Run `44990176992` / `fb7d4d9`) | Status | Hasil Terobservasi Verbatim |
+| :--- | :--- | :--- |
+| `Env (43 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep` | `success` | `envcheck=43_vars(PASS) \| sqlc=v1.31.1(drift=0) \| gitleaks=0_leaks \| hadolint=PASS \| trivy_config=0_HIGH_CRITICAL \| semgrep=(errors=0 results=0)` (`ci-static-iac-reports`, `7004 B`) |
+| `PG16 Build, Race Test, SAST, age Drill, & Trivy Image` | `success` | `pg16_race_ok_pkgs=24 \| age_drill=PASS \| staticcheck_gosec_govulncheck=PASS \| trivy_image_fixable_HIGH_CRITICAL=0` (`ci-go-race-and-image-reports`, `17835 B`) |
+| `Uji Deployment Nyata Compose (.env.test.alt, Worker, Pembayaran, & age Drill)` | `success` | `role=kopdes_app\|super=false\|bypassrls=false\|createdb=false\|createrole=false \| DEPLOY E2E PASS: order=ORD-20261122-053756-5D1CC1 payment=PAY-20261122-053756-2054FE total=127443 status=lunas->selesai stok=10->8 \| enc_files=(kyc=3,bukti=1) \| RESTORE DRILL BERHASIL: Snapshot DB (21 tabel), arsip KYC/Bukti, dan manifest terverifikasi.` (`ci-docker-compose-deploy-e2e`, `6797 B`) |
+| `Build & Playwright E2E 19 Frame (Set B Cookie-Primary + PG16)` | `success` | `5 passed (1.7m)`: `01` `633ms`, `02` `1.8s`, `03` `31.2s`, `04` `983ms`, `05` `1.1m` (`ci-wireframe-playwright-e2e`, `1065303 B`) |
+| `OWASP ZAP, Schemathesis, k6, & Toxiproxy Chaos (PG16)` | `success` | `k6_load=(reqs=25851 p50=0.8ms p95=3.6ms read_p95=1.9ms write_p95=37.4ms err=0.00% unexp=0.00%) \| zap_baseline.json: total_alerts=2 high=0 med=0 \| zap_api.json: total_alerts=5 high=0 med=0 \| triaged_fp=0 low_alerts=2 info_alerts=5 \| pg_log_errors=0 pg_syntax_errors=0 api_500=0 api_sql_errors=0 guard_ok=True \| schemathesis=PASS \| toxiproxy=(lat=200->down=503->rec=200)` (`ci-dast-perf-chaos-reports`, `61691 B`) |
+
+8. **Audit ZAP 5 Profil Per Peran (MFA + Rate-Limit Terkendali), k6 200-VU Per Endpoint, Panduan Pengurus, & Perbaikan `pipefail` CI (Run [`44996362750`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44996362750) / `b6bdcaa`)**:
+   - **Env ke-44 (`RATE_LIMIT_RPS`):** Menambahkan [`RATE_LIMIT_RPS`](ENV_REFERENCE.md) (`default 30`, guard produksi `1..120`, tetap `44 <= 45` env var; commit `8d270ac`, `b6bdcaa`).
+   - **ZAP Per Peran + Penemuan & Penambalan Bug Nyata `30002` (`>72` byte password):** Matriks `zap-per-role-matrix` ([`zap_role_scan.py`](../tests/security/zap_role_scan.py), [`auth_helper.py`](../tests/security/auth_helper.py)) mengautentikasi 4 peran dengan TOTP MFA nyata untuk `admin` dan `bendahara`. Run eksperimental awal `admin_relaxed` (`ae20eca`) menangkap bug nyata **Medium `30002` + HTTP 500** pada `POST /api/v1/users` saat input kata sandi `> 72` byte mengenai bcrypt; diperbaiki menjadi `400 PASSWORD_TOO_LONG` (`3daaa51`). Hasil **5/5 profil pada Run `44996362750`:** `admin` (`mfa=verified`, `36/36`), `bendahara` (`mfa=verified`, `25/36`, `denied=11`), `petugas_toko` (`mfa=not_required`, `23/36`, `denied=13`), `anggota` (`mfa=not_required`, `19/36`, `denied=17`), dan `admin_relaxed` (`rps=1500`, `full`, `mfa=verified`, `36/36`) seluruhnya **`0` Unexcluded High, `0` Medium, `triaged_fp=0`, `err500=0`, `pg_syntax=0`, `api_sql=0`, `post_session_ok=True`** ([ZAP_TRIAGE.md](security/ZAP_TRIAGE.md) §8).
+   - **Audit Kejujuran CI (`pipefail` & `hybridLimit`) & Celah Fuzzing `ParsePagination` (`CWE-190`):** Menutup celah `| tee` tanpa `set -euo pipefail` di `.github/workflows/ci.yml`, memindahkan `${{ matrix.* }}` ke `env:` (memulihkan Semgrep menjadi `errors=0 results=0`), serta menghapus `testHybridScale` yang sempat memecah `TestSecurityAbuse_RegUploadSpamAndCredentialStuffingVsCGNAT`; Run `44996362750` terverifikasi **10/10 `success`** (`24/24` paket `PG16 -race`). Selain itu, audit PR Run `44996368843` menemukan 1 error nyata Schemathesis `ST101` (`HTTP 500`) pada `GET /api/v1/pesanan?offset=1000000000000000000` akibat integer wrap-around `int -> int32` negatif (`-1486618624`, PostgreSQL `SQLSTATE 2201X`); diperbaiki terpusat pada [`ParsePagination`](../internal/api/response/http_helpers.go) (`strconv.ParseInt` + clamp `[0..1_000_000]`) dan pemetaan `2201W`/`2201X` -> `400`.
+   - **k6 200-VU Per Endpoint (`17.827` reqs, `17.0%` tulis):** `overall=(p50=1.2ms p95=5.3ms p99=14.4ms)`, `read_slo=(p50=1.1ms p95=2.3ms p99=4.8ms)`, `write_slo=(p50=4.0ms p95=10.7ms p99=39.4ms)`, `unexp_err=0.00%`, `http_err=0.17%` (hanya `30`x `409 USER_EXISTS` idempoten saat `setup()`), `schemathesis=PASS`, `toxiproxy=(lat=200->down=503->rec=200)` ([PERFORMANCE_K6.md](PERFORMANCE_K6.md)).
+   - **Panduan Pengurus, Pelatihan, & Daftar Keputusan Pemilik `KP-01`..`KP-10`:** Menambahkan [PANDUAN_PENGURUS.md](PANDUAN_PENGURUS.md) (9 tugas operasional bahasa sehari-hari) & [LEMBAR_PELATIHAN_PENGURUS.md](LEMBAR_PELATIHAN_PENGURUS.md), serta memperbarui [GO_LIVE_CRITERIA.md](GO_LIVE_CRITERIA.md), [STAGING_CHECKLIST.md](STAGING_CHECKLIST.md), [PENTEST_SCOPE.md](PENTEST_SCOPE.md), dan [TUGAS_MANUAL_PEMILIK.md](TUGAS_MANUAL_PEMILIK.md) (`44` env var + tabel keputusan terbuka `KP-01`..`KP-10`).
+
+| Job CI Run [`44996362750`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/44996362750) (`b6bdcaa`) | Status | Hasil Terobservasi Verbatim |
+| :--- | :--- | :--- |
+| `Env (44 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep` | `success` | `envcheck=44_vars(PASS) \| sqlc=v1.31.1(drift=0) \| gitleaks=0_leaks \| hadolint=PASS \| trivy_config=0_HIGH_CRITICAL \| semgrep=(errors=0 results=0)` |
+| `PG16 Build, Race Test, SAST, age Drill, & Trivy Image` | `success` | `pg16_race_ok_pkgs=24 \| age_drill=PASS \| staticcheck_gosec_govulncheck=PASS \| trivy_image_fixable_HIGH_CRITICAL=0` (`0` baris `FAIL` dengan `set -euo pipefail`) |
+| `k6 200-VU Per-Endpoint, Schemathesis, & Toxiproxy Chaos (PG16)` | `success` | `total_reqs=17827 read_reqs=14754 write_reqs=3012 write_pct=17.0% overall=(p50=1.2ms p95=5.3ms p99=14.4ms) read_slo=(p50=1.1ms p95=2.3ms p99=4.8ms) write_slo=(p50=4.0ms p95=10.7ms p99=39.4ms) http_err=0.17% unexp_err=0.00% \| schemathesis=PASS \| toxiproxy=(lat=200->down=503->rec=200)` |
+| `OWASP ZAP Per-Role (admin)` | `success` | `role=admin mfa=verified rps=30 mode=paced reachable=36/36 denied=0 err500=0 post_session_ok=True \| baseline=2(0H/0M) \| api=6(0H/0M) \| triaged_fp=0 low=3 info=5` |
+| `OWASP ZAP Per-Role (bendahara)` | `success` | `role=bendahara mfa=verified rps=30 mode=paced reachable=25/36 denied=11 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+| `OWASP ZAP Per-Role (petugas_toko)` | `success` | `role=petugas_toko mfa=not_required rps=30 mode=paced reachable=23/36 denied=13 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+| `OWASP ZAP Per-Role (anggota)` | `success` | `role=anggota mfa=not_required rps=30 mode=paced reachable=19/36 denied=17 err500=0 post_session_ok=True \| api=5(0H/0M) \| triaged_fp=0 low=1 info=4` |
+| `OWASP ZAP Per-Role (admin_relaxed)` | `success` | `role=admin mfa=verified rps=1500 mode=full reachable=36/36 denied=0 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+| `Uji Deployment Nyata Compose (.env.test.alt, Worker, Pembayaran, & age Drill)` | `success` | `role=kopdes_app\|super=false\|bypassrls=false\|createdb=false\|createrole=false \| DEPLOY E2E PASS: order=ORD-20261122-070256-AEE377 payment=PAY-20261122-070256-300BF7 total=127872 status=lunas->selesai stok=10->8 \| enc_files=(kyc=3,bukti=1) \| RESTORE DRILL BERHASIL: Snapshot DB (21 tabel), arsip KYC/Bukti, dan manifest terverifikasi.` |
+| `Build & Playwright E2E 19 Frame (Set B Cookie-Primary + PG16)` | `success` | `5 passed (1.7m)`: seluruh skenario `01`–`05` lulus pada Set B PostgreSQL 16. |
+
+9. **Pemisahan `backend/` & `frontend/`, Endpoint `#37` Audit Log & Layar Sederhana, Brankas Kunci 85/15, Panduan VPS Linux, & CI 20/20 Hijau (`956ef2d`..`2b7316a`, Runs [`45036212069`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/45036212069) & [`45036216826`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/45036216826))**:
+   - **Pemisahan `backend/` & `frontend/` (`956ef2d`)**: Backend Go dipindah ke [`backend/`](../backend/), UI ke [`frontend/wireframe/`](../frontend/wireframe/) dan [`frontend/tester/`](../frontend/tester/), disertai [`Caddyfile`](../Caddyfile) reverse proxy HTTPS produksi *same-origin* (`api_public_url: ""`, `0` port literal).
+   - **Endpoint `#37` `GET /api/v1/audit-log` & Layar UI Sederhana (`4e82632`)**: Penambahan query `sqlc` [`ListAuditLog`](../backend/internal/pengaturan/queries/pengaturan.sql), handler/service [`pengaturan`](../backend/internal/pengaturan/service.go), rute `#37` (`adminOnly` di [`routes.go`](../backend/internal/api/routes.go)), serta layar sederhana UI (`audit-log-table`, `Refund Dual-Control` di [`views/admin.ts`](../frontend/wireframe/src/views/admin.ts); `Laporan + CSV`, `Daftar Antar + CSV`, `Tambah Produk/Kategori`, `Jenis & Generate Iuran`, `Catat Bayar Tunai`, `Pengaturan Koperasi`, & `Manajemen Pengguna / Reset Sandi & MFA` di [`views/operasional.ts`](../frontend/wireframe/src/views/operasional.ts)) bebas `.innerHTML` dan teruji oleh Playwright **Suite `06`**.
+   - **Brankas & Rotasi Kunci Kriptografi Model 85% / 15% Inti Pemilik (`795a586`)**: Penambahan [`scripts/backup_keys.sh`](../scripts/backup_keys.sh), [`scripts/restore_keys.sh`](../scripts/restore_keys.sh), [`scripts/rotate_keys.sh`](../scripts/rotate_keys.sh), serta [`KEAMANAN_KUNCI_PEMILIK.md`](KEAMANAN_KUNCI_PEMILIK.md) (`age` terenkripsi off-server + uji tamper 1-byte `--drill` + `rotate_keys.sh` di CI tanpa kebocoran rahasia).
+   - **Panduan VPS Linux, To-Do List Frontend, & Sinkronisasi Dokumen (`b8f875c`)**: Penambahan [`PANDUAN_PASANG_VPS_LINUX.md`](PANDUAN_PASANG_VPS_LINUX.md), [`frontend/TODO_FRONTEND.md`](../frontend/TODO_FRONTEND.md), [`frontend/README.md`](../frontend/README.md), [`backend/README.md`](../backend/README.md), serta pembaruan menyeluruh `FRONTEND_GUIDE`, `BACKEND_GUIDE`, `ARCHITECTURE`, `GO_LIVE_CRITERIA`, `STAGING_CHECKLIST`, `TUGAS_MANUAL_PEMILIK`, `MATRIKS_E2E_19_FRAME`, dan `README.md`.
+   - **Audit Akhir & Perbaikan Depth Test (`2b7316a`)**: Memperbaiki path relatif `.env.test` pada [`ratelimit_audit_test.go`](../backend/internal/api/middleware/ratelimit_audit_test.go) pasca-pemindahan ke `backend/` sehingga **20/20** checks (`push` & `pull_request`) PR #1 lulus seluruhnya:
+
+| Job CI Run [`45036212069`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/45036212069) & [`45036216826`](https://github.com/Entahlah831/kopdes-merah-putih/actions/runs/45036216826) (`2b7316a`) | Status (Push / PR) | Hasil Terobservasi Verbatim (`push` `45036212069`) |
+| :--- | :---: | :--- |
+| `Env (44 Var), sqlc, Gitleaks, Hadolint, Trivy Config, & Semgrep` | `pass` / `pass` | `envcheck=44_vars(PASS) \| sqlc=v1.31.1(drift=0) \| gitleaks=0_leaks \| hadolint=PASS \| trivy_config=0_HIGH_CRITICAL \| semgrep=(errors=0 results=0)` |
+| `PG16 Build, Race Test, SAST, age Drill, & Trivy Image` | `pass` / `pass` | `pg16_race_ok_pkgs=24 \| age_drill=PASS \| keyvault_drill=PASS \| staticcheck_gosec_govulncheck=PASS \| trivy_image_fixable_HIGH_CRITICAL=0` |
+| `Uji Deployment Nyata Compose (.env.test.alt, Worker, Pembayaran, & age Drill)` | `pass` / `pass` | `role=kopdes_app\|super=false\|bypassrls=false\|createdb=false\|createrole=false \| DEPLOY E2E PASS: order=ORD-20261122-150452-F2D1F2 payment=PAY-20261122-150452-BA3AFE total=128841 status=lunas->selesai stok=10->8 \| enc_files=(kyc=3,bukti=1) \| RESTORE DRILL BERHASIL: Snapshot DB (21 tabel), arsip KYC/Bukti, dan manifest terverifikasi.` |
+| `Build & Playwright E2E 19 Frame (Set B Cookie-Primary + PG16)` | `pass` / `pass` | `6 passed (2.0m)`: seluruh skenario `01`–`06` (termasuk Audit Log #37, Operasional, Pengaturan/Pengguna, & RBAC non-admin) lulus pada Set B PostgreSQL 16. |
+| `k6 200-VU Per-Endpoint, Schemathesis, & Toxiproxy Chaos (PG16)` | `pass` / `pass` | `total_reqs=17839 read_reqs=14754 write_reqs=3024 write_pct=17.0% overall=(p50=0.9ms p95=4.8ms p99=25.6ms) read_slo=(p50=0.9ms p95=1.7ms p99=4.2ms) write_slo=(p50=3.3ms p95=12.5ms p99=56.1ms) http_err=0.17% unexp_err=0.00% \| schemathesis=PASS \| toxiproxy=(lat=200->down=503->rec=200)` |
+| `OWASP ZAP Per-Role (admin)` | `pass` / `pass` | `role=admin mfa=verified rps=30 mode=paced reachable=37/37 denied=0 err500=0 post_session_ok=True \| baseline=(0H/0M) \| api=6(0H/0M) \| triaged_fp=0 low=3 info=5` |
+| `OWASP ZAP Per-Role (bendahara)` | `pass` / `pass` | `role=bendahara mfa=verified rps=30 mode=paced reachable=25/37 denied=12 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+| `OWASP ZAP Per-Role (petugas_toko)` | `pass` / `pass` | `role=petugas_toko mfa=not_required rps=30 mode=paced reachable=23/37 denied=14 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+| `OWASP ZAP Per-Role (anggota)` | `pass` / `pass` | `role=anggota mfa=not_required rps=30 mode=paced reachable=19/37 denied=18 err500=0 post_session_ok=True \| api=5(0H/0M) \| triaged_fp=0 low=1 info=4` |
+| `OWASP ZAP Per-Role (admin_relaxed)` | `pass` / `pass` | `role=admin mfa=verified rps=1500 mode=full reachable=37/37 denied=0 err500=0 post_session_ok=True \| api=6(0H/0M) \| triaged_fp=0 low=2 info=4` |
+
+
+

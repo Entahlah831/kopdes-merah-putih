@@ -14,7 +14,8 @@ if ($baseName -in @(".env", ".env.local", ".env.production", ".env.live")) {
     throw "DILARANG: seed_test_accounts tidak boleh dijalankan dengan berkas konfigurasi produksi/asli ($baseName)."
 }
 
-$argsList = @("run", "./cmd/seed_test_accounts", "--env-file", $EnvFile)
+$absEnv = [System.IO.Path]::GetFullPath($EnvFile)
+$argsList = @("-C", "backend", "run", "./cmd/seed_test_accounts", "--env-file", $absEnv)
 if ($Password -ne "") {
     $argsList += @("--password", $Password)
 }

@@ -29,9 +29,7 @@ if (Test-Path $Target) {
 }
 
 $secretKeys = @(
-    "JWT_SECRET", "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "QRIS_SECRET",
-    "METRICS_TOKEN", "DB_PASSWORD", "POSTGRES_PASSWORD", "KOPDES_APP_PASSWORD",
-    "BACKUP_ENCRYPTION_KEY"
+    "AES_MASTER_KEY", "BLIND_INDEX_SECRET", "DB_PASSWORD", "POSTGRES_PASSWORD"
 )
 
 function New-RandomHex([int]$Bytes = 32) {
@@ -68,5 +66,7 @@ foreach ($line in Get-Content $Template) {
 $outLines | Set-Content -Path $Target -Encoding UTF8
 Write-Host "Berkas $Target diperbarui dari $Template (nilai eksisting dipertahankan; rahasia tidak dicetak ke konsol)."
 if (Get-Command go -ErrorAction SilentlyContinue) {
-    go run ./cmd/envcheck --compare $Template $Target
+    $absTpl = [System.IO.Path]::GetFullPath($Template)
+    $absTgt = [System.IO.Path]::GetFullPath($Target)
+    go -C backend run ./cmd/envcheck --compare $absTpl $absTgt
 }

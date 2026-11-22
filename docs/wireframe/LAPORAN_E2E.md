@@ -25,12 +25,15 @@
 
 ## 2. Hasil Suite Playwright E2E
 
-| Suite | Cakupan Skenario | Durasi | Status |
-| :--- | :--- | :---: | :---: |
-| `01` | Beranda `01a`–`01e`, label `BLOCKED: butuh keputusan pemilik`, viewport responsif mobile `375x812` (`scrollWidth <= innerWidth`), katalog `05`, pencarian & empty state + `Reset filter` | `588ms` | **PASS** |
-| `02` | Daftar Member (`25:147`) dengan nama berisi payload XSS (`<img src=x onerror=...>`), upload 3 dokumen KYC via `<canvas>`, login Admin (cookie HttpOnly + MFA TOTP), `02 Dashboard Pengurus`, cek 0 storage token, pratinjau dokumen terdekripsi + verifikasi XSS **tidak dieksekusi**, approval `disetujui`, aktivasi sandi anggota baru, login anggota | `1.9s` | **PASS** |
-| `03` | Setup rekening QRIS/produk/iuran, checkout `anggota1`, `06 Detail Pesanan`, buat pembayaran QRIS + upload bukti kanvas, `04a Tagihan Iuran` checklist & upload bukti, `04b` verifikasi Bendahara (dual control MFA) untuk pesanan & iuran, Admin proses `diproses -> siap_diambil -> selesai` | `14.1s` | **PASS** |
-| `04` | **7 Skenario Negatif**: (1) Kata sandi salah ditolak UI, (2) BFLA anggota ke `#/dashboard` & `GET /api/v1/users` (`403`), (3) Upload PDF ditolak di kanvas sebelum request HTTP, (4) Idempotency key checkout replay (`order.id` identik), (5) Batalkan pesanan (`btn-batal-pesanan` hilang di status terminal `batal`), (6) Cookie write tanpa header `X-Requested-With` ditolak (`403`), (7) Logout mencabut sesi (`/auth/me` berikutnya `401`) | `1.2s` | **PASS** |
+Lihat pemetaan lengkap 19 frame pada [MATRIKS_E2E_19_FRAME.md](MATRIKS_E2E_19_FRAME.md).
+
+| Suite | Cakupan Skenario | Status |
+| :--- | :--- | :---: |
+| `01` | Beranda `01a`–`01e` (`beranda-hero`, `beranda-tentang` `01b`, `06 Produk Pilihan`, `07 Cara Bergabung`, `beranda-transparansi` `01d`, `beranda-footer` `01e`/`25:409`/`71:123`), label `BLOCKED: butuh keputusan pemilik`, viewport responsif mobile `375x812` (`scrollWidth <= innerWidth`), katalog `05`, filter tersedia/harga & empty state + `Reset filter` | **PASS** *(Set B + Set C)* |
+| `02` | Daftar Member (`25:147`) dengan nama berisi payload XSS (`<img src=x onerror=...>`), upload 3 dokumen KYC via `<canvas>`, login Admin (cookie HttpOnly + MFA TOTP), `02 Dashboard Pengurus`, cek 0 storage token, pratinjau dokumen terdekripsi + verifikasi XSS **tidak dieksekusi**, approval `disetujui`, aktivasi sandi anggota baru, login anggota | **PASS** *(Set B)* |
+| `03` | Setup rekening QRIS/produk/iuran, checkout `anggota1`, `06 Detail Pesanan`, buat pembayaran QRIS + upload bukti kanvas, `04a Tagihan Iuran` checklist & upload bukti, `04b` verifikasi Bendahara (dual control MFA) untuk pesanan & iuran, Admin proses `diproses -> siap_diambil -> selesai` | **PASS** *(Set B)* |
+| `04` | **7 Skenario Negatif**: (1) Kata sandi salah ditolak UI, (2) BFLA anggota ke `#/dashboard` & `GET /api/v1/users` (`403`), (3) Upload PDF ditolak di kanvas sebelum request HTTP, (4) Idempotency key checkout replay (`order.id` identik), (5) Batalkan pesanan (`btn-batal-pesanan` hilang di status terminal `batal`), (6) Cookie write tanpa header `X-Requested-With` ditolak (`403`), (7) Logout mencabut sesi (`/auth/me` berikutnya `401`) | **PASS** *(Set B)* |
+| `05` | Cakupan penuh 19 frame: produk `stok=0` (`Stok habis` disabled) & guard `Masuk untuk Checkout`; navigasi sidebar `#sb-ver-ang`, filter antrean `03a`, preview `<img>` KYC terdekripsi, keputusan `perlu_perbaikan` & `ditolak`; checkout `metode_pengiriman=diantar`, Bendahara `Tolak Bukti` (`04b`), upload ulang & `Setuju`; login `petugas_toko` (RBAC blokir `403` `/users` & menu pembayaran) memproses `diproses -> diantar -> selesai` | **Ditambahkan pada tindak lanjut v9 (diverifikasi di CI `frontend-wireframe-e2e`)** |
 
 ---
 

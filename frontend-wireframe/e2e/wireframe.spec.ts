@@ -35,23 +35,35 @@ async function loginUI(page: Page, identifier: string, password: string, mfaEmai
   await page.getByTestId("btn-login").click();
 
   if (mfaEmail) {
-    await expect(page.getByTestId("mfa-code")).toBeVisible({ timeout: 10_000 });
+    const firstShown = await Promise.race([
+      page.getByTestId("mfa-code").waitFor({ state: "visible", timeout: 10_000 }).then(() => "mfa" as const),
+      page.getByTestId("user-badge").waitFor({ state: "visible", timeout: 10_000 }).then(() => "ok" as const)
+    ]);
+    if (firstShown === "ok") return;
     let loggedIn = false;
-    for (const offset of [-30, 0, 30]) {
-      const totpRes = await page.request.post("/api/totp-helper", {
-        data: { account_email: mfaEmail, offset_seconds: offset }
-      });
-      expect(totpRes.ok()).toBeTruthy();
-      const { code } = (await totpRes.json()) as { code: string };
-      await page.getByTestId("mfa-code").fill(code);
-      await page.getByTestId("btn-mfa-submit").click();
-      try {
-        await expect(page.getByTestId("user-badge")).toBeVisible({ timeout: 3_500 });
-        loggedIn = true;
-        break;
-      } catch {
-        // Retry with adjacent TOTP step if same 30s window was already consumed
+    const tryOffsets = async (): Promise<boolean> => {
+      for (const offset of [-30, 0, 30]) {
+        const totpRes = await page.request.post("/api/totp-helper", {
+          data: { account_email: mfaEmail, offset_seconds: offset }
+        });
+        expect(totpRes.ok()).toBeTruthy();
+        const { code } = (await totpRes.json()) as { code: string };
+        await page.getByTestId("mfa-code").fill(code);
+        await page.getByTestId("btn-mfa-submit").click();
+        try {
+          await expect(page.getByTestId("user-badge")).toBeVisible({ timeout: 2_500 });
+          return true;
+        } catch {
+          // Retry with next TOTP step if prior step was consumed
+        }
       }
+      return false;
+    };
+    loggedIn = await tryOffsets();
+    if (!loggedIn) {
+      const waitSec = 31 - (Math.floor(Date.now() / 1000) % 30);
+      await page.waitForTimeout(waitSec * 1000);
+      loggedIn = await tryOffsets();
     }
     expect(loggedIn).toBeTruthy();
   } else {
@@ -75,9 +87,13 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     ensureScreenshotDir();
   });
 
-  test("01. Beranda, Katalog, Mobile Viewport, & Auth Cookie/XSS Hygiene", async ({ page }) => {
+  test("01. Beranda (01a-01e), Tentang/Kontak/FAQ, Katalog, Mobile Viewport, & Auth Hygiene", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("beranda-hero")).toBeVisible();
+    await expect(page.getByTestId("beranda-tentang")).toBeVisible();
+    await expect(page.getByTestId("beranda-transparansi")).toBeVisible();
+    await expect(page.getByTestId("beranda-footer")).toBeVisible();
+    await expect(page.locator("body")).toContainText("07 — Cara Bergabung");
     await expect(page.locator("body")).toContainText("BLOCKED: butuh keputusan pemilik");
     await page.screenshot({ path: path.join(screenshotDir, "01_beranda.png"), fullPage: true });
 
@@ -88,11 +104,13 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
     await page.screenshot({ path: path.join(screenshotDir, "09_mobile_beranda.png"), fullPage: true });
 
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.getByTestId("nav-katalog").click();
+    await page.getByTestId("cta-katalog").click();
     await expect(page.getByTestId("kat-search")).toBeVisible();
     await page.screenshot({ path: path.join(screenshotDir, "02_katalog.png"), fullPage: true });
 
-    // Empty state + Reset filter
+    // Filter ketersediaan, max harga, & Empty state + Reset filter
+    await page.getByTestId("kat-tersedia-only").check();
+    await page.getByTestId("kat-max-harga").fill("9999999");
     await page.getByTestId("kat-search").fill("ZZZ_TIDAK_ADA_PRODUK_999");
     await expect(page.getByTestId("katalog-empty")).toBeVisible();
     await page.getByTestId("btn-reset-filter").click();
@@ -440,5 +458,150 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
       return r.status;
     }, { base: apiBase });
     expect(afterLogout).toBe(401);
+  });
+
+  test("05. Cakupan Lengkap 19 Frame: Stok Habis, Perbaikan/Tolak KYC, Tolak Bukti, Diantar, & RBAC Petugas Toko", async ({ page }) => {
+    test.setTimeout(120_000);
+    const rt = await (await page.request.get("/config.json")).json() as { api_public_url: string };
+    const apiBase = rt.api_public_url;
+    const uniq = Date.now().toString().slice(-6);
+
+    // 1. Produk stok 0 (Stok habis) & produk aktif untuk alur diantar
+    await loginUI(page, "admin@kopdes-test.local", seedPassword, "admin@kopdes-test.local");
+    const zeroSKU = `HABIS-${uniq}`;
+    const okSKU = `ANTAR-${uniq}`;
+    const setupOK = await page.evaluate(async ({ base, zeroSKU, okSKU }) => {
+      const postProd = async (sku: string, nama: string, stok: number) => {
+        const r = await fetch(`${base}/api/v1/katalog/produk`, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+          body: JSON.stringify({ sku, nama, satuan: "pcs", harga_umum: 12000, harga_anggota: 10000, stok, status: "aktif" })
+        });
+        return r.ok;
+      };
+      return (await postProd(zeroSKU, `Produk Kosong ${uniq}`, 0)) && (await postProd(okSKU, `Produk Antar ${uniq}`, 5));
+    }, { base: apiBase, zeroSKU, okSKU });
+    expect(setupOK).toBeTruthy();
+    await logoutUI(page);
+
+    // Cek katalog anonim: Stok habis non-aktif & tombol "Masuk untuk Checkout"
+    await page.getByTestId("nav-katalog").click();
+    await expect(page.getByTestId(`pesan-${zeroSKU}`)).toBeDisabled();
+    await expect(page.getByTestId(`pesan-${zeroSKU}`)).toContainText("Stok habis");
+    await page.getByTestId(`pesan-${okSKU}`).click();
+    await expect(page.getByTestId("cart-panel")).toContainText("Masuk untuk Checkout");
+
+    // 2. Pendaftaran + 03a Filter + 03b Minta Perbaikan -> Tolak + preview KYC terdekripsi
+    await page.goto("/#/daftar");
+    await page.locator('input[name="nama_lengkap"]').fill(`Calon Tolak ${uniq}`);
+    await page.locator('input[name="email"]').fill(`tolak_${uniq}@kopdes-test.local`);
+    await page.locator('input[name="nik"]').fill(`320303${uniq.padStart(10, "0")}`);
+    await page.locator('input[name="no_hp"]').fill(`0857${uniq.padStart(8, "3")}`);
+    await page.locator('input[name="pekerjaan"]').fill("Nelayan");
+    await page.locator('textarea[name="alamat"]').fill("Dusun Pantai 5");
+    await page.locator("#chk-domisili").check();
+    await page.locator("#chk-pdp").check();
+    await page.getByTestId("btn-kirim-daftar").click();
+    await expect(page.getByTestId("daftar-sukses")).toBeVisible();
+    await page.getByTestId("kyc-file").setInputFiles({
+      name: "ktp_tolak.png", mimeType: "image/png", buffer: await generateTestPNG(page, "KYC-REV-" + uniq)
+    });
+    await page.getByTestId("btn-upload-kyc").click();
+    await expect(page.locator("body")).toContainText("Dokumen ktp berhasil terenkripsi");
+
+    await loginUI(page, "admin@kopdes-test.local", seedPassword, "admin@kopdes-test.local");
+    await page.locator("#sb-ver-ang").click();
+    await page.getByTestId("filter-reg-status").selectOption("diajukan");
+    await page.getByTestId("search-reg").fill(`Calon Tolak ${uniq}`);
+    await expect(page.locator("table")).toContainText("*");
+    await page.locator("table button", { hasText: "Tinjau" }).first().click();
+    const kycImgOk = await page.locator(".preview-img").first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0);
+    expect(kycImgOk).toBeTruthy();
+
+    await page.getByTestId("reg-catatan").fill("Foto KTP buram");
+    await page.getByTestId("btn-reg-perbaikan").click();
+    await expect(page.getByTestId("reg-decision-ok")).toContainText("perlu_perbaikan");
+
+    await page.getByTestId("filter-reg-status").selectOption("perlu_perbaikan");
+    await page.locator("table button", { hasText: "Tinjau" }).first().click();
+    await page.getByTestId("reg-catatan").fill("Melampaui batas kelayakan");
+    await page.getByTestId("btn-reg-tolak").click();
+    await expect(page.getByTestId("reg-decision-ok")).toContainText("ditolak");
+    await logoutUI(page);
+
+    // 3. Checkout diantar + Upload bukti -> Tolak bukti oleh Bendahara -> Upload ulang -> Setuju -> Petugas Toko selesaikan
+    await loginUI(page, "anggota1@kopdes-test.local", seedPassword);
+    await page.getByTestId("nav-katalog").click();
+    await page.getByTestId(`pesan-${okSKU}`).click();
+    await page.getByTestId("co-kirim").selectOption("diantar");
+    await page.getByTestId("co-alamat").fill("Jl. Melati RT 03 RW 01");
+    await page.getByTestId("btn-checkout").click();
+    await expect(page.locator("h2")).toContainText("Pesanan Saya");
+    await page.locator("table button", { hasText: "Detail" }).first().click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toBeVisible();
+    const ordJudul = (await page.getByTestId("detail-pesanan-judul").textContent()) || "";
+    const ordNomor = ordJudul.match(/ORD-[A-Z0-9-]+/)?.[0] || "";
+    expect(ordNomor).not.toBe("");
+
+    await page.getByTestId("btn-bayar-pesanan").click();
+    await expect(page.getByTestId("order-pay-info")).toBeVisible();
+    const payNomor1 = ((await page.getByTestId("order-pay-info").textContent()) || "").match(/PAY-[A-Z0-9-]+/)?.[0] || "";
+    await page.getByTestId("order-bukti-file").setInputFiles({
+      name: "bukti_tolak.png", mimeType: "image/png", buffer: await generateTestPNG(page, "REJ-" + uniq)
+    });
+    await page.getByTestId("btn-upload-order-bukti").click();
+    await expect(page.getByTestId("order-bukti-ok")).toBeVisible();
+    await logoutUI(page);
+
+    // Bendahara tolak bukti pertama via sidebar Dashboard
+    await loginUI(page, "bendahara@kopdes-test.local", seedPassword, "bendahara@kopdes-test.local");
+    await page.locator("#sb-ver-pay").click();
+    await expect(page.locator("body")).toContainText("BLOCKED: butuh keputusan pemilik");
+    await page.getByTestId(`ver-pay-${payNomor1}`).click();
+    await page.locator(".preview-img").first().waitFor({ state: "visible" });
+    await page.getByTestId("ver-pay-alasan").fill("Nominal buram tidak terbaca");
+    await page.getByTestId("btn-pay-tolak").click();
+    await expect(page.getByTestId("ver-pay-ok")).toContainText("tolak");
+    await logoutUI(page);
+
+    // Anggota buat pembayaran QRIS ke-2 + unggah bukti baru
+    await loginUI(page, "anggota1@kopdes-test.local", seedPassword);
+    await page.getByTestId("nav-pesanan").click();
+    await page.getByTestId(`detail-ord-${ordNomor}`).click();
+    await page.getByTestId("btn-bayar-pesanan").click();
+    await expect(page.getByTestId("order-pay-info")).toBeVisible();
+    const payNomor2 = ((await page.getByTestId("order-pay-info").textContent()) || "").match(/PAY-[A-Z0-9-]+/)?.[0] || "";
+    await page.getByTestId("order-bukti-file").setInputFiles({
+      name: "bukti_ok.png", mimeType: "image/png", buffer: await generateTestPNG(page, "OK-" + uniq)
+    });
+    await page.getByTestId("btn-upload-order-bukti").click();
+    await expect(page.getByTestId("order-bukti-ok")).toBeVisible();
+    await logoutUI(page);
+
+    // Bendahara setujui pembayaran ke-2
+    await loginUI(page, "bendahara@kopdes-test.local", seedPassword, "bendahara@kopdes-test.local");
+    await page.getByTestId("nav-verifikasi_pembayaran").click();
+    await page.getByTestId(`ver-pay-${payNomor2}`).click();
+    await page.getByTestId("ver-pay-alasan").fill("Bukti ulang jelas dan cocok");
+    await page.getByTestId("btn-pay-setuju").click();
+    await expect(page.getByTestId("ver-pay-ok")).toContainText("setuju");
+    await logoutUI(page);
+
+    // Petugas Toko RBAC check + selesaikan alur pengiriman diantar -> selesai
+    await loginUI(page, "petugas@kopdes-test.local", seedPassword, "petugas@kopdes-test.local");
+    await expect(page.getByTestId("nav-verifikasi_pembayaran")).toHaveCount(0);
+    const ptUsersStatus = await page.evaluate(async ({ base }) => {
+      const r = await fetch(`${base}/api/v1/users`, { credentials: "include", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      return r.status;
+    }, { base: apiBase });
+    expect(ptUsersStatus).toBe(403);
+
+    await page.getByTestId("nav-pesanan").click();
+    await page.getByTestId(`detail-ord-${ordNomor}`).click();
+    await page.getByTestId("btn-status-diproses").click();
+    await page.getByTestId("btn-status-diantar").click();
+    await page.getByTestId("btn-status-selesai").click();
+    await expect(page.getByTestId("detail-pesanan-judul")).toContainText("selesai");
+    await logoutUI(page);
   });
 });

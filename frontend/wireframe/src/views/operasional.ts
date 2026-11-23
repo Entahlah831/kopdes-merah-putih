@@ -1,5 +1,6 @@
 import { APIClient } from "../api";
 import { clear, el, formatRp, statusBadge } from "../dom";
+import { renderQRCanvas } from "../qr";
 import { PublicConfigData, UserSession } from "../types";
 
 interface DaftarAntarRow {
@@ -389,14 +390,117 @@ export async function renderPengaturanUser(
   api: APIClient,
   user: UserSession | null
 ): Promise<void> {
-  if (!user || user.peran !== "admin") {
-    container.appendChild(el("div", { class: "alert alert-error", "data-testid": "forbidden-view" }, "Halaman Pengaturan & Pengguna hanya untuk admin."));
+  if (!user) {
+    container.appendChild(el("div", { class: "alert alert-error", "data-testid": "forbidden-view" }, "Silakan login terlebih dahulu untuk membuka pengaturan akun."));
     return;
   }
 
-  container.appendChild(el("h2", null, "08 — Pengaturan Koperasi & Manajemen Pengguna"));
-  container.appendChild(await buildPengaturanFormCard(api));
-  container.appendChild(await buildUsersManagementCard(api));
+  container.appendChild(
+    el("h2", null, user.peran === "admin" ? "08 — Pengaturan Akun, Koperasi & Manajemen Pengguna" : "08 — Pengaturan Akun & Keamanan MFA TOTP")
+  );
+  container.appendChild(buildAccountSecurityCard(api, user));
+  if (user.peran === "admin") {
+    container.appendChild(await buildPengaturanFormCard(api));
+    container.appendChild(await buildUsersManagementCard(api));
+  }
+}
+
+function buildAccountSecurityCard(api: APIClient, user: UserSession): HTMLElement {
+  const statusSpan = statusBadge(user.mfa_enabled ? "aktif" : "belum_aktif");
+  const btnStartMFA = el(
+    "button",
+    { class: "btn btn-primary", type: "button", "data-testid": "btn-account-mfa-start" },
+    user.mfa_enabled ? "Tampilkan Ulang / Atur Ulang QR MFA TOTP" : "Tampilkan QR Code & Aktifkan MFA TOTP"
+  );
+  const mfaSetupArea = el("div", { style: "margin-top:10px;" });
+  const mfaMsg = el("div");
+
+  btnStartMFA.addEventListener("click", async () => {
+    clear(mfaMsg);
+    clear(mfaSetupArea);
+    btnStartMFA.disabled = true;
+    try {
+      const res = await api.request<{ secret: string; otpauth_uri?: string; setup_token: string }>("POST", "/api/v1/auth/mfa/setup", { body: {} });
+      const qrUri = res.data.otpauth_uri || `otpauth://totp/Kopdes:${encodeURIComponent(user.email || user.nama)}?secret=${res.data.secret}&issuer=Kopdes`;
+      const inCode = el("input", { type: "text", placeholder: "Masukkan 6 digit kode dari aplikasi Authenticator", "data-testid": "account-mfa-code" });
+      const btnConfirm = el("button", { class: "btn btn-primary", type: "button", "data-testid": "btn-account-mfa-confirm" }, "Verifikasi & Aktifkan MFA");
+
+      btnConfirm.addEventListener("click", async () => {
+        clear(mfaMsg);
+        btnConfirm.disabled = true;
+        try {
+          const conf = await api.request<{ mfa_enabled: boolean; recovery_codes?: string[] }>("POST", "/api/v1/auth/mfa/setup", {
+            body: { setup_token: res.data.setup_token, code: inCode.value.trim() }
+          });
+          user.mfa_enabled = true;
+          statusSpan.textContent = "aktif";
+          statusSpan.className = "badge badge-ok";
+          clear(mfaSetupArea);
+          const recCodes = (conf.data.recovery_codes || []).join(", ");
+          mfaMsg.appendChild(
+            el("div", { class: "alert alert-ok", "data-testid": "account-mfa-ok" },
+              `MFA TOTP berhasil diaktifkan! Simpan 8 kode pemulihan darurat ini di tempat aman: ${recCodes}`)
+          );
+        } catch (err) {
+          mfaMsg.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+        } finally {
+          btnConfirm.disabled = false;
+        }
+      });
+
+      mfaSetupArea.append(
+        el("div", { class: "alert alert-note" },
+          `1. Pindai QR Code di bawah menggunakan Google Authenticator / Authy (atau masukkan Secret TOTP manual: ${res.data.secret}). 2. Ketik 6 digit kode OTP lalu klik Verifikasi.`),
+        renderQRCanvas(qrUri, 4),
+        el("div", { class: "row", style: "margin-top:8px;" },
+          el("div", { style: "min-width:220px;" }, inCode),
+          btnConfirm
+        )
+      );
+    } catch (err) {
+      mfaMsg.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    } finally {
+      btnStartMFA.disabled = false;
+    }
+  });
+
+  const inCurPwd = el("input", { type: "password", placeholder: "Kata sandi saat ini", "data-testid": "acc-cur-password" });
+  const inNewPwd = el("input", { type: "password", placeholder: "Kata sandi baru (>= 10 karakter)", "data-testid": "acc-new-password" });
+  const btnChangePwd = el("button", { class: "btn", type: "button", "data-testid": "btn-acc-password-save" }, "Ubah Kata Sandi Saya");
+  const pwdMsg = el("div");
+
+  btnChangePwd.addEventListener("click", async () => {
+    clear(pwdMsg);
+    try {
+      await api.request("POST", "/api/v1/auth/password", {
+        body: { current_password: inCurPwd.value, new_password: inNewPwd.value }
+      });
+      inCurPwd.value = "";
+      inNewPwd.value = "";
+      pwdMsg.appendChild(el("div", { class: "alert alert-ok", "data-testid": "acc-password-ok" }, "Kata sandi berhasil diperbarui."));
+    } catch (err) {
+      pwdMsg.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    }
+  });
+
+  return el("div", { class: "card", "data-testid": "account-security-card" },
+    el("h3", null, "Pengaturan Akun Saya — Verifikasi 2-Langkah (QR MFA TOTP) & Kata Sandi"),
+    el("div", { class: "row", style: "margin-bottom:10px;align-items:center;" },
+      el("span", null, `Akun: ${user.nama} (${user.email || "-"}) | Peran: ${user.peran} | Status MFA TOTP: `),
+      statusSpan,
+      btnStartMFA
+    ),
+    mfaMsg,
+    mfaSetupArea,
+    el("hr", { style: "margin:14px 0;border:none;border-top:1px solid #d9e2ec;" }),
+    el("h4", null, "Ubah Kata Sandi Mandiri"),
+    pwdMsg,
+    el("div", { class: "grid-cards" },
+      el("div", { class: "field" }, el("label", null, "Kata Sandi Saat Ini"), inCurPwd),
+      el("div", { class: "field" }, el("label", null, "Kata Sandi Baru"), inNewPwd)
+    ),
+    btnChangePwd
+  );
 }
 
 async function buildPengaturanFormCard(api: APIClient): Promise<HTMLElement> {

@@ -278,7 +278,7 @@
           "Autentikasi & Sesi"
         ],
         "operationId": "postAuthMFASetup",
-        "summary": "Dua langkah enrollment TOTP MFA: kirim {} untuk mendapat secret + setup_token, lalu kirim {setup_token, code} untuk aktivasi",
+        "summary": "Dua langkah enrollment TOTP MFA: kirim {} untuk mendapat secret + otpauth_uri + setup_token, kirim {setup_token, code} untuk aktivasi, atau {action: \"skip\"} untuk menunda ke pengaturan akun",
         "security": [
           {
             "bearerSession": []
@@ -290,6 +290,12 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "skip"
+                    ]
+                  },
                   "setup_token": {
                     "type": "string"
                   },

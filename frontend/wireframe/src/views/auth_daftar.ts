@@ -26,14 +26,7 @@ export function renderDaftar(container: HTMLElement, api: APIClient, navigate: (
   const btnSubmit = el("button", { class: "btn btn-primary", type: "submit", "data-testid": "btn-kirim-daftar" }, "Kirim Pendaftaran");
 
   form.append(
-    el("h2", null, "Daftar Calon Anggota (Frame 25:147)"),
-    el(
-      "div",
-      { class: "alert alert-note" },
-      "Catatan Lingkup: Field wireframe Kirim OTP SMS/WA, Jenis Kelamin, Multi-Koperasi, dan Kata Sandi awal: ",
-      blockedBadge("BLOCKED: butuh keputusan pemilik"),
-      ". Kata sandi ditetapkan setelah disetujui via Kode Aktivasi."
-    ),
+    el("h2", null, "Daftar Calon Anggota"),
     el("div", { class: "grid-cards" },
       el("div", { class: "field" }, el("label", null, "Nama Lengkap *"), inNama),
       el("div", { class: "field" }, el("label", null, "Email *"), inEmail),
@@ -174,12 +167,10 @@ export function renderMasuk(
   const form = el("form", { class: "card", "data-testid": "form-login" });
   const inIdent = el("input", { type: "text", required: true, placeholder: "Email atau No HP", "data-testid": "login-identifier" });
   const inPass = el("input", { type: "password", required: true, placeholder: "Kata sandi", "data-testid": "login-password" });
-  const btnLogin = el("button", { class: "btn btn-primary", type: "submit", "data-testid": "btn-login" }, "Masuk (Cookie Sesi HttpOnly)");
+  const btnLogin = el("button", { class: "btn btn-primary", type: "submit", "data-testid": "btn-login" }, "Masuk");
 
   form.append(
     el("h2", null, "Masuk Portal Koperasi"),
-    el("p", { class: "alert alert-note" }, "Autentikasi cookie HttpOnly + header X-Requested-With sesuai kebijakan D3 (tanpa localStorage token)."),
-    feedback,
     el("div", { class: "field" }, el("label", null, "Email / No. HP"), inIdent),
     el("div", { class: "field" }, el("label", null, "Kata Sandi"), inPass),
     btnLogin

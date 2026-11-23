@@ -1,5 +1,6 @@
+
 import { APIClient } from "../api";
-import { blockedBadge, el, formatRp, statusBadge } from "../dom";
+import { el, formatRp, statusBadge } from "../dom";
 import { ProdukItem, RouteKey } from "../types";
 
 export async function renderBeranda(
@@ -8,170 +9,350 @@ export async function renderBeranda(
   navigate: (route: RouteKey) => void
 ): Promise<void> {
   const pub = api.getPublic();
-  const koperasiNama = pub?.koperasi?.nama_koperasi || "Koperasi Desa Merah Putih";
+  const koperasiNama =
+    pub?.koperasi?.nama_koperasi || "Koperasi Desa Merah Putih";
 
+  // HERO
   const hero = el(
     "section",
     { class: "hero", "data-testid": "beranda-hero" },
     el(
       "div",
-      null,
-      el("div", { class: "sidebar-label" }, "02 — HERO"),
-      el("h1", null, "Belanja kebutuhan dan kelola keanggotaan bersama koperasi kita"),
+      { class: "hero-content" },
+      el("div", { class: "hero-eyebrow" }, "KOPERASI DESA MERAH PUTIH"),
+      el(
+        "h1",
+        null,
+        "Belanja kebutuhan dan berkembang bersama koperasi"
+      ),
       el(
         "p",
         null,
-        `${koperasiNama} — Satu tempat untuk keanggotaan, iuran, dan belanja kebutuhan warga. Transparan dan dikelola bersama.`
+        `${koperasiNama} hadir sebagai tempat untuk keanggotaan, pembayaran iuran, dan memenuhi kebutuhan warga. Dikelola bersama untuk memberikan manfaat bagi anggota.`
       ),
       el(
         "div",
-        { class: "row" },
-        el("button", { class: "btn btn-primary", type: "button", "data-testid": "cta-daftar" }, "Gabung Menjadi Anggota"),
-        el("button", { class: "btn", type: "button", "data-testid": "cta-katalog" }, "Lihat Katalog")
+        { class: "row hero-actions" },
+        el(
+          "button",
+          {
+            class: "btn btn-primary",
+            type: "button",
+            "data-testid": "cta-daftar"
+          },
+          "Gabung Menjadi Anggota"
+        ),
+        el(
+          "button",
+          {
+            class: "btn btn-outline",
+            type: "button",
+            "data-testid": "cta-katalog"
+          },
+          "Lihat Katalog"
+        )
       )
     ),
-    el("div", { class: "placeholder-box" }, pub?.koperasi?.alamat_koperasi || "Foto kegiatan / produk asli koperasi")
+    el(
+      "div",
+      { class: "placeholder-box" },
+      pub?.koperasi?.alamat_koperasi || "Bersama membangun ekonomi desa"
+    )
   );
-  hero.querySelector('[data-testid="cta-daftar"]')?.addEventListener("click", () => navigate("daftar"));
-  hero.querySelector('[data-testid="cta-katalog"]')?.addEventListener("click", () => navigate("katalog"));
+
+  hero
+    .querySelector('[data-testid="cta-daftar"]')
+    ?.addEventListener("click", () => navigate("daftar"));
+
+  hero
+    .querySelector('[data-testid="cta-katalog"]')
+    ?.addEventListener("click", () => navigate("katalog"));
+
   container.appendChild(hero);
 
-  // 03 — Ringkasan Koperasi (tanpa angka dummy)
+  // RINGKASAN KOPERASI
   container.appendChild(
     el(
       "section",
-      { class: "card" },
-      el("div", { class: "row", style: "justify-content:space-between;" }, el("h3", null, "03 — Ringkasan Koperasi"), blockedBadge()),
+      { class: "card", "data-testid": "beranda-ringkasan" },
+      el("h3", null, "Ringkasan Koperasi"),
       el(
         "div",
         { class: "grid-cards" },
-        el("div", { class: "card card-muted" }, el("strong", null, "Status Pembayaran"), el("div", null, pub?.features?.payments_enabled ? "Aktif (QRIS / Tunai)" : "Nonaktif")),
-        el("div", { class: "card card-muted" }, el("strong", null, "Status Pendaftaran"), el("div", null, pub?.features?.registration_enabled ? "Dibuka" : "Ditutup")),
-        el("div", { class: "card card-muted" }, el("strong", null, "Ongkir Tetap"), el("div", null, formatRp(pub?.koperasi?.ongkir_tetap || 0))),
-        el("div", { class: "card card-muted" }, el("strong", null, "Metrik Wilayah / Tahun Berdiri"), blockedBadge("BLOCKED: butuh keputusan pemilik"))
+        el(
+          "div",
+          { class: "card card-muted" },
+          el("strong", null, "Pembayaran"),
+          el(
+            "div",
+            null,
+            pub?.features?.payments_enabled
+              ? "Pembayaran tersedia"
+              : "Belum tersedia"
+          )
+        ),
+        el(
+          "div",
+          { class: "card card-muted" },
+          el("strong", null, "Pendaftaran Anggota"),
+          el(
+            "div",
+            null,
+            pub?.features?.registration_enabled
+              ? "Pendaftaran dibuka"
+              : "Pendaftaran ditutup"
+          )
+        ),
+        el(
+          "div",
+          { class: "card card-muted" },
+          el("strong", null, "Ongkos Kirim"),
+          el(
+            "div",
+            null,
+            pub?.koperasi?.ongkir_tetap !== undefined
+              ? formatRp(pub.koperasi.ongkir_tetap)
+              : "Informasi belum tersedia"
+          )
+        )
       )
     )
   );
 
-  // 04–05 — Tentang Koperasi & Unit Usaha (01b)
+  // TENTANG KOPERASI & UNIT USAHA
   container.appendChild(
     el(
       "section",
       { class: "card", "data-testid": "beranda-tentang" },
-      el("div", { class: "row", style: "justify-content:space-between;" }, el("h3", null, "04–05 — Tentang Koperasi & Unit Usaha (01b)"), blockedBadge()),
+      el("h3", null, "Tentang Koperasi"),
       el(
         "p",
         null,
-        `${koperasiNama} dikelola secara transparan sebagai koperasi tunggal (keanggotaan, iuran wajib/pokok/sukarela, dan toko kebutuhan warga).`
+        `${koperasiNama} merupakan wadah ekonomi bersama yang mendukung kebutuhan warga melalui layanan keanggotaan, pembayaran iuran, dan toko kebutuhan sehari-hari.`
       ),
       el(
         "div",
         { class: "grid-cards" },
-        el("div", { class: "card card-muted" }, el("strong", null, "Gerai Toko Tunggal"), el("div", null, pub?.koperasi?.alamat_koperasi || "Lokasi koperasi tunggal aktif")),
-        el("div", { class: "card card-muted" }, el("strong", null, "Multi-Unit / Cabang"), blockedBadge("BLOCKED: butuh keputusan pemilik"))
+        el(
+          "div",
+          { class: "card card-muted" },
+          el("strong", null, "Layanan Toko"),
+          el(
+            "div",
+            null,
+            pub?.koperasi?.alamat_koperasi ||
+              "Menyediakan kebutuhan sehari-hari bagi warga."
+          )
+        ),
+        el(
+          "div",
+          { class: "card card-muted" },
+          el("strong", null, "Keanggotaan"),
+          el(
+            "div",
+            null,
+            "Mendukung kegiatan ekonomi yang dikelola secara bersama."
+          )
+        )
       )
     )
   );
 
-  // 06 — Produk Pilihan
-  const prodWrap = el("div", { class: "grid-cards" }, el("div", { class: "alert alert-note" }, "Memuat produk pilihan..."));
+  // PRODUK PILIHAN
+  const prodWrap = el(
+    "div",
+    { class: "grid-cards" },
+    el("div", { class: "alert alert-note" }, "Memuat produk pilihan...")
+  );
+
   container.appendChild(
     el(
       "section",
-      { class: "card" },
+      { class: "card", "data-testid": "beranda-produk" },
       el(
         "div",
-        { class: "row", style: "justify-content:space-between; margin-bottom:10px;" },
-        el("h3", { style: "margin:0;" }, "06 — Produk Pilihan"),
-        el("button", { class: "btn", type: "button", id: "btn-all-cat" }, "Lihat semua katalog ->")
+        { class: "section-heading" },
+        el("h3", null, "Produk Pilihan"),
+        el(
+          "button",
+          {
+            class: "btn btn-outline",
+            type: "button",
+            id: "btn-all-cat"
+          },
+          "Lihat Semua Katalog"
+        )
       ),
       prodWrap
     )
   );
-  container.querySelector("#btn-all-cat")?.addEventListener("click", () => navigate("katalog"));
 
-  // 07 — Cara Bergabung
+  container
+    .querySelector("#btn-all-cat")
+    ?.addEventListener("click", () => navigate("katalog"));
+
+  // CARA BERGABUNG
   container.appendChild(
     el(
       "section",
-      { class: "card" },
-      el("h3", null, "07 — Cara Bergabung"),
+      { class: "card", "data-testid": "beranda-cara-bergabung" },
+      el("h3", null, "Cara Bergabung"),
       el(
         "div",
-        { class: "grid-cards" },
-        el("div", { class: "card card-muted" }, "1. Isi formulir pendaftaran"),
-        el("div", { class: "card card-muted" }, "2. Unggah KTP, Selfie KTP & KK"),
-        el("div", { class: "card card-muted" }, "3. Verifikasi pengurus"),
-        el("div", { class: "card card-muted" }, "4. Keputusan & kode aktivasi"),
-        el("div", { class: "card card-muted" }, "5. Aktivasi sandi & login anggota")
+        { class: "grid-cards join-steps" },
+        el("div", { class: "card card-muted" }, el("span", { class: "step-number" }, "01"), el("strong", null, "Isi Formulir"), el("p", null, "Lengkapi formulir pendaftaran anggota.")),
+        el("div", { class: "card card-muted" }, el("span", { class: "step-number" }, "02"), el("strong", null, "Lengkapi Dokumen"), el("p", null, "Unggah KTP, selfie dengan KTP, dan Kartu Keluarga.")),
+        el("div", { class: "card card-muted" }, el("span", { class: "step-number" }, "03"), el("strong", null, "Proses Verifikasi"), el("p", null, "Pengurus akan memeriksa data pendaftaran.")),
+        el("div", { class: "card card-muted" }, el("span", { class: "step-number" }, "04"), el("strong", null, "Persetujuan"), el("p", null, "Tunggu keputusan dari pengurus koperasi.")),
+        el("div", { class: "card card-muted" }, el("span", { class: "step-number" }, "05"), el("strong", null, "Aktivasi Akun"), el("p", null, "Aktifkan akun untuk mulai menggunakan layanan anggota."))
       )
     )
   );
 
-  // 08–09 Berita/RAT & Transparansi (01d + Struktur 25:273)
+  // BERITA, RAT, STRUKTUR & TRANSPARANSI
   container.appendChild(
     el(
       "section",
       { class: "card", "data-testid": "beranda-transparansi" },
-      el("div", { class: "row", style: "justify-content:space-between;" }, el("h3", null, "08–09 — Berita, RAT, Struktur & Transparansi"), blockedBadge()),
+      el("h3", null, "Informasi dan Transparansi"),
       el(
         "p",
+        null,
+        "Koperasi mengutamakan pengelolaan yang terbuka dan bertanggung jawab. Informasi kegiatan, agenda, dan laporan koperasi dapat disampaikan melalui kanal resmi koperasi."
+      ),
+      el(
+        "div",
         { class: "alert alert-note" },
-        "Catatan Privasi (01d): Tidak menampilkan NIK, alamat pribadi, kontak pribadi, bukti bayar, atau data keluarga di halaman publik. Berita/Agenda/RAT & Struktur Manajemen dinamis: BLOCKED: butuh keputusan pemilik."
+        "Informasi pribadi anggota dan dokumen yang bersifat rahasia hanya dapat diakses oleh pihak yang berwenang."
       )
     )
   );
 
-  // 10 — CTA, Kontak & FAQ (01e, 25:409, 71:123)
+  // KONTAK & CTA
   const footer = el(
     "footer",
     { class: "card", "data-testid": "beranda-footer" },
-    el("div", { class: "row", style: "justify-content:space-between;" }, el("h3", null, "10 — Siap Bergabung, Kontak & FAQ (01e / 25:409 / 71:123)"), blockedBadge()),
+    el("h3", null, "Bergabung Bersama Koperasi"),
     el(
-      "div",
-      { class: "grid-cards" },
-      el("div", { class: "card card-muted" }, el("strong", null, "Alamat Koperasi"), el("div", null, pub?.koperasi?.alamat_koperasi || "Lokasi Koperasi Desa Merah Putih")),
-      el("div", { class: "card card-muted" }, el("strong", null, "FAQ & CMS Kontak / Sosmed"), blockedBadge("BLOCKED: butuh keputusan pemilik"))
+      "p",
+      null,
+      "Mari ikut mendukung kegiatan ekonomi desa melalui koperasi. Daftar menjadi anggota atau lihat produk yang tersedia."
     ),
     el(
       "div",
-      { class: "row", style: "margin-top:8px;" },
-      el("button", { class: "btn btn-primary", type: "button", id: "btn-footer-daftar" }, "Gabung Menjadi Anggota"),
-      el("button", { class: "btn", type: "button", id: "btn-footer-katalog" }, "Lihat Katalog")
+      { class: "grid-cards" },
+      el(
+        "div",
+        { class: "card card-muted" },
+        el("strong", null, "Alamat Koperasi"),
+        el(
+          "div",
+          null,
+          pub?.koperasi?.alamat_koperasi || "Informasi alamat belum tersedia."
+        )
+      )
+    ),
+    el(
+      "div",
+      { class: "row footer-actions" },
+      el(
+        "button",
+        {
+          class: "btn btn-primary",
+          type: "button",
+          id: "btn-footer-daftar"
+        },
+        "Gabung Menjadi Anggota"
+      ),
+      el(
+        "button",
+        {
+          class: "btn btn-outline",
+          type: "button",
+          id: "btn-footer-katalog"
+        },
+        "Lihat Katalog"
+      )
     )
   );
-  footer.querySelector("#btn-footer-daftar")?.addEventListener("click", () => navigate("daftar"));
-  footer.querySelector("#btn-footer-katalog")?.addEventListener("click", () => navigate("katalog"));
+
+  footer
+    .querySelector("#btn-footer-daftar")
+    ?.addEventListener("click", () => navigate("daftar"));
+
+  footer
+    .querySelector("#btn-footer-katalog")
+    ?.addEventListener("click", () => navigate("katalog"));
+
   container.appendChild(footer);
 
+  // AMBIL DATA PRODUK DARI API
   try {
-    const res = await api.request<ProdukItem[]>("GET", "/api/v1/katalog/produk");
-    while (prodWrap.firstChild) prodWrap.removeChild(prodWrap.firstChild);
-    const items = (res.data || []).slice(0, 4);
-    if (items.length === 0) {
-      prodWrap.appendChild(el("div", { class: "alert alert-note" }, "Belum ada produk aktif di katalog saat ini."));
-      return;
+    const res = await api.request<ProdukItem[]>(
+      "GET",
+      "/api/v1/katalog/produk"
+    );
+
+    while (prodWrap.firstChild) {
+      prodWrap.removeChild(prodWrap.firstChild);
     }
-    for (const p of items) {
-      const priceLabel = p.harga_aktif !== undefined
-        ? `Harga (${p.tier_harga || "umum"}): ${formatRp(p.harga_aktif)}`
-        : "Khusus anggota (masuk untuk melihat harga)";
-      const staffHint = p.harga_umum !== undefined || p.harga_anggota !== undefined
-        ? `Umum: ${p.harga_umum !== undefined ? formatRp(p.harga_umum) : "-"} | Anggota: ${p.harga_anggota !== undefined ? formatRp(p.harga_anggota) : "-"}`
-        : priceLabel;
+
+    const items = (res.data || []).slice(0, 4);
+
+    if (items.length === 0) {
       prodWrap.appendChild(
         el(
           "div",
-          { class: "card card-muted" },
+          { class: "alert alert-note" },
+          "Belum ada produk aktif di katalog saat ini."
+        )
+      );
+      return;
+    }
+
+    for (const p of items) {
+      const priceLabel =
+        p.harga_aktif !== undefined
+          ? `Harga (${p.tier_harga || "umum"}): ${formatRp(p.harga_aktif)}`
+          : "Masuk sebagai anggota untuk melihat harga";
+
+      const staffHint =
+        p.harga_umum !== undefined || p.harga_anggota !== undefined
+          ? `Umum: ${
+              p.harga_umum !== undefined ? formatRp(p.harga_umum) : "-"
+            } | Anggota: ${
+              p.harga_anggota !== undefined ? formatRp(p.harga_anggota) : "-"
+            }`
+          : priceLabel;
+
+      prodWrap.appendChild(
+        el(
+          "div",
+          { class: "card card-muted product-card" },
           el("strong", null, p.nama),
-          el("div", null, `SKU: ${p.sku} (${p.satuan})`),
-          el("div", null, staffHint),
-          el("div", { style: "margin-top:6px;" }, statusBadge(p.stok_tersedia > 0 ? "tersedia" : "habis"), " ", `Stok tersedia: ${p.stok_tersedia}`)
+          el("div", { class: "product-meta" }, `SKU: ${p.sku} · ${p.satuan}`),
+          el("div", { class: "product-price" }, staffHint),
+          el(
+            "div",
+            { class: "product-stock" },
+            statusBadge(p.stok_tersedia > 0 ? "tersedia" : "habis"),
+            " ",
+            `Stok tersedia: ${p.stok_tersedia}`
+          )
         )
       );
     }
   } catch (err) {
-    while (prodWrap.firstChild) prodWrap.removeChild(prodWrap.firstChild);
-    prodWrap.appendChild(el("div", { class: "alert alert-error" }, (err as Error).message));
+    while (prodWrap.firstChild) {
+      prodWrap.removeChild(prodWrap.firstChild);
+    }
+
+    prodWrap.appendChild(
+      el(
+        "div",
+        { class: "alert alert-error" },
+        (err as Error).message
+      )
+    );
   }
 }

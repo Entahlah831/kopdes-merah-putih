@@ -103,11 +103,15 @@ test.describe("Kopdes Wireframe E2E (Set B Cookie-Primary)", () => {
   test("01. Beranda (01a-01e), Tentang/Kontak/FAQ, Katalog, Mobile Viewport, & Auth Hygiene", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("beranda-hero")).toBeVisible();
+    await expect(page.getByTestId("beranda-ringkasan")).toBeVisible();
     await expect(page.getByTestId("beranda-tentang")).toBeVisible();
+    await expect(page.getByTestId("beranda-produk")).toBeVisible();
+    await expect(page.getByTestId("beranda-cara-bergabung")).toBeVisible();
+    await expect(page.getByTestId("beranda-cara-bergabung")).toContainText("Cara Bergabung");
     await expect(page.getByTestId("beranda-transparansi")).toBeVisible();
     await expect(page.getByTestId("beranda-footer")).toBeVisible();
-    await expect(page.locator("body")).toContainText("07 — Cara Bergabung");
-    await expect(page.locator("body")).toContainText("BLOCKED: butuh keputusan pemilik");
+    const publicStorageCount = await page.evaluate(() => window.localStorage.length + window.sessionStorage.length);
+    expect(publicStorageCount).toBe(0);
     await page.screenshot({ path: path.join(screenshotDir, "01_beranda.png"), fullPage: true });
 
     // Mobile responsive 375x812 check

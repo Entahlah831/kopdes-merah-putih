@@ -204,3 +204,32 @@ func TestRepoAudit_NoHardcodedPortsOrDevPasswords_AndInfraFilesExist(t *testing.
 		t.Errorf("backend/db/docker-init/01_roles.sql masih mengandung fallback password dev!")
 	}
 }
+
+func TestRepoAudit_FrontendViteConfigSafety(t *testing.T) {
+	root := repoRoot(t)
+	vitePath := filepath.Join(root, "frontend", "wireframe", "vite.config.ts")
+	data, err := os.ReadFile(vitePath)
+	if err != nil {
+		t.Fatalf("Gagal membaca %s: %v", vitePath, err)
+	}
+	checks := []struct {
+		label string
+		re    *regexp.Regexp
+	}{
+		{"IP IPv4 hardcoded", regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)},
+		{"URL host hardcoded", regexp.MustCompile(`https?://[a-zA-Z0-9.-]+`)},
+		{"penghapusan header Origin", regexp.MustCompile(`(?i)removeHeader\s*\(\s*['"]origin['"]\s*\)`)},
+		{"penonaktifan verifikasi TLS", regexp.MustCompile(`(?i)\bsecure\s*:\s*false\b`)},
+	}
+	for idx, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		for _, c := range checks {
+			if c.re.MatchString(line) {
+				t.Errorf("frontend/wireframe/vite.config.ts:%d mengandung %s (%q)", idx+1, c.label, trimmed)
+			}
+		}
+	}
+}

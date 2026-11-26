@@ -1,22 +1,30 @@
-
 import { defineConfig } from "vite";
+
+const rawProxyTarget = (process.env.VITE_API_PROXY_TARGET || "").trim();
+const proxyTarget = /^https?:\/\//i.test(rawProxyTarget) ? rawProxyTarget : "";
 
 export default defineConfig({
   base: "/",
-  server: {
-    proxy: {
-      "/api": {
-        target: "http://159.195.159.168:90",
-        changeOrigin: true,
-        secure: false,
-        configure: (proxy) => {
-          proxy.on("proxyReq", (proxyReq) => {
-            proxyReq.removeHeader("origin");
-          });
+  ...(proxyTarget
+    ? {
+        server: {
+          proxy: {
+            "/api": {
+              target: proxyTarget,
+              changeOrigin: true
+            },
+            "/healthz": {
+              target: proxyTarget,
+              changeOrigin: true
+            },
+            "/readyz": {
+              target: proxyTarget,
+              changeOrigin: true
+            }
+          }
         }
       }
-    }
-  },
+    : {}),
   build: {
     outDir: "dist",
     emptyOutDir: true

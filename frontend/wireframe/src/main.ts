@@ -125,51 +125,68 @@ async function renderApp(): Promise<void> {
       return b;
     });
 
-  const authBar = el("div", { class: "row" });
-  if (currentUser) {
-    const btnAkun = el(
-      "button",
-      { class: "btn", type: "button", "data-testid": "btn-akun-mfa" },
-      currentUser.mfa_enabled ? "Pengaturan Akun" : "Pengaturan Akun (Atur MFA)",
-    );
-    btnAkun.addEventListener("click", () => navigate("pengaturan_user"));
-    const btnLogout = el(
-      "button",
-      { class: "btn", type: "button", "data-testid": "btn-logout" },
-      "Keluar",
-    );
-    btnLogout.addEventListener("click", async () => {
-      try {
-        await api.request("POST", "/api/v1/auth/logout");
-      } finally {
-        currentUser = null;
-        navigate("beranda");
-      }
-    });
-    authBar.append(
-      el(
-        "span",
-        { class: "badge", "data-testid": "user-badge" },
-        `${currentUser.nama} (${currentUser.peran})`,
-      ),
-      btnAkun,
-      btnLogout,
-    );
-  } else {
-    const bLogin = el(
-      "button",
-      { class: "btn", type: "button", "data-testid": "nav-masuk" },
-      "Masuk",
-    );
-    const bReg = el(
-      "button",
-      { class: "btn btn-primary", type: "button", "data-testid": "nav-daftar" },
-      "Daftar Anggota",
-    );
-    bLogin.addEventListener("click", () => navigate("masuk"));
-    bReg.addEventListener("click", () => navigate("daftar"));
-    authBar.append(bLogin, bReg);
-  }
+
+const authBar = el("div", { class: "auth-actions" });
+
+if (currentUser) {
+  const btnAkun = el(
+    "button",
+    {
+      class: "btn btn-account",
+      type: "button",
+      "data-testid": "btn-akun-mfa",
+    },
+    "Pengaturan Akun",
+  );
+
+  btnAkun.addEventListener("click", () => navigate("pengaturan_user"));
+
+  const btnLogout = el(
+    "button",
+    {
+      class: "btn btn-logout",
+      type: "button",
+      "data-testid": "btn-logout",
+    },
+    "Keluar",
+  );
+
+  btnLogout.addEventListener("click", async () => {
+    try {
+      await api.request("POST", "/api/v1/auth/logout");
+    } finally {
+      currentUser = null;
+      navigate("beranda");
+    }
+  });
+
+  authBar.append(
+    el(
+      "span",
+      { class: "badge", "data-testid": "user-badge" },
+      `${currentUser.nama} (${currentUser.peran})`,
+    ),
+    btnAkun,
+    btnLogout,
+  );
+} else {
+  const bLogin = el(
+    "button",
+    { class: "btn", type: "button", "data-testid": "nav-masuk" },
+    "Masuk",
+  );
+
+  const bReg = el(
+    "button",
+    { class: "btn btn-primary", type: "button", "data-testid": "nav-daftar" },
+    "Daftar Anggota",
+  );
+
+  bLogin.addEventListener("click", () => navigate("masuk"));
+  bReg.addEventListener("click", () => navigate("daftar"));
+
+  authBar.append(bLogin, bReg);
+}
 
 const header = el("header", { class: "topbar" },
   el("div", { class: "brand" },

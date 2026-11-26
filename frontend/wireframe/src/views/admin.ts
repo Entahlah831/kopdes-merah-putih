@@ -15,13 +15,13 @@ export async function renderDashboardPengurus(
 
   const sidebar = el("aside", { class: "sidebar" },
     el("div", { class: "sidebar-label" }, "UTAMA"),
-    el("button", { class: "btn btn-primary", type: "button" }, "Ringkasan"),
+    el("button", { class: "btn btn-primary sidebar-link active", type: "button" }, "Ringkasan"),
     el("div", { class: "sidebar-label" }, "OPERASIONAL AKTIF"),
-    el("button", { class: "btn", type: "button", id: "sb-ver-ang" }, "03a Verifikasi Anggota"),
-    el("button", { class: "btn", type: "button", id: "sb-ver-pay" }, "04b Verifikasi Pembayaran"),
-    el("button", { class: "btn", type: "button", id: "sb-pesanan" }, "06 Pesanan & Antaran"),
-    el("button", { class: "btn", type: "button", id: "sb-operasional" }, "07 Laporan, Antar, Produk & Kasir"),
-    el("button", { class: "btn", type: "button", id: "sb-pengaturan-user" }, user.peran === "admin" ? "08 Pengaturan & Pengguna" : "08 Pengaturan Akun & MFA"),
+    el("button", { class: "btn sidebar-link", type: "button", id: "sb-ver-ang" }, "Verifikasi Anggota"),
+    el("button", { class: "btn sidebar-link", type: "button", id: "sb-ver-pay" }, "Verifikasi Pembayaran"),
+    el("button", { class: "btn sidebar-link", type: "button", id: "sb-pesanan" }, "Pesanan & Antaran"),
+    el("button", { class: "btn sidebar-link", type: "button", id: "sb-operasional" }, "Laporan, Antar, Produk & Kasir"),
+    el("button", { class: "btn sidebar-link", type: "button", id: "sb-pengaturan-user" }, user.peran === "admin" ? "Pengaturan & Pengguna" : "Pengaturan Akun & MFA"),
     el("div", { class: "sidebar-label" }, "KELEMBAGAAN / AKUNTANSI"),
     el("div", { class: "alert alert-note" }, "SIMKOPDES, RAT, Pengurus/Pengawas, Kas & Mutasi: ", blockedBadge("BLOCKED: butuh keputusan pemilik"))
   );
@@ -219,7 +219,7 @@ export async function renderVerifikasiAnggota(
       el("div", { class: "field", style: "margin-top:8px;" }, el("label", null, "Surat pernyataan (wireframe)"), blockedBadge("BLOCKED: butuh keputusan pemilik")),
       resBox,
       el("div", { class: "field", style: "margin-top:8px;" }, el("label", null, "Catatan / Alasan"), alasanInput),
-      el("div", { class: "row" }, btnApprove, btnRev, btnReject)
+      el("div", { class: "row admin-action-row" }, btnApprove, btnRev, btnReject)
     );
 
     clear(docsBox);
@@ -251,7 +251,11 @@ export async function renderVerifikasiAnggota(
       el("thead", null, el("tr", null, el("th", null, "Nama Pemohon"), el("th", null, "NIK"), el("th", null, "Dokumen"), el("th", null, "Status"), el("th", null, "Aksi"))),
       el("tbody", null,
         ...list.map((r) => {
-          const btn = el("button", { class: "btn btn-primary", type: "button", "data-testid": `tinjau-${r.id}` }, "Tinjau");
+          const btn = el("button", {
+  class: "btn btn-primary btn-table-action",
+  type: "button",
+  "data-testid": `tinjau-${r.id}`
+}, "Tinjau");
           btn.addEventListener("click", () => { void openDetail(r); });
           return el("tr", null,
             el("td", null, r.nama_lengkap),
@@ -284,7 +288,7 @@ export async function renderVerifikasiAnggota(
   container.append(
     el("h2", null, "03a/03b — Verifikasi Anggota & KYC"),
     feedback,
-    el("div", { class: "card row" },
+    el("div", { class: "card row admin-filter-bar" },
       el("div", { style: "flex:1;min-width:180px;" }, searchBox),
       el("div", { style: "width:180px;" }, filterStatus)
     ),
@@ -374,7 +378,7 @@ export async function renderVerifikasiPembayaran(
       el("div", { class: "field" }, el("label", null, "Nominal Dibayar Aktual"), inNominal),
       el("div", { class: "field" }, el("label", null, "Alasan / Catatan"), inAlasan),
       el("div", { class: "field" }, el("label", { class: "row" }, chkBreak, "Break-glass Darurat Admin (KEPUTUSAN PEMILIK)"), inMFA),
-      el("div", { class: "row" }, btnSetuju, btnTolak),
+      el("div", { class: "row admin-action-row" }, btnSetuju, btnTolak),
       buildRefundPanel(p, api, chkBreak, inMFA, loadList)
     );
 
@@ -405,7 +409,7 @@ export async function renderVerifikasiPembayaran(
         el("thead", null, el("tr", null, el("th", null, "Nomor"), el("th", null, "Jenis"), el("th", null, "Nominal Total"), el("th", null, "Status"), el("th", null, "Aksi"))),
         el("tbody", null,
           ...list.map((p) => {
-            const btn = el("button", { class: "btn btn-primary", type: "button", "data-testid": `ver-pay-${p.nomor_pembayaran}` }, "Periksa");
+            const btn = el("button", { class: "btn btn-primary btn-table-action", type: "button", "data-testid": `ver-pay-${p.nomor_pembayaran}` }, "Periksa");
             btn.addEventListener("click", () => { void openPayment(p); });
             return el("tr", null,
               el("td", null, p.nomor_pembayaran),
